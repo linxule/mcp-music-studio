@@ -1,0 +1,71 @@
+{
+  "name": "mcp-music-studio",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "MCP music composition server — multi-instrument playback, style presets, note highlighting, and AI-friendly reference guides. Fork of @modelcontextprotocol/server-sheet-music.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "music",
+    "abc-notation",
+    "abcjs",
+    "composition",
+    "midi",
+    "sheet-music"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/linxule/mcp-music-studio"
+  },
+  "homepage": "https://github.com/linxule/mcp-music-studio#readme",
+  "bugs": {
+    "url": "https://github.com/linxule/mcp-music-studio/issues"
+  },
+  "license": "MIT",
+  "author": "Xule Lin",
+  "main": "dist/server.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --noEmit && cross-env INPUT=mcp-app.html vite build && tsc -p tsconfig.server.json && bun build server.ts --outdir dist --target node && bun build main.ts --outfile dist/index.js --target node --external \"./server.js\" --banner \"#!/usr/bin/env node\"",
+    "test": "bunx vitest run",
+    "test:watch": "bunx vitest",
+    "watch": "cross-env INPUT=mcp-app.html vite build --watch",
+    "serve": "bun --watch main.ts",
+    "serve:stdio": "bun main.ts --stdio",
+    "start": "cross-env NODE_ENV=development bun run build && bun run serve",
+    "start:stdio": "cross-env NODE_ENV=development bun run build 1>&2 && bun run serve:stdio",
+    "dev": "cross-env NODE_ENV=development concurrently \"bun run watch\" \"bun run serve\"",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.24.0",
+    "abcjs": "^6.4.4",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.0",
+    "@types/node": "22.10.0",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.0.0",
+    "vite-plugin-singlefile": "^2.3.0",
+    "vitest": "^3.2.4"
+  },
+  "types": "dist/server.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    }
+  },
+  "bin": {
+    "mcp-music-studio": "dist/index.js"
+  }
+}
