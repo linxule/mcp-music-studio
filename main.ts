@@ -1,7 +1,6 @@
 /**
  * Entry point for running the MCP server.
- * Run with: npx mcp-sheet-music-server
- * Or: node dist/index.js [--stdio]
+ * Run with: npx mcp-music-studio [--stdio] [--render-mode auto|html|browser]
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -10,7 +9,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import cors from "cors";
 import type { Request, Response } from "express";
-import { createServer } from "./server.js";
+import { createServer, type RenderMode } from "./server.js";
 
 /**
  * Starts an MCP server with Streamable HTTP transport in stateless mode.
@@ -51,12 +50,12 @@ export async function startStreamableHTTPServer(
     }
   });
 
-  const httpServer = app.listen(port, (err) => {
-    if (err) {
-      console.error("Failed to start server:", err);
-      process.exit(1);
-    }
+  const httpServer = app.listen(port, () => {
     console.log(`MCP server listening on http://localhost:${port}/mcp`);
+  });
+  httpServer.on("error", (err) => {
+    console.error("Failed to start server:", err);
+    process.exit(1);
   });
 
   const shutdown = () => {
@@ -79,11 +78,40 @@ export async function startStdioServer(
   await createServer().connect(new StdioServerTransport());
 }
 
+function parseArg(name: string): string | undefined {
+  for (let i = 0; i < process.argv.length; i++) {
+    const arg = process.argv[i].trim();
+    // --name value
+    if (arg === name && i + 1 < process.argv.length) return process.argv[i + 1].trim();
+    // --name=value
+    if (arg.startsWith(name + "=")) return arg.slice(name.length + 1).trim();
+    // "--name value" (joined with space by some clients)
+    if (arg.startsWith(name + " ")) return arg.slice(name.length).trim();
+  }
+  return undefined;
+}
+
+function parseRenderMode(): RenderMode {
+  const val = parseArg("--render-mode");
+  if (!val) return "auto";
+  if (val === "html" || val === "browser" || val === "auto") return val;
+  console.error(`Unknown render mode "${val}", using "auto"`);
+  return "auto";
+}
+
+function parseOutputDir(): string | undefined {
+  return parseArg("--output-dir");
+}
+
 async function main() {
+  const defaultRenderMode = parseRenderMode();
+  const outputDir = parseOutputDir();
+  const factory = () => createServer({ defaultRenderMode, outputDir });
+
   if (process.argv.includes("--stdio")) {
-    await startStdioServer(createServer);
+    await startStdioServer(factory);
   } else {
-    await startStreamableHTTPServer(createServer);
+    await startStreamableHTTPServer(factory);
   }
 }
 

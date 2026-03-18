@@ -8,7 +8,7 @@ Forked from [`@modelcontextprotocol/server-sheet-music`](https://github.com/mode
 
 - **8 style presets** — rock, jazz, bossa, waltz, march, reggae, folk, classical. One parameter adds drums + bass + chord accompaniment.
 - **30 instruments** — selectable from UI or via tool parameter, with fuzzy matching
-- **Browser fallback** — `openInBrowser: true` launches a standalone player for CLI environments (Claude Code, Codex, Gemini CLI) that don't support ext-apps UI
+- **Three rendering modes** — ext-apps inline UI for Claude Desktop/VS Code, browser fallback for CLI environments, configurable via `--render-mode`
 - **`get-music-guide` tool** — on-demand reference for AI systems (instruments, drums, ABC syntax, arrangements, genre templates, MIDI directives)
 - **7 `music://guide/*` resources** — same content for resource-capable clients
 - **Note highlighting** — currently playing notes light up during playback
@@ -148,7 +148,6 @@ Creates and plays music with visual sheet music and multi-instrument audio.
 | `tempo` | number? | BPM (40-240) |
 | `swing` | number? | Swing feel (0-100) |
 | `transpose` | number? | Semitones (-12 to 12) |
-| `openInBrowser` | boolean? | Open standalone browser player (for CLI environments without UI) |
 
 **Example — jazz arrangement:**
 ```json
@@ -173,6 +172,31 @@ Returns reference material for composition. Topics:
 | `genres` | Complete ABC examples: jazz, blues, folk, minuet, rock, bossa, lullaby |
 | `styles` | What each style preset does and when to use it |
 | `midi-directives` | Full `%%MIDI` reference for ABCJS |
+
+## Render Modes
+
+The server auto-detects whether the client supports ext-apps UI. For clients that don't, use `--render-mode` to control how music is delivered:
+
+| Mode | Flag | Behavior |
+|------|------|----------|
+| `auto` | (default) | Inline ext-apps UI for Claude Desktop, VS Code |
+| `browser` | `--render-mode browser` | Saves HTML player and opens in system browser |
+| `html` | `--render-mode html` | Returns HTML as embedded resource in response |
+
+Use `--output-dir` to control where HTML player files are saved (default: `~/Desktop/mcp-music-studio`).
+
+**Example — Cherry Studio, CLI environments, or other non-ext-apps clients:**
+
+```json
+{
+  "mcpServers": {
+    "music-studio": {
+      "command": "npx",
+      "args": ["-y", "mcp-music-studio", "--stdio", "--render-mode", "browser", "--output-dir", "/path/to/output"]
+    }
+  }
+}
+```
 
 ## Development
 

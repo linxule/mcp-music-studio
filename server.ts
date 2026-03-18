@@ -10,13 +10,17 @@ import {
   RESOURCE_MIME_TYPE,
   registerAppResource,
   registerAppTool,
+  getUiCapability,
 } from "@modelcontextprotocol/ext-apps/server";
 import { STYLE_NAMES } from "./src/music-logic.js";
 import {
   createPlaySheetMusicResult,
   type ParseOnlyFn,
 } from "./src/server-logic.js";
-import { openPlayerInBrowser } from "./src/browser-fallback.js";
+import {
+  openPlayerInBrowser,
+  generatePlayerHtml,
+} from "./src/browser-fallback.js";
 
 const DIST_DIR = import.meta.filename.endsWith(".ts")
   ? path.join(import.meta.dirname, "dist")
@@ -532,131 +536,201 @@ export async function handleGetMusicGuide({
   };
 }
 
-export function createServer(): McpServer {
+export type RenderMode = "auto" | "html" | "browser";
+
+export interface ServerOptions {
+  defaultRenderMode?: RenderMode;
+  outputDir?: string;
+}
+
+export function createServer(options?: ServerOptions): McpServer {
+  const defaultRenderMode = options?.defaultRenderMode ?? "auto";
+  const outputDir = options?.outputDir;
+  let clientSupportsExtApps = false;
+
   const server = new McpServer({
     name: "Music Studio",
-    version: "0.1.0",
+    version: "0.1.2",
   });
 
   const resourceUri = "ui://sheet-music/mcp-app.html";
 
   // ---------------------------------------------------------------------------
-  // Tool: play-sheet-music
+  // Shared schema + handler for play-sheet-music (description adapts to client)
   // ---------------------------------------------------------------------------
+  const playInputSchema = z.object({
+    abcNotation: z
+      .string()
+      .default(DEFAULT_ABC_NOTATION_INPUT)
+      .describe(
+        "ABC notation string. Include chord symbols (\"C\", \"Am7\") above notes for auto-accompaniment with style presets.",
+      ),
+    instrument: z
+      .string()
+      .optional()
+      .describe(
+        "Default instrument. Options: Acoustic Grand Piano, Electric Piano, Harpsichord, " +
+        "Music Box, Vibraphone, Marimba, Xylophone, Church Organ, Accordion, Harmonica, " +
+        "Acoustic Guitar (Nylon), Acoustic Guitar (Steel), Electric Guitar (Clean), " +
+        "Acoustic Bass, Violin, Viola, Cello, String Ensemble, Trumpet, Trombone, " +
+        "French Horn, Alto Sax, Tenor Sax, Oboe, Clarinet, Flute, Pan Flute, Steel Drums.",
+      ),
+    style: z
+      .enum(STYLE_NAMES)
+      .optional()
+      .describe(
+        "Accompaniment style. Adds drums, bass, and chord patterns automatically. " +
+        "Your ABC needs chord symbols (\"C\", \"Am\") for accompaniment to work. " +
+        "Options: rock, jazz, bossa, waltz, march, reggae, folk, classical.",
+      ),
+    tempo: z
+      .number()
+      .min(40)
+      .max(240)
+      .optional()
+      .describe("Tempo in BPM (40-240). Overrides Q: in ABC notation."),
+    swing: z
+      .number()
+      .min(0)
+      .max(100)
+      .optional()
+      .describe(
+        "Swing percentage (0-100). 0=straight, 33=light swing, 66=heavy swing. Great for jazz and blues.",
+      ),
+    transpose: z
+      .number()
+      .min(-12)
+      .max(12)
+      .optional()
+      .describe(
+        "Transpose by semitones (-12 to 12). Positive=higher, negative=lower.",
+      ),
+  });
+
+  const BASE_DESCRIPTION =
+    "Creates and plays music with visual sheet music and multi-instrument audio. " +
+    "Use this to compose original songs, demonstrate music theory, set a mood, " +
+    "celebrate occasions, or play well-known tunes.\n\n" +
+    "BEFORE COMPOSING: Call get-music-guide first to learn available instruments, " +
+    "styles, drum patterns, and ABC syntax. Start with topic 'genres' for complete " +
+    "examples, 'styles' for preset details, or 'instruments' for the full list.\n\n" +
+    "HOW IT WORKS:\n" +
+    "Write ABC notation with chord symbols (\"C\", \"Am7\", \"G7\") above the melody. " +
+    "Set a style to get automatic drums + bass + chord accompaniment. " +
+    "For known tunes, look up ABC from abcnotation.com or thesession.org.\n\n" +
+    "QUICK ABC REFERENCE:\n" +
+    "Notes: C D E F G A B c d e (lowercase=octave up) | Rests: z z2 z4\n" +
+    "Lengths: C2(half) C/2(eighth) C3/2(dotted) | Bars: | |: :| [1 [2\n" +
+    "Chords: [CEG](simultaneous) \"Am\"(guitar chord) | Ties: C-C | Slurs: (CDE)\n" +
+    "Multi-voice: V:1 ... V:2 ... with %%MIDI program N per voice\n" +
+    "Dynamics: !p! !f! !ff! !mf! | Tempo: Q:1/4=120";
+
+  const EXT_APPS_SUFFIX =
+    "\n\nThe music player renders inline with interactive playback controls.";
+
+  const FALLBACK_SUFFIX =
+    "\n\nThe music player is delivered as HTML or opened in the browser automatically.";
+
+  const playHandler = async (
+    args: z.infer<typeof playInputSchema>,
+  ): Promise<CallToolResult> => {
+    const result = await handlePlaySheetMusic(args);
+
+    if (result.isError) return result;
+
+    // Explicit --render-mode flag always wins; auto-detect only affects description
+    if (defaultRenderMode === "auto") return result;
+
+    const playerOpts = {
+      abcNotation: args.abcNotation,
+      style: args.style,
+      instrument: args.instrument,
+      tempo: args.tempo,
+      swing: args.swing,
+      transpose: args.transpose,
+    };
+
+    if (defaultRenderMode === "html") {
+      try {
+        const html = generatePlayerHtml(playerOpts);
+        const text =
+          result.content[0]?.type === "text" ? result.content[0].text : "";
+        result.content = [
+          { type: "text", text },
+          {
+            type: "resource" as const,
+            resource: {
+              uri: `music://player/${Date.now()}.html`,
+              mimeType: "text/html",
+              text: html,
+            },
+          },
+        ];
+      } catch (err) {
+        result.content.push({
+          type: "text",
+          text: `\nFailed to generate HTML player: ${(err as Error).message}`,
+        });
+      }
+    } else if (defaultRenderMode === "browser") {
+      try {
+        const filepath = await openPlayerInBrowser(playerOpts, outputDir);
+        const fileUrl = `file://${filepath}`;
+        const text =
+          result.content[0]?.type === "text" ? result.content[0].text : "";
+        result.content = [
+          {
+            type: "text",
+            text: `${text}\n\nMusic player saved and opening in browser.\nFile: ${fileUrl}`,
+          },
+        ];
+      } catch (err) {
+        result.content.push({
+          type: "text",
+          text: `\nFailed to open browser: ${(err as Error).message}`,
+        });
+      }
+    }
+
+    return result;
+  };
+
+  // Register tool statically (works in HTTP stateless mode where each request
+  // is a new server instance and oninitialized may not fire before tools/list).
+  // Uses fallback description by default; upgraded to ext-apps in oninitialized.
   registerAppTool(
     server,
     "play-sheet-music",
     {
       title: "Play Sheet Music",
-      description:
-        "Creates and plays music with visual sheet music and multi-instrument audio. " +
-        "Use this to compose original songs, demonstrate music theory, set a mood, " +
-        "celebrate occasions, or play well-known tunes.\n\n" +
-        "WHAT YOU CAN CREATE:\n" +
-        "- Original compositions for any occasion (birthdays, lullabies, celebrations)\n" +
-        "- Genre pieces: set the style parameter for automatic drums + bass + chord accompaniment\n" +
-        "- Educational demos: scales, modes, chord progressions, rhythms\n" +
-        "- Multi-voice arrangements with different instruments per voice\n\n" +
-        "HOW IT WORKS:\n" +
-        "Write ABC notation with chord symbols (\"C\", \"Am7\", \"G7\") above the melody. " +
-        "Set a style to get automatic accompaniment. For known tunes, look up ABC from " +
-        "abcnotation.com or thesession.org.\n\n" +
-        "QUICK ABC REFERENCE:\n" +
-        "Notes: C D E F G A B c d e (lowercase=octave up) | Rests: z z2 z4\n" +
-        "Lengths: C2(half) C/2(eighth) C3/2(dotted) | Bars: | |: :| [1 [2\n" +
-        "Chords: [CEG](simultaneous) \"Am\"(guitar chord) | Ties: C-C | Slurs: (CDE)\n" +
-        "Multi-voice: V:1 ... V:2 ... with %%MIDI program N per voice\n" +
-        "Dynamics: !p! !f! !ff! !mf! | Tempo: Q:1/4=120\n\n" +
-        "Use the get-music-guide tool for detailed reference on instruments, drums, genres, and arrangements.",
-      inputSchema: z.object({
-        abcNotation: z
-          .string()
-          .default(DEFAULT_ABC_NOTATION_INPUT)
-          .describe(
-            "ABC notation string. Include chord symbols (\"C\", \"Am7\") above notes for auto-accompaniment with style presets.",
-          ),
-        instrument: z
-          .string()
-          .optional()
-          .describe(
-            "Default instrument. Options: Acoustic Grand Piano, Electric Piano, Harpsichord, " +
-            "Music Box, Vibraphone, Marimba, Xylophone, Church Organ, Accordion, Harmonica, " +
-            "Acoustic Guitar (Nylon), Acoustic Guitar (Steel), Electric Guitar (Clean), " +
-            "Acoustic Bass, Violin, Viola, Cello, String Ensemble, Trumpet, Trombone, " +
-            "French Horn, Alto Sax, Tenor Sax, Oboe, Clarinet, Flute, Pan Flute, Steel Drums.",
-          ),
-        style: z
-          .enum(STYLE_NAMES)
-          .optional()
-          .describe(
-            "Accompaniment style. Adds drums, bass, and chord patterns automatically. " +
-            "Your ABC needs chord symbols (\"C\", \"Am\") for accompaniment to work. " +
-            "Options: rock, jazz, bossa, waltz, march, reggae, folk, classical.",
-          ),
-        tempo: z
-          .number()
-          .min(40)
-          .max(240)
-          .optional()
-          .describe("Tempo in BPM (40-240). Overrides Q: in ABC notation."),
-        swing: z
-          .number()
-          .min(0)
-          .max(100)
-          .optional()
-          .describe(
-            "Swing percentage (0-100). 0=straight, 33=light swing, 66=heavy swing. Great for jazz and blues.",
-          ),
-        transpose: z
-          .number()
-          .min(-12)
-          .max(12)
-          .optional()
-          .describe(
-            "Transpose by semitones (-12 to 12). Positive=higher, negative=lower.",
-          ),
-        openInBrowser: z
-          .boolean()
-          .optional()
-          .describe(
-            "Open a standalone browser player with full playback, note highlighting, and controls. " +
-            "Use this in CLI environments (Claude Code, Codex, Gemini CLI) where the MCP client doesn't render UI.",
-          ),
-      }),
+      description: BASE_DESCRIPTION + FALLBACK_SUFFIX,
+      inputSchema: playInputSchema,
       _meta: { ui: { resourceUri } },
     },
-    async (args): Promise<CallToolResult> => {
-      const result = await handlePlaySheetMusic(args);
-
-      if (args.openInBrowser && !result.isError) {
-        try {
-          const filepath = await openPlayerInBrowser({
-            abcNotation: args.abcNotation,
-            style: args.style,
-            instrument: args.instrument,
-            tempo: args.tempo,
-            swing: args.swing,
-            transpose: args.transpose,
-          });
-          const text =
-            result.content[0]?.type === "text" ? result.content[0].text : "";
-          result.content = [
-            {
-              type: "text",
-              text: `${text}\n\nOpened music player in browser: ${filepath}`,
-            },
-          ];
-        } catch (err) {
-          result.content.push({
-            type: "text",
-            text: `\nFailed to open browser: ${(err as Error).message}`,
-          });
-        }
-      }
-
-      return result;
-    },
+    playHandler,
   );
+
+  // Detect ext-apps capability and upgrade tool description for capable clients
+  server.server.oninitialized = () => {
+    const caps = server.server.getClientCapabilities();
+    const uiCap = getUiCapability(caps);
+    clientSupportsExtApps = !!uiCap?.mimeTypes?.includes(RESOURCE_MIME_TYPE);
+
+    if (clientSupportsExtApps) {
+      // Re-register with ext-apps-specific description
+      registerAppTool(
+        server,
+        "play-sheet-music",
+        {
+          title: "Play Sheet Music",
+          description: BASE_DESCRIPTION + EXT_APPS_SUFFIX,
+          inputSchema: playInputSchema,
+          _meta: { ui: { resourceUri } },
+        },
+        playHandler,
+      );
+    }
+  };
 
   // ---------------------------------------------------------------------------
   // Tool: get-music-guide

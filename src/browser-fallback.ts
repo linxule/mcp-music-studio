@@ -64,9 +64,15 @@ function formatKey(raw: string): string {
   return raw.replace(/([A-G])b/g, "$1♭").replace(/([A-G])#/g, "$1♯");
 }
 
+// ABCJS ≤6.6.2 fails to render notation when V: lines use quoted name
+// attributes (e.g. name="Melody"). Strip the quotes so ABCJS can parse them.
+function stripVoiceNameQuotes(abc: string): string {
+  return abc.replace(/^(V:\S+.*?\bname=)"([^"]*)"(.*)$/gm, "$1$2$3");
+}
+
 export function generatePlayerHtml(options: BrowserPlayerOptions): string {
   // Process ABC (tempo/transpose injection — baked into notation)
-  let abc = options.abcNotation;
+  let abc = stripVoiceNameQuotes(options.abcNotation);
   if (options.tempo !== undefined || options.transpose !== undefined) {
     abc = injectTempoAndTranspose(abc, {
       tempo: options.tempo,
@@ -421,17 +427,18 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
 
 export async function openPlayerInBrowser(
   options: BrowserPlayerOptions,
+  outputDir?: string,
 ): Promise<string> {
   const html = generatePlayerHtml(options);
 
-  const tmpDir = path.join(os.tmpdir(), "mcp-music-studio");
-  await fs.mkdir(tmpDir, { recursive: true });
+  const outDir = outputDir ?? path.join(os.homedir(), "Desktop", "mcp-music-studio");
+  await fs.mkdir(outDir, { recursive: true });
 
   const filename = `player-${Date.now()}.html`;
-  const filepath = path.join(tmpDir, filename);
+  const filepath = path.join(outDir, filename);
   await fs.writeFile(filepath, html, "utf-8");
 
-  // Open in default browser (fire-and-forget)
+  // Try to open in default browser (may fail in sandboxed environments)
   const platform = process.platform;
   let cmd: string;
   if (platform === "darwin") cmd = `open "${filepath}"`;
