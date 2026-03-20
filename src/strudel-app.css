@@ -1,0 +1,144 @@
+/* Strudel ext-apps UI — layout fixes for @strudel/repl in iframe sandbox */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --surface: #f8f9fa;
+  --border: #e0e0e0;
+  --text: #1a1a1a;
+  --text-secondary: #666;
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --success: #10b981;
+  --error: #ef4444;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1a1a;
+    --surface: #252525;
+    --border: #333;
+    --text: #e0e0e0;
+    --text-secondary: #999;
+    --accent: #a78bfa;
+    --accent-hover: #8b5cf6;
+  }
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 200px;
+}
+
+.header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.control-btn {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.control-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.control-btn.playing {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.status.playing {
+  color: var(--success);
+}
+
+.status.error {
+  color: var(--error);
+}
+
+.repl-section {
+  flex: 1;
+  overflow: auto;
+  min-height: 350px;
+}
+
+.strudel-container {
+  width: 100%;
+  min-height: 350px;
+}
+
+/* ==========================================================================
+   Layout fixes for @strudel/repl in ext-apps iframe
+
+   The <strudel-editor> component creates:
+   1. A position:fixed canvas covering the viewport (visualization)
+   2. The CodeMirror editor in a SIBLING div after the element
+
+   Fix: hide the blank canvas, ensure the editor sibling is visible
+   ========================================================================== */
+
+/* Hide the full-viewport visualization canvas */
+body > canvas[style*="position"] {
+  display: none !important;
+}
+
+/* The strudel-editor element itself may be empty (content is in sibling) */
+strudel-editor {
+  display: block;
+  width: 100%;
+}
+
+/* Ensure the CodeMirror editor (in the sibling div) is visible */
+.strudel-container > div:has(.cm-editor) {
+  min-height: 350px !important;
+  width: 100% !important;
+}
+
+/* CodeMirror editor sizing */
+.cm-editor {
+  min-height: 350px !important;
+}
+
+.cm-scroller {
+  min-height: 300px !important;
+  overflow: auto !important;
+}

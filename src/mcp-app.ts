@@ -240,7 +240,15 @@ async function renderAbc(
 
     // Show toolbar once we have content
     toolbarEl.classList.add("visible");
-    setStatus("Ready to play!");
+
+    // Autoplay — attempt to start playback immediately
+    // (may be blocked by browser autoplay policy until user clicks)
+    try {
+      state.synthControl.play();
+      setStatus("Playing...");
+    } catch {
+      setStatus("Ready to play!");
+    }
   } catch (error) {
     console.error("Render error:", error);
     setStatus(`Error: ${(error as Error).message}`, true);
@@ -252,7 +260,7 @@ async function renderAbc(
 // MCP Apps SDK Integration
 // =============================================================================
 
-const app = new App({ name: "Music Studio", version: "0.1.2" });
+const app = new App({ name: "Music Studio", version: "0.2.0" });
 appInstance = app;
 
 // Handle complete tool input
