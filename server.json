@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.linxule/mcp-music-studio",
   "title": "Music Studio",
-  "description": "Two-mode music studio: scored composition (ABC) and live performance (Strudel) with interactive ext-apps UI.",
+  "description": "Music studio: ABC notation composition and Strudel live coding with ext-apps UI.",
   "repository": {
     "url": "https://github.com/linxule/mcp-music-studio",
     "source": "github",
