@@ -1,0 +1,38 @@
+{
+  "name": "mcp-music-studio",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["MusicStudioMCP"]
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "MusicStudioMCP",
+        "name": "MCP_OBJECT"
+      }
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "DOCS_CACHE",
+      "id": "6de1f566d9b241eb9ccd1285e14b812c"
+    }
+  ],
+  "rules": [
+    { "type": "Text", "globs": ["**/*.html"], "fallthrough": true }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "analytics_engine_datasets": [
+    {
+      "binding": "ANALYTICS",
+      "dataset": "music_studio_usage"
+    }
+  ]
+}

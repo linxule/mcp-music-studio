@@ -1,3 +1,14 @@
 node_modules/
 dist/
 .mcpregistry_*
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
+
+# prevent root wrangler config (worker/ has its own)
+/wrangler.jsonc
+/wrangler.json

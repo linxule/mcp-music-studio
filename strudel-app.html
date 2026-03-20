@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>Strudel Live Pattern</title>
+</head>
+<body>
+  <main class="main">
+    <header class="header">
+      <div class="toolbar">
+        <button id="play-btn" class="control-btn" title="Play">Play</button>
+        <button id="stop-btn" class="control-btn" title="Stop">Stop</button>
+        <button id="fullscreen-btn" class="control-btn" title="Toggle fullscreen">⛶</button>
+        <span id="status" class="status">Ready</span>
+      </div>
+    </header>
+
+    <section class="repl-section">
+      <div id="strudel-container" class="strudel-container">
+        <!-- strudel-editor web component will be created here -->
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./src/strudel-app.ts"></script>
+</body>
+</html>

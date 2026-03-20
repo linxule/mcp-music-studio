@@ -1,8 +1,8 @@
 {
   "name": "mcp-music-studio",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "type": "module",
-  "description": "MCP music composition server — multi-instrument playback, style presets, note highlighting, and AI-friendly reference guides. Fork of @modelcontextprotocol/server-sheet-music.",
+  "description": "Two-mode MCP music studio: scored composition (ABC notation) and live performance (Strudel). Interactive ext-apps UI with sheet music rendering, 30+ instruments, style presets, and live coding REPL.",
   "keywords": [
     "mcp",
     "model-context-protocol",
@@ -11,7 +11,11 @@
     "abcjs",
     "composition",
     "midi",
-    "sheet-music"
+    "sheet-music",
+    "strudel",
+    "live-coding",
+    "tidal-cycles",
+    "ext-apps"
   ],
   "repository": {
     "type": "git",
@@ -29,7 +33,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc --noEmit && cross-env INPUT=mcp-app.html vite build && tsc -p tsconfig.server.json && bun build server.ts --outdir dist --target node && bun build main.ts --outfile dist/index.js --target node --external \"./server.js\" --banner \"#!/usr/bin/env node\"",
+    "build": "tsc --noEmit && cross-env INPUT=mcp-app.html vite build && cross-env INPUT=strudel-app.html vite build && tsc -p tsconfig.server.json && bun build server.ts --outdir dist --target node && bun build main.ts --outfile dist/index.js --target node --external \"./server.js\" --banner \"#!/usr/bin/env node\"",
     "test": "bunx vitest run",
     "test:watch": "bunx vitest",
     "watch": "cross-env INPUT=mcp-app.html vite build --watch",
@@ -38,14 +42,18 @@
     "start": "cross-env NODE_ENV=development bun run build && bun run serve",
     "start:stdio": "cross-env NODE_ENV=development bun run build 1>&2 && bun run serve:stdio",
     "dev": "cross-env NODE_ENV=development concurrently \"bun run watch\" \"bun run serve\"",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "deploy": "bun run build && wrangler deploy",
+    "preview": "bun run build && wrangler dev"
   },
   "dependencies": {
+    "@cloudflare/vite-plugin": "^1.30.0",
     "@modelcontextprotocol/ext-apps": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.24.0",
     "abcjs": "^6.4.4",
     "cors": "^2.8.5",
     "express": "^5.1.0",
+    "wrangler": "^4.76.0",
     "zod": "^4.1.13"
   },
   "devDependencies": {
