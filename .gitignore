@@ -2,6 +2,10 @@ node_modules/
 dist/
 .mcpregistry_*
 
+# Claude Code project config
+CLAUDE.md
+.claude/
+
 # wrangler files
 .wrangler
 .dev.vars*
