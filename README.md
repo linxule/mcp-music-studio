@@ -1,27 +1,57 @@
 # MCP Music Studio
 
-A creative music tool for AI systems — compose, arrange, and play music with multi-instrument audio, style presets, and visual sheet music.
+Two-mode creative music studio for AI: **scored composition** (ABC notation with sheet music) and **live performance** (Strudel live coding with TidalCycles). Interactive UI renders inline in Claude Desktop, claude.ai, and other MCP clients.
 
-Forked from [`@modelcontextprotocol/server-sheet-music`](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/sheet-music-server) and substantially extended.
+## Quick Start — No Install Required
 
-## Features
+Paste this URL into any MCP client that supports remote servers:
 
-- **8 style presets** — rock, jazz, bossa, waltz, march, reggae, folk, classical. One parameter adds drums + bass + chord accompaniment.
-- **30 instruments** — selectable from UI or via tool parameter, with fuzzy matching
-- **Three rendering modes** — ext-apps inline UI for Claude Desktop/VS Code, browser fallback for CLI environments, configurable via `--render-mode`
-- **`get-music-guide` tool** — on-demand reference for AI systems (instruments, drums, ABC syntax, arrangements, genre templates, MIDI directives)
-- **7 `music://guide/*` resources** — same content for resource-capable clients
-- **Note highlighting** — currently playing notes light up during playback
-- **Forgiving parser** — warnings don't block playback, only fatal errors do
-- **Streaming render** — sheet music appears as the AI types (`ontoolinputpartial`)
-- **Tempo slider** — warp control in the UI
-- **Fullscreen mode** — via ext-apps `requestDisplayMode`
+```
+https://mcp-music-studio.linxule.workers.dev/mcp
+```
 
-## Install
+**Claude Desktop / claude.ai:**
+Settings → Connectors → Add Connector → paste the URL above → done.
 
-Requires Node.js 18+. Supports stdio and HTTP transports.
+**Claude Code:**
+```bash
+claude mcp add --transport http music-studio https://mcp-music-studio.linxule.workers.dev/mcp
+```
 
-### CLI Install (one-liner)
+That's it — ask Claude to play a song or create a beat.
+
+---
+
+## What You Get
+
+### Scored Composition (ABC Notation)
+Write sheet music → see it rendered → hear it played with multi-instrument audio.
+
+- **8 style presets** — rock, jazz, bossa, waltz, march, reggae, folk, classical — one parameter adds drums + bass + chord accompaniment
+- **30 instruments** — piano, strings, brass, woodwinds, synths — selectable by name
+- **Visual sheet music** — notes highlight as they play
+- **Streaming render** — sheet music appears as the AI types
+- **`get-music-guide`** — 7 reference topics (instruments, drums, ABC syntax, arrangements, genres, styles, MIDI directives)
+
+### Live Performance (Strudel)
+Write code → hear it play → edit in a live REPL.
+
+- **TidalCycles mini-notation** in JavaScript
+- **72 drum machine banks** + **128 GM instruments** + built-in synths
+- **Full effects chain** — filters, reverb, delay, FM synthesis
+- **Editable REPL** — users can tweak the code and hear changes instantly
+- **`get-strudel-guide`** — 7 reference topics (mini-notation, sounds, effects, patterns, genres, tips, advanced)
+
+### Shared
+- **`search-music-docs`** — semantic search over strudel.cc and ABCJS documentation
+
+---
+
+## Local Install (Optional)
+
+The remote URL above works without any local setup. If you prefer running locally (offline use, lower latency), install via npm:
+
+### CLI One-Liners
 
 ```bash
 # Claude Code
@@ -32,11 +62,15 @@ codex mcp add -- npx -y mcp-music-studio --stdio
 
 # Gemini CLI
 gemini mcp add -- npx -y mcp-music-studio --stdio
+
+# OpenCode
+opencode mcp add music-studio -- npx -y mcp-music-studio --stdio
 ```
 
-### Claude Desktop
+### JSON Config (Claude Desktop, Cursor, Windsurf, etc.)
 
-Config file location:
+<details>
+<summary>Claude Desktop — edit config file</summary>
 
 | OS | Path |
 |----|------|
@@ -54,12 +88,12 @@ Config file location:
   }
 }
 ```
+</details>
 
-### VS Code
+<details>
+<summary>VS Code / Trae / PearAI</summary>
 
-Add to `.vscode/mcp.json` (project) or user settings:
-
-> **Note**: VS Code uses `"servers"` not `"mcpServers"`. Also works in Trae, Void, and PearAI.
+Add to `.vscode/mcp.json` — note: uses `"servers"` not `"mcpServers"`:
 
 ```json
 {
@@ -71,10 +105,12 @@ Add to `.vscode/mcp.json` (project) or user settings:
   }
 }
 ```
+</details>
 
-### Cursor
+<details>
+<summary>Cursor</summary>
 
-Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
+Add to `~/.cursor/mcp.json`:
 
 ```json
 {
@@ -86,8 +122,10 @@ Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
   }
 }
 ```
+</details>
 
-### Windsurf
+<details>
+<summary>Windsurf</summary>
 
 Add to `~/.codeium/windsurf/mcp_config.json`:
 
@@ -101,8 +139,10 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
   }
 }
 ```
+</details>
 
-### Windows
+<details>
+<summary>Windows</summary>
 
 On Windows, `npx` is a `.cmd` file and requires a shell wrapper:
 
@@ -116,87 +156,42 @@ On Windows, `npx` is a `.cmd` file and requires a shell wrapper:
   }
 }
 ```
+</details>
 
-### ChatGPT
+<details>
+<summary>Render modes (for non-ext-apps clients)</summary>
 
-ChatGPT only supports remote HTTPS MCP servers. Run the HTTP transport and expose via tunnel:
+The server auto-detects ext-apps support. For clients that don't support it (Cherry Studio, CLI environments), use `--render-mode`:
 
-```bash
-npx mcp-music-studio
-# Server starts on http://localhost:3001/mcp
-# Use ngrok, Cloudflare Tunnel, etc. to expose publicly
-```
-
-### HTTP Transport
-
-```bash
-npx mcp-music-studio
-# Server starts on http://localhost:3001/mcp
-```
-
-## Tools
-
-### `play-sheet-music`
-
-Creates and plays music with visual sheet music and multi-instrument audio.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `abcNotation` | string | ABC notation with optional chord symbols |
-| `instrument` | string? | Default instrument (e.g., "Violin", "Flute") |
-| `style` | enum? | Accompaniment style: rock, jazz, bossa, waltz, march, reggae, folk, classical |
-| `tempo` | number? | BPM (40-240) |
-| `swing` | number? | Swing feel (0-100) |
-| `transpose` | number? | Semitones (-12 to 12) |
-
-**Example — jazz arrangement:**
-```json
-{
-  "abcNotation": "X:1\nT:Blue Note\nM:4/4\nL:1/8\nK:Bb\n\"Bbmaj7\"d2 f2 d2 Bc | \"Eb7\"_e2 g2 e2 cB | \"Dm7\"d2 f2 a2 fd | \"G7\"g2 f2 e2 dc |",
-  "style": "jazz",
-  "instrument": "Alto Sax",
-  "tempo": 140
-}
-```
-
-### `get-music-guide`
-
-Returns reference material for composition. Topics:
-
-| Topic | Contents |
-|-------|----------|
-| `instruments` | All 128 GM instruments by family, program numbers, combo suggestions |
-| `drums` | Percussion notes, pattern syntax, 8 ready-to-use patterns |
-| `abc-syntax` | Notes, rests, chords, repeats, dynamics, multi-voice, lyrics |
-| `arrangements` | Multi-voice patterns, volume balancing, accompaniment setup |
-| `genres` | Complete ABC examples: jazz, blues, folk, minuet, rock, bossa, lullaby |
-| `styles` | What each style preset does and when to use it |
-| `midi-directives` | Full `%%MIDI` reference for ABCJS |
-
-## Render Modes
-
-The server auto-detects whether the client supports ext-apps UI. For clients that don't, use `--render-mode` to control how music is delivered:
-
-| Mode | Flag | Behavior |
-|------|------|----------|
-| `auto` | (default) | Inline ext-apps UI for Claude Desktop, VS Code |
-| `browser` | `--render-mode browser` | Saves HTML player and opens in system browser |
-| `html` | `--render-mode html` | Returns HTML as embedded resource in response |
-
-Use `--output-dir` to control where HTML player files are saved (default: `~/Desktop/mcp-music-studio`).
-
-**Example — Cherry Studio, CLI environments, or other non-ext-apps clients:**
+| Mode | Behavior |
+|------|----------|
+| `auto` (default) | Inline UI for Claude Desktop, VS Code |
+| `browser` | Saves HTML and opens in system browser |
+| `html` | Returns HTML as embedded resource |
 
 ```json
 {
   "mcpServers": {
     "music-studio": {
       "command": "npx",
-      "args": ["-y", "mcp-music-studio", "--stdio", "--render-mode", "browser", "--output-dir", "/path/to/output"]
+      "args": ["-y", "mcp-music-studio", "--stdio", "--render-mode", "browser"]
     }
   }
 }
 ```
+</details>
+
+---
+
+## Tools
+
+| Tool | Description |
+|------|-------------|
+| `play-sheet-music` | ABC notation → visual sheet music + multi-instrument audio |
+| `play-live-pattern` | Strudel code → live-coded patterns with synthesis + effects |
+| `get-music-guide` | ABC reference (7 topics: instruments, drums, syntax, genres...) |
+| `get-strudel-guide` | Strudel reference (7 topics: sounds, effects, patterns, genres...) |
+| `search-music-docs` | Semantic search over strudel.cc and ABCJS docs |
 
 ## Development
 
@@ -204,32 +199,12 @@ Use `--output-dir` to control where HTML player files are saved (default: `~/Des
 bun install
 bun run dev      # watch + serve (hot reload)
 bun run build    # production build
-bun run serve    # HTTP server on port 3001
-```
-
-## Architecture
-
-```
-mcp-music-studio/
-├── server.ts              # MCP server: tools, resources, guides, forgiving parser
-├── main.ts                # Entry point: HTTP + stdio transports
-├── mcp-app.html           # HTML shell (Vite inlines everything for ext-apps UI)
-├── src/
-│   ├── mcp-app.ts         # Ext-apps client: rendering, audio, streaming
-│   ├── mcp-app.css        # Styles: dark mode, note highlighting, toolbar
-│   ├── music-logic.ts     # Shared: instruments, presets, ABC processing
-│   ├── server-logic.ts    # Server: parse validation, result construction
-│   ├── browser-fallback.ts # Browser player: HTML generation, auto-open
-│   └── global.css         # Base reset
-├── tests/                 # Vitest tests
-├── vite.config.ts         # Single-file HTML bundling
-├── tsconfig.json          # Client TypeScript config
-└── tsconfig.server.json   # Server TypeScript config
+bun run test     # run tests
 ```
 
 ## Attribution
 
-This project is a fork of the [Sheet Music Server](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/sheet-music-server) example from the [MCP ext-apps](https://github.com/modelcontextprotocol/ext-apps) repository by Anthropic, licensed under MIT.
+Forked from the [Sheet Music Server](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/sheet-music-server) example from [MCP ext-apps](https://github.com/modelcontextprotocol/ext-apps) by Anthropic, licensed under MIT.
 
 ## License
 
