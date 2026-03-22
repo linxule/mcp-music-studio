@@ -566,25 +566,34 @@ export default {
       return handler(request, env, ctx);
     }
 
-    // Landing page
+    // Favicon — proxy the logo for Google's favicon service (used by claude.ai Connectors)
+    if (url.pathname === "/favicon.ico" || url.pathname === "/favicon.png") {
+      const logo = await fetch("https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/logo.png");
+      return new Response(logo.body, {
+        headers: { "content-type": "image/png", "cache-control": "public, max-age=604800" },
+      });
+    }
+
+    // Landing page (HTML so Google's favicon crawler finds the <link rel="icon">)
     if (url.pathname === "/" || url.pathname === "") {
       return new Response(
-        `MCP Music Studio v0.2.0
-
-Two-mode creative music studio: scored composition (ABC notation) and live performance (Strudel live coding).
-
-Connect via MCP client:
-  URL: ${url.origin}/mcp
-
-Claude Desktop / claude.ai:
-  Add as Connector: ${url.origin}/mcp
-
-Claude Code:
-  claude mcp add --transport http music-studio ${url.origin}/mcp
-
-Source: https://github.com/linxule/mcp-music-studio
-`,
-        { headers: { "content-type": "text/plain" } },
+        `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>MCP Music Studio</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+</head><body style="font-family:system-ui;max-width:520px;margin:40px auto;color:#333">
+<h1>MCP Music Studio v0.2.0</h1>
+<p>Two-mode creative music studio: scored composition (ABC notation) and live performance (Strudel live coding).</p>
+<h3>Connect</h3>
+<ul>
+<li><strong>claude.ai / Claude Desktop:</strong> Add as Connector: <code>${url.origin}/mcp</code></li>
+<li><strong>Claude Code:</strong> <code>claude mcp add --transport http music-studio ${url.origin}/mcp</code></li>
+<li><strong>npm:</strong> <code>npx -y mcp-music-studio</code></li>
+</ul>
+<p><a href="https://github.com/linxule/mcp-music-studio">Source on GitHub</a></p>
+</body></html>`,
+        { headers: { "content-type": "text/html" } },
       );
     }
 

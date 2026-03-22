@@ -9,6 +9,12 @@
     "id": "1185354744"
   },
   "version": "0.2.0",
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/logo.png",
+      "mimeType": "image/png"
+    }
+  ],
   "packages": [
     {
       "registryType": "npm",
