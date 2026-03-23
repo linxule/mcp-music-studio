@@ -5,18 +5,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "migrations": [
     {
-      "tag": "v1",
-      "new_sqlite_classes": ["MusicStudioMCP"]
+      "tag": "v2",
+      "deleted_classes": ["MusicStudioMCP"]
     }
   ],
-  "durable_objects": {
-    "bindings": [
-      {
-        "class_name": "MusicStudioMCP",
-        "name": "MCP_OBJECT"
-      }
-    ]
-  },
   "kv_namespaces": [
     {
       "binding": "DOCS_CACHE",

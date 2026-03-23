@@ -7,7 +7,6 @@
 // =============================================================================
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { McpAgent } from "agents/mcp";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 
@@ -32,7 +31,6 @@ import strudelHtml from "../../dist/strudel-app.html";
 // =============================================================================
 
 type Env = {
-  MCP_OBJECT: DurableObjectNamespace;
   ANALYTICS: AnalyticsEngineDataset;
   DOCS_CACHE: KVNamespace;
   CONTEXT7_API_KEY: string;
@@ -533,17 +531,7 @@ function createMusicServer(env: Env): McpServer {
 }
 
 // =============================================================================
-// Keep McpAgent export for wrangler DO binding (required by config)
-// =============================================================================
-
-export class MusicStudioMCP extends McpAgent<Env, Record<string, never>, {}> {
-  server = new McpServer({ name: "Music Studio", version: "0.2.0" });
-  initialState = {};
-  async init() {}
-}
-
-// =============================================================================
-// Worker fetch handler — stateless createMcpHandler (no Durable Objects)
+// Worker fetch handler — stateless createMcpHandler
 // =============================================================================
 
 export default {
@@ -566,11 +554,14 @@ export default {
       return handler(request, env, ctx);
     }
 
-    // Favicon — proxy the logo for Google's favicon service (used by claude.ai Connectors)
+    // Favicon — redirect to GitHub raw (no proxy subrequests)
     if (url.pathname === "/favicon.ico" || url.pathname === "/favicon.png") {
-      const logo = await fetch("https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/logo.png");
-      return new Response(logo.body, {
-        headers: { "content-type": "image/png", "cache-control": "public, max-age=604800" },
+      return new Response(null, {
+        status: 301,
+        headers: {
+          Location: "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/logo.png",
+          "cache-control": "public, max-age=604800",
+        },
       });
     }
 
