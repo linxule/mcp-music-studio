@@ -8,7 +8,7 @@
     "source": "github",
     "id": "1185354744"
   },
-  "version": "0.2.0",
+  "version": "0.2.1",
   "icons": [
     {
       "src": "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/logo.png",
@@ -19,7 +19,7 @@
     {
       "registryType": "npm",
       "identifier": "mcp-music-studio",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "transport": {
         "type": "stdio"
       }

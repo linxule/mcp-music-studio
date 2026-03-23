@@ -260,7 +260,7 @@ async function renderAbc(
 // MCP Apps SDK Integration
 // =============================================================================
 
-const app = new App({ name: "Music Studio", version: "0.2.0" });
+const app = new App({ name: "Music Studio", version: "0.2.1" });
 appInstance = app;
 
 // Handle complete tool input

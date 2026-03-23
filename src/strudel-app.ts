@@ -13,7 +13,7 @@ import { App } from "@modelcontextprotocol/ext-apps";
 
 const STRUDEL_CDN = "https://unpkg.com/@strudel/repl@1.3.0";
 
-const app = new App({ name: "Strudel Live Pattern", version: "0.2.0" });
+const app = new App({ name: "Strudel Live Pattern", version: "0.2.1" });
 
 const playBtn = document.getElementById("play-btn") as HTMLButtonElement;
 const stopBtn = document.getElementById("stop-btn") as HTMLButtonElement;

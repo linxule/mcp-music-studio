@@ -1,6 +1,6 @@
 {
   "name": "mcp-music-studio",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Two-mode MCP music studio: scored composition (ABC notation) and live performance (Strudel). Interactive ext-apps UI with sheet music rendering, 30+ instruments, style presets, and live coding REPL.",
   "keywords": [

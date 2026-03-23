@@ -138,7 +138,7 @@ const STRUDEL_RESOURCE_URI = "ui://strudel/strudel-app.html";
 function createMusicServer(env: Env): McpServer {
   const server = new McpServer({
     name: "Music Studio",
-    version: "0.2.0",
+    version: "0.2.1",
   });
 
   // Advertise ext-apps support so clients know to render UI widgets
@@ -574,7 +574,7 @@ export default {
 <title>MCP Music Studio</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 </head><body style="font-family:system-ui;max-width:520px;margin:40px auto;color:#333">
-<h1>MCP Music Studio v0.2.0</h1>
+<h1>MCP Music Studio v0.2.1</h1>
 <p>Two-mode creative music studio: scored composition (ABC notation) and live performance (Strudel live coding).</p>
 <h3>Connect</h3>
 <ul>
