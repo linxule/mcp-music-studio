@@ -104,7 +104,7 @@ export function createServer(options?: ServerOptions): McpServer {
 
   const server = new McpServer({
     name: "Music Studio",
-    version: "0.2.1",
+    version: "0.3.0",
   });
 
   const resourceUri = "ui://sheet-music/mcp-app.html";

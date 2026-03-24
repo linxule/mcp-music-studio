@@ -81,6 +81,22 @@ html, body {
   border-color: var(--accent);
 }
 
+.control-btn.recording {
+  background: var(--error);
+  color: white;
+  border-color: var(--error);
+}
+
+.control-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.control-btn:disabled:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+
 .status {
   font-size: 12px;
   color: var(--text-secondary);

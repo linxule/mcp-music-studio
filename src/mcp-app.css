@@ -135,6 +135,15 @@ body {
   background: var(--color-border);
 }
 
+.toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.toolbar-btn:disabled:hover {
+  background: var(--color-card-bg);
+}
+
 /* Note highlighting during playback */
 .note-playing path,
 .note-playing circle,

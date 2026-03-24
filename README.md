@@ -33,6 +33,7 @@ Write sheet music → see it rendered → hear it played with multi-instrument a
 - **30 instruments** — piano, strings, brass, woodwinds, synths — selectable by name
 - **Visual sheet music** — notes highlight as they play
 - **Streaming render** — sheet music appears as the AI types
+- **WAV download** — export audio as WAV files directly from the UI
 - **`get-music-guide`** — 7 reference topics (instruments, drums, ABC syntax, arrangements, genres, styles, MIDI directives)
 
 ### Live Performance (Strudel)
@@ -42,6 +43,7 @@ Write code → hear it play → edit in a live REPL.
 - **72 drum machine banks** + **128 GM instruments** + built-in synths
 - **Full effects chain** — filters, reverb, delay, FM synthesis
 - **Editable REPL** — users can tweak the code and hear changes instantly
+- **Record & download** — capture live audio and export as WAV
 - **`get-strudel-guide`** — 7 reference topics (mini-notation, sounds, effects, patterns, genres, tips, advanced)
 
 ### Shared

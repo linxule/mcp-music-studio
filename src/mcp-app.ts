@@ -16,6 +16,7 @@ import {
   isStyleName,
   prepareToolInput,
 } from "./music-logic";
+import { audioBufferToWavBase64 } from "./wav-encoder";
 
 // =============================================================================
 // State
@@ -183,6 +184,57 @@ fullscreenBtn.addEventListener("click", () => {
 toolbarEl.appendChild(fullscreenBtn);
 
 // =============================================================================
+// Download Button
+// =============================================================================
+
+const downloadBtn = document.createElement("button");
+downloadBtn.className = "toolbar-btn";
+downloadBtn.textContent = "↓";
+downloadBtn.title = "Download audio (WAV)";
+downloadBtn.disabled = true;
+toolbarEl.appendChild(downloadBtn);
+
+function extractTitle(abc: string | null): string {
+  if (!abc) return "music";
+  const match = abc.match(/T:\s*(.+)/);
+  return match ? match[1].trim().replace(/[^a-zA-Z0-9_-]/g, "_") : "music";
+}
+
+downloadBtn.addEventListener("click", async () => {
+  if (!state.synthControl) return;
+  // getAudioBuffer() lives on the internal CreateSynth (midiBuffer), not on SynthController
+  const midiBuffer = (state.synthControl as any).midiBuffer;
+  const audioBuffer: AudioBuffer | undefined = midiBuffer?.getAudioBuffer?.();
+  if (!audioBuffer) {
+    setStatus("Play first to generate audio", true);
+    return;
+  }
+  downloadBtn.disabled = true;
+  downloadBtn.textContent = "...";
+  try {
+    const wavBase64 = audioBufferToWavBase64(audioBuffer);
+    const title = extractTitle(state.currentAbc);
+    await app.downloadFile({
+      contents: [
+        {
+          type: "resource",
+          resource: {
+            uri: `file:///${title}.wav`,
+            mimeType: "audio/wav",
+            blob: wavBase64,
+          },
+        },
+      ],
+    });
+  } catch (err) {
+    setStatus(`Download failed: ${(err as Error).message}`, true);
+  } finally {
+    downloadBtn.disabled = false;
+    downloadBtn.textContent = "↓";
+  }
+});
+
+// =============================================================================
 // ABC Rendering
 // =============================================================================
 
@@ -240,6 +292,7 @@ async function renderAbc(
 
     // Show toolbar once we have content
     toolbarEl.classList.add("visible");
+    downloadBtn.disabled = false;
 
     // Autoplay — attempt to start playback immediately
     // (may be blocked by browser autoplay policy until user clicks)
@@ -260,7 +313,7 @@ async function renderAbc(
 // MCP Apps SDK Integration
 // =============================================================================
 
-const app = new App({ name: "Music Studio", version: "0.2.1" });
+const app = new App({ name: "Music Studio", version: "0.3.0" });
 appInstance = app;
 
 // Handle complete tool input
