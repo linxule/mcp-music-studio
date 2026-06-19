@@ -51,6 +51,38 @@ export const SERVER_INSTRUCTIONS =
   '("C", "Am7") above the notes and set a style.';
 
 // -----------------------------------------------------------------------------
+// Server identity — icon + website (emitted verbatim in serverInfo by both
+// transports). The `icons` field entered the MCP spec in 2025-11-25; SDK 1.27.1
+// carries it through the initialize response. Spec-current clients (e.g. MCP
+// Inspector) render it; older-protocol clients ignore it harmlessly. Points at a
+// 256px square variant — not the 1MB master — so the connect handshake stays light.
+// -----------------------------------------------------------------------------
+
+export const WEBSITE_URL = "https://mcp-music-studio.linxule.workers.dev";
+
+/** Canonical square icon, served from the repo via GitHub raw (direct bytes). */
+export const LOGO_URL =
+  "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/icons/logo-256.png";
+
+/**
+ * serverInfo.icons for the LOCAL (stdio) server. Plain (non-`as const`) array so
+ * it stays assignable to the SDK's mutable `Icon[]`, and structurally typed so it
+ * satisfies either transport's separately-bundled McpServer.
+ */
+export const SERVER_ICONS = [
+  { src: LOGO_URL, mimeType: "image/png", sizes: ["256x256"] },
+];
+
+/**
+ * serverInfo.icons for the WORKER (remote). Uses the worker's own /icon.png
+ * (same-origin as /mcp, direct bytes — no 301) so clients that restrict icon URLs
+ * to the server's domain accept it.
+ */
+export const WORKER_SERVER_ICONS = [
+  { src: `${WEBSITE_URL}/icon.png`, mimeType: "image/png", sizes: ["256x256"] },
+];
+
+// -----------------------------------------------------------------------------
 // Tool annotations (MCP hints — all tools here are read-only, non-destructive)
 // -----------------------------------------------------------------------------
 
@@ -179,6 +211,8 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "Layer drums, synths, and bass with stack(). Choose from 72 drum machine banks, " +
   "128 GM instruments, built-in synths, and a full effects chain. " +
   "Patterns play in a REPL the user can edit directly. " +
+  "Add .pianoroll() to a pattern to show a live piano-roll animation in the widget " +
+  "(or .punchcard()/.scope()/.spectrum() — use one visual per pattern). " +
   "Use get-strudel-guide for genre templates, sound references, and advanced features " +
   "like visualization, arrangement, and sample loading.";
 

@@ -87,6 +87,12 @@ html, body {
   border-color: var(--error);
 }
 
+.control-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
 .control-btn:disabled {
   opacity: 0.4;
   cursor: default;
@@ -111,15 +117,50 @@ html, body {
   color: var(--error);
 }
 
+/* Visualization backdrop — the pre-created #test-canvas (see HTML) sits BEHIND
+   the code editor (native strudel.cc look). Hidden until a viz method is in play
+   or the user toggles "Visuals"; the editor then gets a translucent scrim so the
+   code stays readable over the animation. */
 .repl-section {
   flex: 1;
+  position: relative;   /* positioning context for the backdrop canvas */
+  overflow: hidden;     /* the editor scrolls inside #strudel-container */
+  min-height: 350px;
+}
+
+.viz-canvas {
+  display: none;        /* revealed via .viz-on; still found by getDrawContext */
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  background: #14111d;  /* dark stage so the purple/blue visuals read well */
+}
+
+.strudel-container {
+  position: relative;
+  z-index: 1;           /* code editor stacks above the backdrop canvas */
+  width: 100%;
+  height: 100%;
   overflow: auto;
   min-height: 350px;
 }
 
-.strudel-container {
-  width: 100%;
-  min-height: 350px;
+/* Visuals active: reveal the backdrop and make the editor translucent so the
+   animation shows through behind readable text (matches strudel.cc). */
+.repl-section.viz-on .viz-canvas {
+  display: block;
+}
+
+.repl-section.viz-on .cm-editor,
+.repl-section.viz-on .cm-scroller {
+  background-color: rgba(20, 17, 29, 0.55) !important;
+}
+
+.repl-section.viz-on .cm-gutters {
+  background-color: rgba(20, 17, 29, 0.35) !important;
 }
 
 /* CDN load-failure recovery affordance */
@@ -161,8 +202,10 @@ html, body {
    Fix: hide the blank canvas, ensure the editor sibling is visible
    ========================================================================== */
 
-/* Hide the full-viewport visualization canvas */
-body > canvas[style*="position"] {
+/* Hide a STRAY full-viewport visualization canvas, but never our pre-created
+   #test-canvas (which lives in .repl-section, not as a body child — the :not()
+   is belt-and-suspenders in case a fallback ever creates one). */
+body > canvas[style*="position"]:not(#test-canvas) {
   display: none !important;
 }
 

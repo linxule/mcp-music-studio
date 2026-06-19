@@ -677,22 +677,37 @@ Fills:    .every(8, s("bd sd [sd sd] [sd sd sd sd]"))`,
   advanced: `# Strudel Advanced Features
 
 ## Visualization
-Add to any pattern to see it visually.
+Add ONE visualization method to a pattern to see it animate live in the widget.
+The animation renders BEHIND the code (like strudel.cc) and appears automatically
+when your pattern includes a visual — the user can also toggle it with the
+"Visuals" button. This works inline in ext-apps hosts (Claude Desktop) — encourage it!
 
-.pianoroll()           scrolling piano roll (best for melodies)
-.pianoroll({cycles:4}) show 4 cycles
-.scope()               oscilloscope (time-domain waveform)
-.fscope()              frequency spectrum
-.spiral()              circular spiral display
+.pianoroll()              scrolling piano roll (best for melodies/chords)
+.pianoroll({ cycles: 4 }) show 4 cycles at once
+.punchcard()              grid of note blocks (good for drums/rhythm)
+.scope()                  oscilloscope — time-domain waveform (needs audio playing)
+.spectrum()               frequency-spectrum analyzer (needs audio playing)
+.pitchwheel()             notes arranged around a color wheel
+.spiral()                 spiral display
 
 Example:
 note("c3 e3 g3 c4").s("sawtooth").lpf(2000).pianoroll()
 
-**Note:** Visualization works in browser mode (--render-mode browser) and
-standalone Strudel.cc. In ext-apps (Claude Desktop inline widget), the
-visualization canvas is hidden for layout reasons — the code editor takes
-priority. Audio and the editable REPL still work; only the visual display
-is suppressed. If you want visualization, suggest the user open in browser.
+### pianoroll options
+.pianoroll({ cycles: 4, playhead: 0.5, vertical: 0, labels: 1, fold: 0 })
+  cycles    how many cycles are visible at once (default 4)
+  playhead  position of the now-line, 0–1 (default 0.5)
+  vertical  1 = scroll vertically instead of horizontally
+  labels    1 = draw note-name labels
+  fold      1 = collapse unused pitch rows
+
+### Important: one visual per pattern
+All visuals share a single canvas, so use only ONE visualization method per
+pattern. Two at once (e.g. .scope().pianoroll()) makes them fight over the same
+surface. .scope()/.spectrum() animate only while audio is playing;
+.pianoroll()/.punchcard() animate from the pattern's note schedule. Tip: the
+pianoroll updates live as the user edits and re-runs (Ctrl+Enter) — a great way
+to *see* what the code is doing.
 
 ## Loading Extra Samples
 Load additional sample packs at runtime:

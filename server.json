@@ -8,18 +8,20 @@
     "source": "github",
     "id": "1185354744"
   },
-  "version": "0.4.0",
+  "version": "0.4.1",
+  "websiteUrl": "https://mcp-music-studio.linxule.workers.dev",
   "icons": [
     {
       "src": "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/logo.png",
-      "mimeType": "image/png"
+      "mimeType": "image/png",
+      "sizes": ["1024x1024"]
     }
   ],
   "packages": [
     {
       "registryType": "npm",
       "identifier": "mcp-music-studio",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "transport": {
         "type": "stdio"
       }

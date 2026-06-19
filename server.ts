@@ -58,6 +58,8 @@ import {
   searchDocsInputSchema,
   searchMusicDocs,
   registerMusicPrompts,
+  SERVER_ICONS,
+  WEBSITE_URL,
 } from "./src/shared/tool-defs.js";
 
 const DIST_DIR = import.meta.filename.endsWith(".ts")
@@ -114,7 +116,12 @@ export function createServer(options?: ServerOptions): McpServer {
   const outputDir = options?.outputDir;
 
   const server = new McpServer(
-    { name: "Music Studio", version: VERSION },
+    {
+      name: "Music Studio",
+      version: VERSION,
+      icons: SERVER_ICONS,
+      websiteUrl: WEBSITE_URL,
+    },
     { instructions: SERVER_INSTRUCTIONS },
   );
 
