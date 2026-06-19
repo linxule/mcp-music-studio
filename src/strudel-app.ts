@@ -1,11 +1,14 @@
 // =============================================================================
 // Strudel ext-apps client — uses @strudel/repl with layout fixes
 //
-// @strudel/repl's <strudel-editor> renders:
-//   1. A position:fixed canvas prepended to document.body (visualization)
-//   2. The CodeMirror editor in a sibling div (not inside the element)
-// We fix the layout by hiding the blank canvas and ensuring the editor
-// sibling is visible and properly sized.
+// @strudel/repl's <strudel-editor> (StrudelMirror) renders:
+//   1. A visualization canvas via getDrawContext("test-canvas"). We pre-create
+//      that canvas in static HTML so it's REUSED as an in-flow backdrop instead
+//      of a position:fixed body canvas (see strudel-app.html / .css).
+//   2. The CodeMirror editor inside a wrapper <div> whose background is set
+//      INLINE to var(--background) — an OPAQUE dark fill. That wrapper sits over
+//      the backdrop canvas and hides it; .viz-on makes it transparent in CSS so
+//      the animation shows behind the code (the v0.4.1→v0.4.2 occlusion fix).
 // =============================================================================
 
 import "./strudel-app.css";
@@ -508,7 +511,14 @@ fullscreenBtn.addEventListener("click", () => {
 });
 
 // Visuals toggle — once clicked, the user's choice sticks across re-renders.
+// Guard the reveal: visuals only PAINT when the pattern has a viz method, so
+// turning them on for a plain pattern would show an empty dark stage. Turning
+// OFF always works; turning ON requires a draw method (else nudge the user).
 vizBtn.addEventListener("click", () => {
+  if (!vizVisible && !VIZ_METHOD_RE.test(getLiveCode())) {
+    setStatus("Add .scope(), .pianoroll() or .spectrum() to the pattern to see visuals", "normal");
+    return;
+  }
   vizManual = true;
   vizVisible = !vizVisible;
   applyVizVisibility();
