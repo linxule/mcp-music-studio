@@ -16,7 +16,7 @@ describe("play-live-pattern handler", () => {
     expect(result.content).toHaveLength(1);
     expect(result.content[0]?.type).toBe("text");
     expect(result.content[0]?.text).toContain('"Test Beat"');
-    expect(result.content[0]?.text).toContain("Strudel pattern playing");
+    expect(result.content[0]?.text).toContain("Strudel pattern ready");
   });
 
   it("returns text result without title", async () => {
@@ -24,7 +24,11 @@ describe("play-live-pattern handler", () => {
       code: 's("bd sd")',
     });
 
-    expect(result.content[0]?.text).toBe("Strudel pattern playing.");
+    expect(result.content[0]?.text).toBe(
+      "Strudel pattern ready. It plays in an editable REPL widget in MCP-app hosts " +
+        "(e.g. Claude Desktop, claude.ai). If you don't see a player here, this client can't play it " +
+        "inline, so nothing has played yet.",
+    );
     expect(result.content[0]?.text).not.toContain('"');
   });
 });

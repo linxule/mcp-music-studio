@@ -6,6 +6,9 @@ dist/
 CLAUDE.md
 .claude/
 
+# Local-only internal docs (audit reports, working notes) — not for the public repo
+docs/internal/
+
 # wrangler files
 .wrangler
 .dev.vars*

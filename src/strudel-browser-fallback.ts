@@ -3,7 +3,8 @@
 // In browser mode (not iframe sandbox), the full REPL renders correctly.
 // =============================================================================
 
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -179,18 +180,18 @@ export async function openStrudelInBrowser(
   const dir = outputDir ?? path.join(os.homedir(), "Desktop", "mcp-music-studio");
   await fs.mkdir(dir, { recursive: true });
 
-  const filename = `strudel-${Date.now()}.html`;
+  const filename = `strudel-${randomUUID()}.html`;
   const filepath = path.join(dir, filename);
   await fs.writeFile(filepath, html, "utf-8");
 
-  const cmd =
-    process.platform === "darwin"
-      ? `open "${filepath}"`
-      : process.platform === "win32"
-        ? `start "" "${filepath}"`
-        : `xdg-open "${filepath}"`;
-
-  exec(cmd, () => {});
+  // Use execFile with an argv array so no shell parses the path.
+  const openErr = (err: Error | null) => {
+    if (err) console.error("Failed to open browser:", err.message);
+  };
+  if (process.platform === "darwin") execFile("open", [filepath], openErr);
+  else if (process.platform === "win32")
+    execFile("cmd", ["/c", "start", "", filepath], openErr);
+  else execFile("xdg-open", [filepath], openErr);
 
   return filepath;
 }

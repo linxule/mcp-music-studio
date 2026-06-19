@@ -2,7 +2,8 @@
  * Browser fallback for non-UI MCP clients.
  * Generates a self-contained HTML player and opens it in the default browser.
  */
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -434,20 +435,20 @@ export async function openPlayerInBrowser(
   const outDir = outputDir ?? path.join(os.homedir(), "Desktop", "mcp-music-studio");
   await fs.mkdir(outDir, { recursive: true });
 
-  const filename = `player-${Date.now()}.html`;
+  const filename = `player-${randomUUID()}.html`;
   const filepath = path.join(outDir, filename);
   await fs.writeFile(filepath, html, "utf-8");
 
-  // Try to open in default browser (may fail in sandboxed environments)
+  // Try to open in default browser (may fail in sandboxed environments).
+  // Use execFile with an argv array so no shell parses the path.
   const platform = process.platform;
-  let cmd: string;
-  if (platform === "darwin") cmd = `open "${filepath}"`;
-  else if (platform === "win32") cmd = `start "" "${filepath}"`;
-  else cmd = `xdg-open "${filepath}"`;
-
-  exec(cmd, (err) => {
+  const openErr = (err: Error | null) => {
     if (err) console.error("Failed to open browser:", err.message);
-  });
+  };
+  if (platform === "darwin") execFile("open", [filepath], openErr);
+  else if (platform === "win32")
+    execFile("cmd", ["/c", "start", "", filepath], openErr);
+  else execFile("xdg-open", [filepath], openErr);
 
   return filepath;
 }

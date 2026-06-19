@@ -1,6 +1,6 @@
 {
   "name": "mcp-music-studio",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Two-mode MCP music studio: scored composition (ABC notation) and live performance (Strudel). Interactive ext-apps UI with sheet music rendering, 30+ instruments, style presets, and live coding REPL.",
   "keywords": [
@@ -33,7 +33,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc --noEmit && cross-env INPUT=mcp-app.html vite build && cross-env INPUT=strudel-app.html vite build && tsc -p tsconfig.server.json && bun build server.ts --outdir dist --target node && bun build main.ts --outfile dist/index.js --target node --external \"./server.js\" --banner \"#!/usr/bin/env node\"",
+    "build": "bun scripts/sync-version.mjs && tsc --noEmit && cross-env INPUT=mcp-app.html vite build && cross-env INPUT=strudel-app.html vite build && tsc -p tsconfig.server.json && bun build server.ts --outdir dist --target node && bun build main.ts --outfile dist/index.js --target node --external \"./server.js\" --banner \"#!/usr/bin/env node\"",
     "test": "bunx vitest run",
     "test:watch": "bunx vitest",
     "watch": "cross-env INPUT=mcp-app.html vite build --watch",

@@ -2,7 +2,12 @@
  * @file Sheet Music App — renders ABC notation with abcjs, multi-instrument audio,
  *       style presets, note highlighting, and playback controls.
  */
-import { App, type McpUiHostContext } from "@modelcontextprotocol/ext-apps";
+import {
+  App,
+  applyDocumentTheme,
+  applyHostStyleVariables,
+  type McpUiHostContext,
+} from "@modelcontextprotocol/ext-apps";
 import ABCJS from "abcjs";
 import type { NoteTimingEvent, CursorControl, SynthOptions } from "abcjs";
 import "abcjs/abcjs-audio.css";
@@ -17,6 +22,7 @@ import {
   prepareToolInput,
 } from "./music-logic";
 import { audioBufferToWavBase64 } from "./wav-encoder";
+import { VERSION } from "./version";
 
 // =============================================================================
 // State
@@ -178,6 +184,7 @@ const fullscreenBtn = document.createElement("button");
 fullscreenBtn.className = "toolbar-btn";
 fullscreenBtn.textContent = "⛶";
 fullscreenBtn.title = "Toggle fullscreen";
+fullscreenBtn.setAttribute("aria-label", "Toggle fullscreen");
 fullscreenBtn.addEventListener("click", () => {
   appInstance?.requestDisplayMode({ mode: "fullscreen" });
 });
@@ -191,8 +198,18 @@ const downloadBtn = document.createElement("button");
 downloadBtn.className = "toolbar-btn";
 downloadBtn.textContent = "↓";
 downloadBtn.title = "Download audio (WAV)";
+downloadBtn.setAttribute("aria-label", "Download audio as WAV");
 downloadBtn.disabled = true;
 toolbarEl.appendChild(downloadBtn);
+
+// Whether the host supports host-mediated downloads (set after connect).
+// On hosts without this capability (e.g. Claude mobile), the button stays
+// hidden so users don't hit a -32601 "method not found" error.
+// Default false: stay disabled until the capability is confirmed (avoids a
+// race window where the button is clickable before connect() resolves).
+let downloadSupported = false;
+// Whether the host supports widget→chat messages (ui/message). Gates the Send button.
+let messageSupported = false;
 
 function extractTitle(abc: string | null): string {
   if (!abc) return "music";
@@ -235,12 +252,69 @@ downloadBtn.addEventListener("click", async () => {
 });
 
 // =============================================================================
+// Send to Chat Button (roundtrip edited ABC back to the conversation)
+// =============================================================================
+
+const sendBtn = document.createElement("button");
+sendBtn.className = "toolbar-btn";
+sendBtn.textContent = "↗";
+sendBtn.title = "Send this ABC to chat";
+sendBtn.setAttribute("aria-label", "Send this ABC notation to the chat");
+sendBtn.disabled = true;
+// Start hidden; revealed only after the host confirms ui/message support
+// (matches the Strudel widget, avoids a flash on unsupported hosts).
+sendBtn.hidden = true;
+toolbarEl.appendChild(sendBtn);
+
+sendBtn.addEventListener("click", async () => {
+  if (!state.currentAbc) return;
+  sendBtn.disabled = true;
+  sendBtn.textContent = "...";
+  try {
+    await app.sendMessage({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: "Here's my ABC notation:\n```\n" + state.currentAbc + "\n```",
+        },
+      ],
+    });
+  } catch (err) {
+    setStatus(`Send failed: ${(err as Error).message}`, true);
+  } finally {
+    sendBtn.disabled = false;
+    sendBtn.textContent = "↗";
+  }
+});
+
+// =============================================================================
 // ABC Rendering
 // =============================================================================
 
 function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
   statusEl.classList.toggle("error", isError);
+}
+
+// Toggle a lightweight loading skeleton/spinner in the sheet area.
+// Used during streaming before the score is renderable.
+function setLoading(text: string): void {
+  setStatus(text);
+  if (!state.visualObj) {
+    // Build via DOM API (not innerHTML) so this never becomes an injection sink.
+    const skeleton = document.createElement("div");
+    skeleton.className = "loading-skeleton";
+    skeleton.setAttribute("role", "status");
+    skeleton.setAttribute("aria-live", "polite");
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.textContent = text;
+    skeleton.append(spinner, label);
+    sheetMusicEl.replaceChildren(skeleton);
+  }
 }
 
 async function renderAbc(
@@ -292,16 +366,19 @@ async function renderAbc(
 
     // Show toolbar once we have content
     toolbarEl.classList.add("visible");
-    downloadBtn.disabled = false;
+    downloadBtn.disabled = !downloadSupported;
+    sendBtn.disabled = !messageSupported;
 
     // Autoplay — attempt to start playback immediately
-    // (may be blocked by browser autoplay policy until user clicks)
-    try {
-      state.synthControl.play();
-      setStatus("Playing...");
-    } catch {
-      setStatus("Ready to play!");
-    }
+    // (may be blocked by browser autoplay policy until user clicks).
+    // play() returns a Promise, so a synchronous try/catch never fires —
+    // attach to the promise to report the real outcome.
+    (state.synthControl.play() as Promise<void> | undefined)
+      ?.then(() => setStatus("Playing..."))
+      .catch((e) => {
+        console.debug("Autoplay blocked:", e);
+        setStatus("Click ▶ to play");
+      });
   } catch (error) {
     console.error("Render error:", error);
     setStatus(`Error: ${(error as Error).message}`, true);
@@ -313,7 +390,7 @@ async function renderAbc(
 // MCP Apps SDK Integration
 // =============================================================================
 
-const app = new App({ name: "Music Studio", version: "0.3.0" });
+const app = new App({ name: "Music Studio", version: VERSION });
 appInstance = app;
 
 // Handle complete tool input
@@ -357,7 +434,7 @@ app.ontoolinputpartial = (params) => {
 
   // Only attempt render if we have at least a key signature (minimum viable ABC)
   if (!abcNotation.match(/K:[^\n]+/)) {
-    setStatus("Composing...");
+    setLoading("Composing…");
     return;
   }
 
@@ -391,7 +468,52 @@ app.ontoolinputpartial = (params) => {
 
 app.onerror = console.error;
 
+// Reset playback/highlight state when a compose is cancelled or torn down.
+function stopPlayback(): void {
+  try {
+    state.synthControl?.pause();
+  } catch {
+    // synthControl may not be loaded yet — ignore
+  }
+  state.highlightedEls.forEach((el) => el.classList.remove("note-playing"));
+  state.highlightedEls = [];
+}
+
+// Cancel any pending debounced partial render so a stale timer can't fire
+// after a cancel/teardown and re-render old ABC or reset the status.
+function cancelPartialRender(): void {
+  if (partialRenderTimer) {
+    clearTimeout(partialRenderTimer);
+    partialRenderTimer = null;
+  }
+  lastPartialAbc = "";
+}
+
+// Tool cancelled — clear the stale "Composing…" status so the UI isn't stuck.
+app.ontoolcancelled = (params) => {
+  stopPlayback();
+  cancelPartialRender();
+  const reason = params?.reason ? ` (${params.reason})` : "";
+  setStatus(`Composition cancelled${reason}.`);
+};
+
+// Host is tearing down this instance — stop audio so a discarded widget
+// leaves nothing playing.
+app.onteardown = () => {
+  stopPlayback();
+  cancelPartialRender();
+  return {};
+};
+
 function handleHostContextChanged(ctx: McpUiHostContext) {
+  // Follow the host-driven theme (which may differ from the OS preference).
+  if (ctx.theme) {
+    applyDocumentTheme(ctx.theme);
+  }
+  // Apply host-provided CSS variable tokens, if any.
+  if (ctx.styles?.variables) {
+    applyHostStyleVariables(ctx.styles.variables);
+  }
   if (ctx.safeAreaInsets) {
     mainEl.style.paddingTop = `${ctx.safeAreaInsets.top}px`;
     mainEl.style.paddingRight = `${ctx.safeAreaInsets.right}px`;
@@ -403,6 +525,25 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
 app.onhostcontextchanged = handleHostContextChanged;
 
 app.connect().then(() => {
+  // Gate the download button on host capability — Claude mobile lacks
+  // downloadFile, so calling it returns -32601. Hide the button there.
+  downloadSupported = Boolean(app.getHostCapabilities()?.downloadFile);
+  if (!downloadSupported) {
+    downloadBtn.hidden = true;
+    downloadBtn.disabled = true;
+    downloadBtn.title = "Audio download isn't supported by this host";
+  }
+
+  // Gate the Send-to-chat button on the host's message capability so it can't
+  // throw -32601 on hosts that don't advertise ui/message. Reveal only when supported.
+  messageSupported = Boolean(app.getHostCapabilities()?.message);
+  if (messageSupported) {
+    sendBtn.hidden = false;
+  } else {
+    sendBtn.disabled = true;
+    sendBtn.title = "Sending to chat isn't supported by this host";
+  }
+
   const ctx = app.getHostContext();
   if (ctx) {
     handleHostContextChanged(ctx);
