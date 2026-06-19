@@ -43,6 +43,7 @@ Write code → hear it play → edit in a live REPL.
 - **72 drum machine banks** + **128 GM instruments** + built-in synths
 - **Full effects chain** — filters, reverb, delay, FM synthesis
 - **Editable REPL** — users can tweak the code and hear changes instantly
+- **Live visuals** — add `.pianoroll()` / `.scope()` / `.spectrum()` to animate behind the code (native strudel.cc overlay)
 - **Record & download** — capture live audio and export as WAV
 - **`get-strudel-guide`** — 7 reference topics (mini-notation, sounds, effects, patterns, genres, tips, advanced)
 
