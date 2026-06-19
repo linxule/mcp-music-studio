@@ -45,6 +45,8 @@ import {
   searchDocsInputSchema,
   searchMusicDocs,
   registerMusicPrompts,
+  WORKER_SERVER_ICONS,
+  WEBSITE_URL,
 } from "../../src/shared/tool-defs.js";
 
 // Bundled ext-apps HTML (wrangler imports as text via rules config)
@@ -143,7 +145,12 @@ const EXT_APPS_MIME = "text/html;profile=mcp-app" as const;
 
 function createMusicServer(env: Env): McpServer {
   const server = new McpServer(
-    { name: "Music Studio", version: VERSION },
+    {
+      name: "Music Studio",
+      version: VERSION,
+      icons: WORKER_SERVER_ICONS,
+      websiteUrl: WEBSITE_URL,
+    },
     { instructions: SERVER_INSTRUCTIONS },
   );
 
@@ -352,6 +359,34 @@ export default {
         },
       );
       return handler(request, env, ctx);
+    }
+
+    // Server icon for MCP client UIs (serverInfo.icons → this URL). Proxies the
+    // 256px variant as DIRECT bytes — no 301, since some icon-fetchers won't
+    // follow redirects — and same-origin as /mcp so domain-restricted clients
+    // accept it. Distinct from /favicon.* below, which stays a redirect for
+    // browsers/crawlers.
+    if (url.pathname === "/icon.png") {
+      try {
+        const upstream = await fetch(
+          "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/icons/logo-256.png",
+        );
+        if (!upstream.ok) {
+          // Don't relay a 404 HTML/text page under content-type: image/png.
+          return new Response("icon unavailable", { status: 502 });
+        }
+        return new Response(upstream.body, {
+          status: 200,
+          headers: {
+            "content-type": "image/png",
+            "cache-control": "public, max-age=86400",
+            "access-control-allow-origin": "*",
+          },
+        });
+      } catch {
+        // fetch can throw (DNS/timeout) — keep the worker from crashing.
+        return new Response("icon unavailable", { status: 502 });
+      }
     }
 
     // Favicon — redirect to GitHub raw (no proxy subrequests)

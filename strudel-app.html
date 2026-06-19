@@ -14,12 +14,22 @@
         <button id="record-btn" class="control-btn" title="Record audio" aria-label="Record audio" disabled>Record</button>
         <button id="download-btn" class="control-btn" title="Download recording" aria-label="Download recording" disabled>↓</button>
         <button id="send-btn" class="control-btn" title="Send current pattern to chat" aria-label="Send current pattern to chat" hidden>Send to chat</button>
+        <button id="viz-btn" class="control-btn" title="Toggle visuals" aria-label="Toggle visuals" aria-pressed="false">Visuals</button>
         <button id="fullscreen-btn" class="control-btn" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button>
         <span id="status" class="status" role="status" aria-live="polite">Ready</span>
       </div>
     </header>
 
     <section class="repl-section">
+      <!--
+        Viz canvas as a BACKDROP behind the code (native strudel.cc look). It's
+        pre-created in STATIC HTML so Strudel's getDrawContext() finds it by id and
+        reuses it, instead of prepending a position:fixed canvas to <body>. Hidden
+        until a pattern includes a viz method (.pianoroll() etc.) or the user
+        toggles "Visuals"; the code editor sits on top with a translucent scrim.
+        JS owns the DPR-correct backing size.
+      -->
+      <canvas id="test-canvas" class="viz-canvas"></canvas>
       <div id="strudel-container" class="strudel-container">
         <!-- strudel-editor web component will be created here -->
       </div>

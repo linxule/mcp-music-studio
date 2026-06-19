@@ -4,6 +4,7 @@ import {
   STRUDEL_GUIDE_TOPICS,
   STRUDEL_GUIDES,
 } from "../src/strudel-guide";
+import { PLAY_LIVE_BASE_DESCRIPTION } from "../src/shared/tool-defs";
 
 describe("play-live-pattern handler", () => {
   it("returns text result with title", async () => {
@@ -48,5 +49,31 @@ describe("get-strudel-guide handler", () => {
 
   it("covers all 7 topics", () => {
     expect(STRUDEL_GUIDE_TOPICS).toHaveLength(7);
+  });
+});
+
+describe("strudel visualization guidance (v0.4.1)", () => {
+  const advanced = STRUDEL_GUIDES.advanced;
+
+  it("encourages visualization with concrete methods", () => {
+    expect(advanced).toContain(".pianoroll()");
+    expect(advanced).toContain(".punchcard()");
+    expect(advanced).toContain(".scope()");
+    expect(advanced).toContain(".spectrum()");
+  });
+
+  it("no longer claims visuals are suppressed/hidden in ext-apps", () => {
+    const lower = advanced.toLowerCase();
+    expect(lower).not.toContain("suppress");
+    expect(lower).not.toContain("canvas is hidden");
+    expect(lower).not.toContain("open in browser");
+  });
+
+  it("documents the one-visual-per-pattern rule", () => {
+    expect(advanced.toLowerCase()).toContain("one visual");
+  });
+
+  it("nudges visualization from the play-live tool description", () => {
+    expect(PLAY_LIVE_BASE_DESCRIPTION).toContain("pianoroll");
   });
 });

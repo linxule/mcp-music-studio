@@ -22,6 +22,9 @@ const recordBtn = document.getElementById("record-btn") as HTMLButtonElement;
 const downloadBtn = document.getElementById("download-btn") as HTMLButtonElement;
 const sendBtn = document.getElementById("send-btn") as HTMLButtonElement;
 const fullscreenBtn = document.getElementById("fullscreen-btn") as HTMLButtonElement;
+const vizBtn = document.getElementById("viz-btn") as HTMLButtonElement;
+const replSection = document.querySelector(".repl-section") as HTMLElement;
+const vizCanvas = document.getElementById("test-canvas") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 const container = document.getElementById("strudel-container")!;
 
@@ -29,6 +32,16 @@ let editorEl: HTMLElement | null = null;
 let currentCode = "";
 let isPlaying = false;
 let cdnLoaded = false;
+
+// Visualization panel. The pattern's code decides whether a visual shows: the
+// panel auto-reveals when the code contains a viz method, unless the user has
+// manually toggled it (vizManual sticks their choice across re-renders).
+let vizVisible = false;
+let vizManual = false;
+let vizResizeObserver: ResizeObserver | null = null;
+// Strudel viz methods that paint to #test-canvas (all resolve via getDrawContext).
+const VIZ_METHOD_RE =
+  /\.(pianoroll|punchcard|wordfall|spiral|pitchwheel|tscope|scope|fscope|spectrum)\s*\(/;
 
 // Host capabilities (populated after connect)
 let canDownload = false;
@@ -146,9 +159,11 @@ function waitForEditor(timeout = 8000): Promise<any> {
  * - Ensure the CodeMirror sibling div is visible
  */
 function fixLayout(): void {
-  // Hide the full-viewport visualization canvas
-  // (prepended to document.body by @strudel/draw's getDrawContext)
+  // Hide a STRAY full-viewport canvas (prepended to document.body by
+  // @strudel/draw's getDrawContext) — but never our own pre-created
+  // #test-canvas, which getDrawContext should be reusing instead.
   document.querySelectorAll("body > canvas").forEach((canvas) => {
+    if ((canvas as HTMLElement).id === "test-canvas") return;
     const style = (canvas as HTMLElement).style;
     if (style.position === "fixed") {
       style.display = "none";
@@ -163,6 +178,41 @@ function fixLayout(): void {
       sibling.style.minHeight = "200px";
       sibling.style.flex = "1";
     }
+  }
+}
+
+// =============================================================================
+// Visualization panel
+// =============================================================================
+
+/**
+ * Match the canvas backing store to the panel's CSS size × devicePixelRatio so
+ * Strudel's pianoroll/scope render crisply (it reads canvas.width/height every
+ * frame and clears with clearRect). The ext-apps iframe makes window.innerWidth
+ * unreliable, so we measure the panel element directly (+ ResizeObserver).
+ */
+function syncVizCanvasSize(): void {
+  if (!vizVisible) return;
+  // The backdrop canvas fills the repl section; measure that element directly.
+  const w = replSection.clientWidth;
+  const h = replSection.clientHeight;
+  if (w === 0 || h === 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  const bw = Math.round(w * dpr);
+  const bh = Math.round(h * dpr);
+  if (vizCanvas.width !== bw) vizCanvas.width = bw;
+  if (vizCanvas.height !== bh) vizCanvas.height = bh;
+}
+
+/** Reflect viz visibility on the backdrop + editor scrim + toggle button. */
+function applyVizVisibility(): void {
+  // .viz-on reveals the backdrop canvas and makes the editor translucent (CSS).
+  replSection.classList.toggle("viz-on", vizVisible);
+  vizBtn.classList.toggle("active", vizVisible);
+  vizBtn.setAttribute("aria-pressed", String(vizVisible));
+  if (vizVisible) {
+    // Backdrop just gained layout — size the backing store on the next frame.
+    requestAnimationFrame(syncVizCanvasSize);
   }
 }
 
@@ -340,6 +390,17 @@ async function renderPattern(args: Record<string, unknown>) {
     }
     currentCode = finalCode;
 
+    // Auto-reveal the visuals when the pattern includes a viz method, unless the
+    // user has taken manual control of the "Visuals" toggle. Scan a copy with //
+    // line comments stripped so a commented-out ".pianoroll()" (the guide uses
+    // such examples) doesn't flip the scrim on with nothing to draw. The (^|[^:])
+    // guard avoids stripping the "//" inside protocol URLs like https://….
+    if (!vizManual) {
+      const codeForVizScan = finalCode.replace(/(^|[^:])\/\/.*$/gm, "$1");
+      vizVisible = VIZ_METHOD_RE.test(codeForVizScan);
+      applyVizVisibility();
+    }
+
     // Create the <strudel-editor> element programmatically (no innerHTML sink).
     // The code is loaded via the safe editor.setCode() API below.
     if (!editorEl) {
@@ -446,6 +507,17 @@ fullscreenBtn.addEventListener("click", () => {
   app.requestDisplayMode({ mode: "fullscreen" });
 });
 
+// Visuals toggle — once clicked, the user's choice sticks across re-renders.
+vizBtn.addEventListener("click", () => {
+  vizManual = true;
+  vizVisible = !vizVisible;
+  applyVizVisibility();
+});
+
+// Keep the canvas backing store DPR-correct as the editor/iframe resizes.
+vizResizeObserver = new ResizeObserver(() => syncVizCanvasSize());
+vizResizeObserver.observe(replSection);
+
 // =============================================================================
 // MCP ext-apps Integration
 // =============================================================================
@@ -494,6 +566,8 @@ app.onteardown = () => {
     recordingDest = null;
     recordingStream?.getTracks().forEach((t) => t.stop());
     recordingStream = null;
+    vizResizeObserver?.disconnect();
+    vizResizeObserver = null;
   } catch { /* best-effort cleanup */ }
   return {};
 };
