@@ -154,13 +154,36 @@ html, body {
   display: block;
 }
 
-.repl-section.viz-on .cm-editor,
+/* THE occlusion fix. <strudel-editor> (StrudelMirror) wraps its CodeMirror in an
+   intermediate <div> whose background is set INLINE to var(--background) — an
+   opaque dark fill (#222-ish). That wrapper sits z-index:1 over the z-index:0
+   canvas and fully hides it; the v0.4.1 scrim only touched .cm-editor/.cm-scroller,
+   so the canvas only ever peeked out BELOW the editor box ("below, not behind").
+   Make the wrapper + editor transparent and fill the section so the canvas is a
+   true full-height backdrop; the readability scrim lives on ONE layer
+   (.cm-scroller) so it never double-darkens. !important beats the inline style. */
+.repl-section.viz-on .strudel-container > div {
+  height: 100% !important;
+  background-color: transparent !important;
+}
+
+.repl-section.viz-on .cm-editor {
+  height: 100% !important;
+  background-color: transparent !important;
+}
+
 .repl-section.viz-on .cm-scroller {
-  background-color: rgba(20, 17, 29, 0.55) !important;
+  height: 100% !important;
+  background-color: rgba(20, 17, 29, 0.5) !important;  /* single readability scrim */
 }
 
 .repl-section.viz-on .cm-gutters {
-  background-color: rgba(20, 17, 29, 0.35) !important;
+  background-color: rgba(20, 17, 29, 0.3) !important;
+}
+
+/* Lift the code off the animation for legibility (matches strudel.cc's glow). */
+.repl-section.viz-on .cm-content {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
 }
 
 /* CDN load-failure recovery affordance */
