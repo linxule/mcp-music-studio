@@ -4,6 +4,10 @@
 // Remote MCP server for one-paste setup. Stateless handler (new server per
 // request) using createMcpHandler + WorkerTransport — matches the official
 // ext-apps example pattern for reliable UI rendering in Claude Desktop.
+//
+// Tool names, schemas, descriptions, annotations, _meta, instructions, and the
+// search-music-docs behavior are imported from ../../src/shared/tool-defs so
+// they never drift from the local stdio/HTTP server (server.ts).
 // =============================================================================
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -11,16 +15,37 @@ import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 
 // Shared guide content (pure data, no Node.js deps)
+import { ABC_GUIDE_TOPICS, ABC_GUIDES } from "../../src/abc-guide.js";
+import { STRUDEL_GUIDE_TOPICS, STRUDEL_GUIDES } from "../../src/strudel-guide.js";
+import { VERSION } from "../../src/version.js";
+import { parseClient } from "../../src/shared/parse-client.js";
 import {
-  ABC_GUIDE_TOPICS,
-  ABC_GUIDES,
-  DEFAULT_ABC_NOTATION,
-} from "../../src/abc-guide.js";
-import {
-  STRUDEL_GUIDE_TOPICS,
-  STRUDEL_GUIDES,
-} from "../../src/strudel-guide.js";
-import { STYLE_NAMES } from "../../src/music-logic.js";
+  SHEET_RESOURCE_URI,
+  STRUDEL_RESOURCE_URI,
+  SERVER_INSTRUCTIONS,
+  advertiseUiExtension,
+  PLAY_TOOL_ANNOTATIONS,
+  GUIDE_TOOL_ANNOTATIONS,
+  SEARCH_TOOL_ANNOTATIONS,
+  SHEET_CSP,
+  STRUDEL_CSP,
+  PLAY_SHEET_BASE_DESCRIPTION,
+  PLAY_SHEET_EXT_APPS_SUFFIX,
+  PLAY_SHEET_NEUTRAL_TEXT,
+  playSheetInputSchema,
+  PLAY_LIVE_BASE_DESCRIPTION,
+  PLAY_LIVE_EXT_APPS_SUFFIX,
+  playLiveInputSchema,
+  buildPlayLiveResult,
+  GET_MUSIC_GUIDE_DESCRIPTION,
+  GET_MUSIC_GUIDE_TOPIC_DESCRIPTION,
+  GET_STRUDEL_GUIDE_DESCRIPTION,
+  GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION,
+  SEARCH_DOCS_DESCRIPTION,
+  searchDocsInputSchema,
+  searchMusicDocs,
+  registerMusicPrompts,
+} from "../../src/shared/tool-defs.js";
 
 // Bundled ext-apps HTML (wrangler imports as text via rules config)
 import sheetMusicHtml from "../../dist/mcp-app.html";
@@ -49,34 +74,18 @@ function track(
   } catch {}
 }
 
-function parseClient(ua: string): string {
-  const lower = ua.toLowerCase();
-  if (lower === "claude-user") return "claude-ai";
-  if (lower.includes("claude-ai") || lower.includes("claude.ai"))
-    return "claude-ai";
-  if (lower.includes("claude-code") || lower.includes("claude code"))
-    return "claude-code";
-  if (lower.includes("cursor")) return "cursor";
-  if (lower.includes("gemini")) return "gemini";
-  if (lower.includes("windsurf")) return "windsurf";
-  if (lower.includes("cline")) return "cline";
-  if (lower.includes("smithery")) return "smithery";
-  if (lower.includes("mcp-remote")) return "mcp-remote";
-  return "unknown";
-}
-
-function trackRequest(
-  env: Env,
-  ctx: ExecutionContext,
-  request: Request,
-) {
+function trackRequest(env: Env, ctx: ExecutionContext, request: Request) {
   const rawUA = request.headers.get("user-agent") ?? "";
   const client = parseClient(rawUA);
-  const truncUA = rawUA.substring(0, 200);
+  // Only retain the raw UA for clients we don't recognize (to discover new ones);
+  // the coarse `client` label already covers known clients. Data minimization.
+  const uaForLog = client === "unknown" ? rawUA.substring(0, 200) : "";
 
   if (request.method === "GET") {
+    // A bare GET /mcp is not a real session in stateless mode (it 406s) — label
+    // it "probe" so it isn't conflated with POST-initiated sessions.
     track(env, {
-      blobs: ["session", "", "", truncUA],
+      blobs: ["probe", "", "", uaForLog],
       indexes: [client],
     });
     return;
@@ -91,7 +100,6 @@ function trackRequest(
       .then((body: any) => {
         const method = body?.method ?? "unknown";
 
-        // Track all JSON-RPC methods for debugging ext-apps lifecycle
         if (method === "tools/call") {
           const tool = body.params?.name ?? "";
           const args = body.params?.arguments ?? {};
@@ -102,19 +110,19 @@ function trackRequest(
             detail = args.library ?? "strudel";
           }
           track(env, {
-            blobs: ["tool_call", tool, detail, truncUA],
+            blobs: ["tool_call", tool, detail, uaForLog],
             indexes: [client],
           });
         } else if (method === "resources/read") {
           const uri = body.params?.uri ?? "";
           track(env, {
-            blobs: ["resource_read", uri, "", truncUA],
+            blobs: ["resource_read", uri, "", uaForLog],
             indexes: [client],
           });
         } else {
           // initialize, tools/list, resources/list, etc.
           track(env, {
-            blobs: ["mcp_method", method, "", truncUA],
+            blobs: ["mcp_method", method, "", uaForLog],
             indexes: [client],
           });
         }
@@ -128,25 +136,22 @@ function trackRequest(
 // =============================================================================
 
 const EXT_APPS_MIME = "text/html;profile=mcp-app" as const;
-const SHEET_RESOURCE_URI = "ui://sheet-music/mcp-app.html";
-const STRUDEL_RESOURCE_URI = "ui://strudel/strudel-app.html";
 
 // =============================================================================
 // Server factory — creates a fresh McpServer per request (stateless)
 // =============================================================================
 
 function createMusicServer(env: Env): McpServer {
-  const server = new McpServer({
-    name: "Music Studio",
-    version: "0.3.0",
-  });
+  const server = new McpServer(
+    { name: "Music Studio", version: VERSION },
+    { instructions: SERVER_INSTRUCTIONS },
+  );
 
   // Advertise ext-apps support so clients know to render UI widgets
-  server.server.registerCapabilities({
-    extensions: {
-      "io.modelcontextprotocol/ui": {},
-    },
-  });
+  advertiseUiExtension(server.server);
+
+  // Slash-command prompts: compose-beat, harmonize-melody, arrange-tune.
+  registerMusicPrompts(server);
 
   // ===========================================================================
   // Ext-Apps UI Resources
@@ -162,13 +167,7 @@ function createMusicServer(env: Env): McpServer {
           uri: SHEET_RESOURCE_URI,
           mimeType: EXT_APPS_MIME,
           text: sheetMusicHtml,
-          _meta: {
-            ui: {
-              csp: {
-                connectDomains: ["https://paulrosen.github.io"],
-              },
-            },
-          },
+          _meta: { ui: { csp: { ...SHEET_CSP } } },
         },
       ],
     }),
@@ -184,123 +183,64 @@ function createMusicServer(env: Env): McpServer {
           uri: STRUDEL_RESOURCE_URI,
           mimeType: EXT_APPS_MIME,
           text: strudelHtml,
-          _meta: {
-            ui: {
-              csp: {
-                resourceDomains: [
-                  "https://unpkg.com",
-                  "https://cdn.jsdelivr.net",
-                ],
-                connectDomains: [
-                  "https://unpkg.com",
-                  "https://raw.githubusercontent.com",
-                  "https://cdn.jsdelivr.net",
-                  "https://felixroos.github.io",
-                  "https://tidalcycles.github.io",
-                ],
-              },
-            },
-          },
+          _meta: { ui: { csp: { ...STRUDEL_CSP } } },
         },
       ],
     }),
   );
 
   // ===========================================================================
-  // Tool: play-sheet-music (registerTool for _meta support)
+  // Tool: play-sheet-music
   // ===========================================================================
-
+  // Note: ABC is parsed/rendered client-side in the widget, so the worker does
+  // not assert a parse result here — neutral wording avoids a false success.
   server.registerTool(
     "play-sheet-music",
     {
       title: "Play Sheet Music",
-      description:
-        "Compose and play sheet music with visual notation, multi-instrument audio, " +
-        "and style presets. Write ABC notation for melodies, arrangements, harmonized " +
-        "pieces, or well-known tunes. Add a style (rock, jazz, bossa, waltz, folk...) " +
-        "for automatic drums, bass, and chord accompaniment. " +
-        "Use get-music-guide for genre templates, instrument lists, and ABC syntax reference." +
-        "\n\nThe music player renders inline with interactive playback controls.",
-      inputSchema: z.object({
-        abcNotation: z
-          .string()
-          .default(DEFAULT_ABC_NOTATION)
-          .describe(
-            'ABC notation string. Include chord symbols ("C", "Am7") above notes for auto-accompaniment with style presets.',
-          ),
-        title: z
-          .string()
-          .optional()
-          .describe(
-            "Piece title (overrides T: in ABC). Displayed in the widget header.",
-          ),
-        instrument: z
-          .string()
-          .optional()
-          .describe(
-            "Default instrument (e.g. 'Flute', 'Cello', 'Acoustic Grand Piano', 'Alto Sax'). " +
-              "Use get-music-guide with topic 'instruments' for the full list.",
-          ),
-        style: z
-          .enum(STYLE_NAMES)
-          .optional()
-          .describe(
-            "Accompaniment style. Adds drums, bass, and chord patterns automatically. " +
-              'Your ABC needs chord symbols ("C", "Am") for accompaniment to work. ' +
-              "Options: rock, jazz, bossa, waltz, march, reggae, folk, classical.",
-          ),
-        tempo: z
-          .number()
-          .min(40)
-          .max(240)
-          .optional()
-          .describe("Tempo in BPM (40-240). Overrides Q: in ABC notation."),
-        swing: z
-          .number()
-          .min(0)
-          .max(100)
-          .optional()
-          .describe(
-            "Swing percentage (0-100). 0=straight, 33=light swing, 66=heavy swing. Great for jazz and blues.",
-          ),
-        transpose: z
-          .number()
-          .min(-12)
-          .max(12)
-          .optional()
-          .describe(
-            "Transpose by semitones (-12 to 12). Positive=higher, negative=lower.",
-          ),
-      }),
+      description: PLAY_SHEET_BASE_DESCRIPTION + PLAY_SHEET_EXT_APPS_SUFFIX,
+      inputSchema: playSheetInputSchema,
+      annotations: PLAY_TOOL_ANNOTATIONS,
       _meta: {
         ui: { resourceUri: SHEET_RESOURCE_URI },
         "ui/resourceUri": SHEET_RESOURCE_URI,
       },
     },
     async () => ({
-      content: [
-        { type: "text" as const, text: "Music parsed successfully. Playing!" },
-      ],
+      content: [{ type: "text" as const, text: PLAY_SHEET_NEUTRAL_TEXT }],
     }),
+  );
+
+  // ===========================================================================
+  // Tool: play-live-pattern
+  // ===========================================================================
+  server.registerTool(
+    "play-live-pattern",
+    {
+      title: "Play Live Pattern",
+      description: PLAY_LIVE_BASE_DESCRIPTION + PLAY_LIVE_EXT_APPS_SUFFIX,
+      inputSchema: playLiveInputSchema,
+      annotations: PLAY_TOOL_ANNOTATIONS,
+      _meta: {
+        ui: { resourceUri: STRUDEL_RESOURCE_URI },
+        "ui/resourceUri": STRUDEL_RESOURCE_URI,
+      },
+    },
+    async (args) => buildPlayLiveResult(args),
   );
 
   // ===========================================================================
   // Tool: get-music-guide
   // ===========================================================================
-
-  server.tool(
+  server.registerTool(
     "get-music-guide",
-    "Returns detailed reference material for music composition. " +
-      "Topics: instruments (GM instrument list + combos), drums (patterns + percussion notes), " +
-      "abc-syntax (notation reference), arrangements (multi-voice patterns), " +
-      "genres (complete ABC templates for jazz/blues/folk/rock/bossa/classical), " +
-      "styles (what each style preset does), midi-directives (%%MIDI reference).",
     {
-      topic: z
-        .enum(ABC_GUIDE_TOPICS)
-        .describe(
-          "Reference topic. Start with 'genres' for complete examples, 'styles' to understand presets, or 'instruments' for the full instrument list.",
-        ),
+      title: "Music Reference Guide",
+      description: GET_MUSIC_GUIDE_DESCRIPTION,
+      inputSchema: z.object({
+        topic: z.enum(ABC_GUIDE_TOPICS).describe(GET_MUSIC_GUIDE_TOPIC_DESCRIPTION),
+      }),
+      annotations: GUIDE_TOOL_ANNOTATIONS,
     },
     async ({ topic }) => ({
       content: [{ type: "text" as const, text: ABC_GUIDES[topic] }],
@@ -308,86 +248,19 @@ function createMusicServer(env: Env): McpServer {
   );
 
   // ===========================================================================
-  // Tool: play-live-pattern (registerTool for _meta support)
-  // ===========================================================================
-
-  server.registerTool(
-    "play-live-pattern",
-    {
-      title: "Play Live Pattern",
-      description:
-        "Live-code music patterns using TidalCycles mini-notation in JavaScript. " +
-        "Layer drums, synths, and bass with stack(). Choose from 72 drum machine banks, " +
-        "128 GM instruments, built-in synths, and a full effects chain. " +
-        "Patterns play in a REPL the user can edit directly. " +
-        "Use get-strudel-guide for genre templates, sound references, and advanced features " +
-        "like visualization, arrangement, and sample loading." +
-        "\n\nThe Strudel REPL renders inline with an editable code editor, " +
-        "visualizations, and playback controls.",
-      inputSchema: z.object({
-        code: z
-          .string()
-          .describe(
-            "Strudel pattern code. Uses TidalCycles mini-notation in JavaScript. " +
-              "Use stack() to layer drums, bass, and melody. " +
-              "Set tempo with setcps(bpm/60/4) or use the bpm parameter.",
-          ),
-        title: z
-          .string()
-          .optional()
-          .describe(
-            "Pattern title displayed in the widget header (e.g. 'Midnight Rain').",
-          ),
-        bpm: z
-          .number()
-          .min(40)
-          .max(300)
-          .optional()
-          .describe(
-            "Tempo in BPM (40-300). Converts to setcps() automatically.",
-          ),
-        autoplay: z
-          .boolean()
-          .optional()
-          .describe(
-            "Start playing immediately (default: true). May require user click due to browser autoplay policy.",
-          ),
-      }),
-      _meta: {
-        ui: { resourceUri: STRUDEL_RESOURCE_URI },
-        "ui/resourceUri": STRUDEL_RESOURCE_URI,
-      },
-    },
-    async (args) => {
-      const label = args.title ? `"${args.title}" — ` : "";
-      return {
-        content: [
-          { type: "text" as const, text: `${label}Strudel pattern playing.` },
-        ],
-      };
-    },
-  );
-
-  // ===========================================================================
   // Tool: get-strudel-guide
   // ===========================================================================
-
-  server.tool(
+  server.registerTool(
     "get-strudel-guide",
-    "Reference material for Strudel live coding (performance mode). " +
-      "Topics: mini-notation (pattern syntax), sounds (synths, 72 drum banks, 128 GM instruments), " +
-      "effects (filters, reverb, delay, FM synthesis, envelopes), " +
-      "patterns (transformations, probability, euclidean, arrangement), " +
-      "genres (complete templates: techno/house/dnb/ambient/jazz/lofi/synthwave), " +
-      "tips (tempo, common mistakes, ABC↔Strudel crossover), " +
-      "advanced (visualization, sample loading, wavetables, ZZFX, continuous signals, chord voicings).",
     {
-      topic: z
-        .enum(STRUDEL_GUIDE_TOPICS)
-        .describe(
-          "Reference topic. Start with 'genres' for working templates, " +
-            "'sounds' for instruments, 'advanced' for visualization and sample loading.",
-        ),
+      title: "Strudel Reference Guide",
+      description: GET_STRUDEL_GUIDE_DESCRIPTION,
+      inputSchema: z.object({
+        topic: z
+          .enum(STRUDEL_GUIDE_TOPICS)
+          .describe(GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION),
+      }),
+      annotations: GUIDE_TOOL_ANNOTATIONS,
     },
     async ({ topic }) => ({
       content: [{ type: "text" as const, text: STRUDEL_GUIDES[topic] }],
@@ -395,100 +268,23 @@ function createMusicServer(env: Env): McpServer {
   );
 
   // ===========================================================================
-  // Tool: search-music-docs (Context7-powered semantic search)
+  // Tool: search-music-docs (Context7-powered, KV-cached)
   // ===========================================================================
-
-  server.tool(
+  server.registerTool(
     "search-music-docs",
-    "Search detailed documentation for Strudel live coding or ABC/ABCJS notation. " +
-      "Returns relevant code examples and explanations from the official docs. " +
-      "Use this when the curated guides (get-strudel-guide, get-music-guide) don't " +
-      "cover what you need — for specific functions, advanced techniques, or when " +
-      "you're unsure about syntax. Powered by semantic search over strudel.cc and ABCJS docs.",
     {
-      query: z
-        .string()
-        .describe(
-          "What you want to know. Be specific. " +
-            "Good: 'how to use FM synthesis with envelope' or 'chop and slice sample manipulation'. " +
-            "Bad: 'effects' or 'help'.",
-        ),
-      library: z
-        .enum(["strudel", "abcjs"])
-        .default("strudel")
-        .describe(
-          "Which library to search: 'strudel' for live coding patterns, 'abcjs' for sheet music notation.",
-        ),
+      title: "Search Music Documentation",
+      description: SEARCH_DOCS_DESCRIPTION,
+      inputSchema: searchDocsInputSchema,
+      annotations: SEARCH_TOOL_ANNOTATIONS,
     },
-    async ({ query, library }) => {
-      const libraryId =
-        library === "strudel"
-          ? "/websites/strudel_cc"
-          : "/paulrosen/abcjs";
-
-      // Check KV cache first
-      const cacheKey = `ctx7:${library}:${query}`;
-      try {
-        const cached = await env.DOCS_CACHE.get(cacheKey);
-        if (cached) {
-          return { content: [{ type: "text" as const, text: cached }] };
-        }
-      } catch {}
-
-      const params = new URLSearchParams({ libraryId, query, type: "txt" });
-      const url = `https://context7.com/api/v2/context?${params}`;
-      const apiKey = env.CONTEXT7_API_KEY ?? "";
-
-      try {
-        let res = await fetch(url);
-        if (res.status === 429 && apiKey && apiKey.startsWith("ctx7sk")) {
-          res = await fetch(url, {
-            headers: { Authorization: `Bearer ${apiKey}` },
-          });
-        }
-
-        if (!res.ok) {
-          const errText = await res.text().catch(() => "");
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text" as const,
-                text: `Documentation search failed (${res.status}). ${errText}\n\nTry the curated guides instead.`,
-              },
-            ],
-          };
-        }
-
-        const text = await res.text();
-        if (!text || text.trim().length === 0) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `No results found for "${query}" in ${library} docs. Try rephrasing or use the curated guides.`,
-              },
-            ],
-          };
-        }
-
-        try {
-          await env.DOCS_CACHE.put(cacheKey, text, { expirationTtl: 86400 });
-        } catch {}
-
-        return { content: [{ type: "text" as const, text }] };
-      } catch (err) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: `Documentation search error: ${(err as Error).message}\n\nUse get-strudel-guide or get-music-guide as fallback.`,
-            },
-          ],
-        };
-      }
-    },
+    async ({ query, library }) =>
+      searchMusicDocs(query, library, {
+        apiKey: env.CONTEXT7_API_KEY,
+        cacheGet: (key) => env.DOCS_CACHE.get(key),
+        cachePut: (key, value) =>
+          env.DOCS_CACHE.put(key, value, { expirationTtl: 86400 }),
+      }),
   );
 
   // ===========================================================================
@@ -502,9 +298,7 @@ function createMusicServer(env: Env): McpServer {
       uri,
       { mimeType: "text/plain", description: `Music reference: ${topic}` },
       async () => ({
-        contents: [
-          { uri, mimeType: "text/plain" as const, text: ABC_GUIDES[topic] },
-        ],
+        contents: [{ uri, mimeType: "text/plain" as const, text: ABC_GUIDES[topic] }],
       }),
     );
   }
@@ -516,13 +310,7 @@ function createMusicServer(env: Env): McpServer {
       uri,
       { mimeType: "text/plain", description: `Strudel reference: ${topic}` },
       async () => ({
-        contents: [
-          {
-            uri,
-            mimeType: "text/plain" as const,
-            text: STRUDEL_GUIDES[topic],
-          },
-        ],
+        contents: [{ uri, mimeType: "text/plain" as const, text: STRUDEL_GUIDES[topic] }],
       }),
     );
   }
@@ -538,6 +326,13 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
 
+    // Lightweight liveness probe — keeps uptime checks off the MCP transport.
+    if (url.pathname === "/health" || url.pathname === "/healthz") {
+      return new Response(JSON.stringify({ status: "ok", version: VERSION }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+
     if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
       trackRequest(env, ctx, request);
 
@@ -546,11 +341,16 @@ export default {
       // ext-apps UI — the default SSE response format isn't parsed correctly
       // by the Connector client for resources/read calls.
       const server = createMusicServer(env);
-      const handler = createMcpHandler(server, {
-        route: null as unknown as string,
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-      });
+      // `agents` bundles its own @modelcontextprotocol/sdk copy, so its McpServer
+      // type is nominally distinct from ours (separate private fields). Safe at runtime.
+      const handler = createMcpHandler(
+        server as unknown as Parameters<typeof createMcpHandler>[0],
+        {
+          route: null as unknown as string,
+          sessionIdGenerator: undefined,
+          enableJsonResponse: true,
+        },
+      );
       return handler(request, env, ctx);
     }
 
@@ -559,7 +359,8 @@ export default {
       return new Response(null, {
         status: 301,
         headers: {
-          Location: "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/logo.png",
+          Location:
+            "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/logo.png",
           "cache-control": "public, max-age=604800",
         },
       });
@@ -574,7 +375,7 @@ export default {
 <title>MCP Music Studio</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 </head><body style="font-family:system-ui;max-width:520px;margin:40px auto;color:#333">
-<h1>MCP Music Studio v0.3.0</h1>
+<h1>MCP Music Studio v${VERSION}</h1>
 <p>Two-mode creative music studio: scored composition (ABC notation) and live performance (Strudel live coding).</p>
 <h3>Connect</h3>
 <ul>

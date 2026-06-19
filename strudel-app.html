@@ -10,11 +10,12 @@
   <main class="main">
     <header class="header">
       <div class="toolbar">
-        <button id="play-btn" class="control-btn" title="Play">Play</button>
-        <button id="record-btn" class="control-btn" title="Record audio" disabled>Record</button>
-        <button id="download-btn" class="control-btn" title="Download recording" disabled>↓</button>
-        <button id="fullscreen-btn" class="control-btn" title="Toggle fullscreen">⛶</button>
-        <span id="status" class="status">Ready</span>
+        <button id="play-btn" class="control-btn" title="Play" aria-label="Play">Play</button>
+        <button id="record-btn" class="control-btn" title="Record audio" aria-label="Record audio" disabled>Record</button>
+        <button id="download-btn" class="control-btn" title="Download recording" aria-label="Download recording" disabled>↓</button>
+        <button id="send-btn" class="control-btn" title="Send current pattern to chat" aria-label="Send current pattern to chat" hidden>Send to chat</button>
+        <button id="fullscreen-btn" class="control-btn" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button>
+        <span id="status" class="status" role="status" aria-live="polite">Ready</span>
       </div>
     </header>
 

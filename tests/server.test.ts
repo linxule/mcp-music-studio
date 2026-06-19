@@ -37,4 +37,20 @@ describe("play-sheet-music handler", () => {
       "Expected note after bar line",
     );
   });
+
+  it("clean parse returns honest text and does not claim playback", async () => {
+    const parseOnly: ParseOnlyFn = () => [{}];
+
+    const result = await handlePlaySheetMusic(
+      { abcNotation: "X:1\nK:C\nCDEF|" },
+      parseOnly,
+    );
+
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0]?.text ?? "";
+    // Honest: tells the agent nothing played if there's no widget...
+    expect(text).toContain("nothing has played yet");
+    // ...and never asserts it played.
+    expect(text).not.toMatch(/playing!|successfully played|now playing/i);
+  });
 });

@@ -9,6 +9,7 @@
   --color-border: #e5e7eb;
 }
 
+/* Dark palette — shared by OS preference and host-driven theme. */
 @media (prefers-color-scheme: dark) {
   :root {
     --color-bg: #111827;
@@ -20,6 +21,31 @@
     --color-card-bg: #1f2937;
     --color-border: #374151;
   }
+}
+
+/* Host-driven theme (applyDocumentTheme sets data-theme on <html>).
+   Explicit attribute wins over the OS media query so an in-app theme
+   different from the OS renders correctly. */
+:root[data-theme="dark"] {
+  --color-bg: #111827;
+  --color-text: #f9fafb;
+  --color-text-muted: #9ca3af;
+  --color-primary: #3b82f6;
+  --color-success: #34d399;
+  --color-danger: #f87171;
+  --color-card-bg: #1f2937;
+  --color-border: #374151;
+}
+
+:root[data-theme="light"] {
+  --color-bg: #ffffff;
+  --color-text: #1f2937;
+  --color-text-muted: #6b7280;
+  --color-primary: #2563eb;
+  --color-success: #10b981;
+  --color-danger: #ef4444;
+  --color-card-bg: #f9fafb;
+  --color-border: #e5e7eb;
 }
 
 html,
@@ -144,12 +170,48 @@ body {
   background: var(--color-card-bg);
 }
 
-/* Note highlighting during playback */
+/* Loading skeleton / spinner (pre-render and streaming states) */
+.loading-skeleton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 160px;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spinner-rotate 0.7s linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2s;
+  }
+}
+
+/* Note highlighting during playback.
+   Color fill is the primary cue; a non-color emphasis (bold stroke) is
+   added so the highlight is perceivable without relying on color alone. */
 .note-playing path,
 .note-playing circle,
 .note-playing ellipse,
 .note-playing polygon {
   fill: var(--color-primary) !important;
+  stroke: var(--color-primary) !important;
+  stroke-width: 1.5px;
   transition: fill 0.08s ease;
 }
 

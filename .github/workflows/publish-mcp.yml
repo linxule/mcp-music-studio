@@ -15,6 +15,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify tag matches package.json version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          PKG=$(jq -r .version package.json)
+          if [ "$VERSION" != "$PKG" ]; then
+            echo "::error::Git tag v$VERSION does not match package.json version $PKG. Bump package.json before tagging."
+            exit 1
+          fi
+          echo "Version check OK: $VERSION"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

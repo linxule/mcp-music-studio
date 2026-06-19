@@ -16,12 +16,16 @@
         <div id="style-selector" class="toolbar-group"></div>
         <div id="instrument-selector" class="toolbar-group"></div>
       </div>
-      <span id="status" class="status">Waiting for notation...</span>
+      <span id="status" class="status" role="status" aria-live="polite">Loading score…</span>
     </header>
 
     <section class="sheet-section">
       <div id="sheet-music" class="sheet-music-container">
         <!-- ABC notation will be rendered here by abcjs -->
+        <div class="loading-skeleton" role="status" aria-live="polite">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>Loading score…</span>
+        </div>
       </div>
     </section>
   </main>

@@ -122,6 +122,35 @@ html, body {
   min-height: 350px;
 }
 
+/* CDN load-failure recovery affordance */
+.cdn-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 350px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.cdn-error .retry-btn {
+  padding: 8px 20px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.cdn-error .retry-btn:hover {
+  background: var(--accent);
+  color: white;
+}
+
 /* ==========================================================================
    Layout fixes for @strudel/repl in ext-apps iframe
 

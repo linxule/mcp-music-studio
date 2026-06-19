@@ -165,7 +165,7 @@ On Windows, `npx` is a `.cmd` file and requires a shell wrapper:
 <details>
 <summary>Render modes (for non-ext-apps clients)</summary>
 
-The server auto-detects ext-apps support. For clients that don't support it (Cherry Studio, CLI environments), use `--render-mode`:
+Clients that support ext-apps render the interactive UI inline automatically (`auto` mode). For clients that don't (Cherry Studio, CLI environments), use `--render-mode`:
 
 | Mode | Behavior |
 |------|----------|
@@ -196,6 +196,16 @@ The server auto-detects ext-apps support. For clients that don't support it (Che
 | `get-music-guide` | ABC reference (7 topics: instruments, drums, syntax, genres...) |
 | `get-strudel-guide` | Strudel reference (7 topics: sounds, effects, patterns, genres...) |
 | `search-music-docs` | Semantic search over strudel.cc and ABCJS docs |
+
+## Prompts
+
+Slash-command / menu entry points, in clients that surface MCP prompts:
+
+| Prompt | What it does |
+|--------|--------------|
+| `compose-beat` | Generate + play a Strudel pattern in a genre (args: `genre`, `mood?`) |
+| `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
+| `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
 
 ## Development
 

@@ -1,5 +1,6 @@
 import ABCJS from "abcjs";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { PLAY_SHEET_NEUTRAL_TEXT } from "./shared/tool-defs.js";
 
 export type ParseOnlyResult = {
   warnings?: string[];
@@ -14,7 +15,9 @@ export function createPlaySheetMusicResult(
   const [{ warnings } = {}] = parseOnly(abcNotation);
 
   if (warnings && warnings.length > 0) {
-    const messages = warnings.map((warning) => warning.replace(/<[^>]*>/g, ""));
+    const messages = warnings.map((warning) =>
+      String(warning).replace(/<[^>]*>/g, ""),
+    );
     const hasErrors = messages.some(
       (message) =>
         message.includes("Expected") ||
@@ -44,7 +47,13 @@ export function createPlaySheetMusicResult(
     };
   }
 
+  // Compose from the shared constant (single source of truth) + a local-only hint.
   return {
-    content: [{ type: "text", text: "Music parsed successfully. Playing!" }],
+    content: [
+      {
+        type: "text",
+        text: `${PLAY_SHEET_NEUTRAL_TEXT} Re-run with --render-mode browser to open a playable version in your browser.`,
+      },
+    ],
   };
 }
