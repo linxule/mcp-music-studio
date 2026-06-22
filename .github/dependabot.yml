@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # Root npm package (bun.lock) — mcp-music-studio (published).
+  # Each ecosystem is GROUPED (patterns: ["*"]) into a single PR so a refresh is
+  # ~one PR per ecosystem, not one per dependency (avoids the first-run flood).
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      root-deps:
+        patterns: ["*"]
+
+  # Cloudflare Worker package (worker/bun.lock) — private, deploy-only.
+  - package-ecosystem: "npm"
+    directory: "/worker"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      worker-deps:
+        patterns: ["*"]
+
+  # GitHub Actions (checkout, setup-node, setup-bun pinned in workflows).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ["*"]
