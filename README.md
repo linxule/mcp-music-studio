@@ -1,6 +1,6 @@
 # MCP Music Studio
 
-[![smithery badge](https://smithery.ai/badge/linxule/mcp-music-studio)](https://smithery.ai/server/linxule/mcp-music-studio)
+[![LightNow](https://lightnow.ai/badge/io.github.linxule/mcp-music-studio)](https://lightnow.ai/servers/io.github.linxule/mcp-music-studio)
 
 Two-mode creative music studio for AI: **scored composition** (ABC notation with sheet music) and **live performance** (Strudel live coding with TidalCycles). Interactive UI renders inline in Claude Desktop, claude.ai, and other MCP clients.
 
