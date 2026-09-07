@@ -74,6 +74,16 @@ export type EditorTheme = (typeof EDITOR_THEMES)[number];
  * day a user runs a pattern. Pin it here so a preset that works today still
  * works next month. (The widget also wraps initHydra() to pin the same version
  * for free-form shader code the model writes itself.)
+ *
+ * NOTE THE SINGLE QUOTES at every use site below. Strudel's transpiler rewrites
+ * DOUBLE-quoted string literals into mini-notation, so `src: "https://…"` is
+ * parsed as a pattern and the whole evaluation dies with
+ *
+ *     [mini] parse error at line 1: Expected "<", "[", "{", … but "/" found
+ *
+ * Single-quoted strings pass through untouched — which is also why the guide
+ * writes samples('https://…'). Verified in the dev harness: the double-quoted
+ * form took down every hydra preset.
  */
 export const HYDRA_SYNTH_CDN = "https://unpkg.com/hydra-synth@1.4.0";
 
@@ -122,10 +132,10 @@ const DRAW_CALLS: Partial<Record<VisualPreset, string>> = {
  * a bare `pulse` is a plausible name for a user variable to collide with.
  */
 const HYDRA_RECIPES: Partial<Record<VisualPreset, string>> = {
-  "hydra-kaleid": `await initHydra({ src: "${HYDRA_SYNTH_CDN}" })
+  "hydra-kaleid": `await initHydra({ src: '${HYDRA_SYNTH_CDN}' })
 osc(8, 0.05, 0.9).rotate(0.3).kaleid(5).color(0.5, 0.35, 1).out(o0)`,
 
-  "hydra-pulse": `await initHydra({ src: "${HYDRA_SYNTH_CDN}" })
+  "hydra-pulse": `await initHydra({ src: '${HYDRA_SYNTH_CDN}' })
 const _vizPulse = "1 0 0.6 0 1 0 0.3 0.3"
 shape(6, () => 0.15 + 0.35 * H(_vizPulse)(), 0.3)
   .repeat(3, 3)
@@ -133,14 +143,14 @@ shape(6, () => 0.15 + 0.35 * H(_vizPulse)(), 0.3)
   .color(0.2, 0.8, 1)
   .out(o0)`,
 
-  "hydra-wash": `await initHydra({ src: "${HYDRA_SYNTH_CDN}" })
+  "hydra-wash": `await initHydra({ src: '${HYDRA_SYNTH_CDN}' })
 noise(2, 0.08)
   .color(0.15, 0.25, 0.6)
   .modulate(voronoi(3, 0.2), 0.3)
   .blend(o0, 0.9)
   .out(o0)`,
 
-  "hydra-feed": `await initHydra({ feedStrudel: true, src: "${HYDRA_SYNTH_CDN}" })
+  "hydra-feed": `await initHydra({ feedStrudel: true, src: '${HYDRA_SYNTH_CDN}' })
 src(s0)
   .kaleid(4)
   .modulate(noise(3, 0.2), 0.06)

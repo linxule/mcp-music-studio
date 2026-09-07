@@ -57,7 +57,20 @@ describe("applyVisualPreset — hydra presets", () => {
       const out = applyVisualPreset(PLAIN, preset);
       expect(out).toContain(HYDRA_SYNTH_CDN);
       // Unversioned specifiers are exactly what the pin exists to avoid.
-      expect(out).not.toContain('src: "https://unpkg.com/hydra-synth"');
+      expect(out).not.toContain("src: 'https://unpkg.com/hydra-synth'");
+    }
+  });
+
+  it("SINGLE-quotes the pinned URL", () => {
+    // Strudel's transpiler rewrites DOUBLE-quoted strings into mini-notation, so
+    // src: "https://…" is parsed as a pattern and kills the whole evaluation:
+    //   [mini] parse error at line 1: … but "/" found
+    // Caught in the dev harness; this guards the regression.
+    for (const preset of VISUAL_PRESETS.filter(isHydraPreset)) {
+      const out = applyVisualPreset(PLAIN, preset);
+      expect(out).toContain(`src: '${HYDRA_SYNTH_CDN}'`);
+      expect(out).not.toContain(`src: "${HYDRA_SYNTH_CDN}"`);
+      expect(out).not.toMatch(/"https?:\/\//);
     }
   });
 
