@@ -1,11 +1,14 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "mcp-music-studio-worker",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.24.0",
+        "abcjs": "~6.6.2",
         "agents": "^0.4.1",
+        "tonal": "^6.4.3",
         "zod": "^4.1.13",
       },
       "devDependencies": {
@@ -182,11 +185,69 @@
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
+    "@tonaljs/abc-notation": ["@tonaljs/abc-notation@4.9.1", "", { "dependencies": { "@tonaljs/pitch-distance": "5.0.5", "@tonaljs/pitch-note": "6.1.0" } }, "sha512-2fDUdPsFDdgZgyIiZCTYGKy30QiwIQxSXCSN2thGrSMXbQKCp8iTC8haStYcrA+25MPWhWlmvC/pz3tGcTNAqQ=="],
+
+    "@tonaljs/array": ["@tonaljs/array@4.8.4", "", { "dependencies": { "@tonaljs/pitch-note": "6.1.0" } }, "sha512-97HVdpZy82PqNBDMM9PRSbO2DUrnxNg3++N4xqLpfby70fKHAHhTWrMXWZK+Dzs76HDPQLd+qhd4cq28eBZzjw=="],
+
+    "@tonaljs/chord": ["@tonaljs/chord@6.1.2", "", { "dependencies": { "@tonaljs/chord-detect": "4.9.1", "@tonaljs/chord-type": "5.1.1", "@tonaljs/collection": "4.9.0", "@tonaljs/interval": "^5.1.0", "@tonaljs/pcset": "4.10.1", "@tonaljs/pitch-distance": "5.0.5", "@tonaljs/pitch-note": "6.1.0", "@tonaljs/scale-type": "4.9.2" } }, "sha512-39crsPVyBJxdGJ1DGl+4diM+6+mZ/ws6crkQMlqX4zTYHMUVfJOQrko4mPF1CD89AFhHJe1zCT9Js+nNp3Gffg=="],
+
+    "@tonaljs/chord-detect": ["@tonaljs/chord-detect@4.9.1", "", { "dependencies": { "@tonaljs/chord-type": "5.1.1", "@tonaljs/pcset": "4.10.1", "@tonaljs/pitch-note": "6.1.0" } }, "sha512-rV/9+R7aZ9cQorQ3jdNMMMh63onosglYZM71Q0n7KKcWMAGrxF66MzxBG82xy+w1QDMJQslB3iHfDHUiS6wRjA=="],
+
+    "@tonaljs/chord-type": ["@tonaljs/chord-type@5.1.1", "", { "dependencies": { "@tonaljs/pcset": "4.10.1" } }, "sha512-ti4WzRYvvjH7to0G3zlJFq7WsjHqmcqbk8Jv98aZSR5YumLdY/ua2yOPPyoPq82n6vfgjZsacnAZ3v8/SodOcw=="],
+
+    "@tonaljs/collection": ["@tonaljs/collection@4.9.0", "", {}, "sha512-Mk0h7O54nT6PgNVcUYauzxa5KOB23+0AOKudWzRH7JhJIN9vhVIC7PtwZXE+/G051UTbHSFIcN/afkgF4nB/8A=="],
+
+    "@tonaljs/core": ["@tonaljs/core@5.0.2", "", { "dependencies": { "@tonaljs/pitch": "5.0.2", "@tonaljs/pitch-distance": "5.0.5", "@tonaljs/pitch-interval": "6.1.0", "@tonaljs/pitch-note": "6.1.0" } }, "sha512-v/fIRsB+lz93/yJnDEWvjDX6nDJ/Pz3cb0znm/UD8qKpN9BhN+v93iIaZG5LX0J2JNS35TtgIhwKFO10j6zieQ=="],
+
+    "@tonaljs/duration-value": ["@tonaljs/duration-value@4.9.0", "", {}, "sha512-Muz54HyIe0nMYKWx6wyTa4y17ma29DtpJF4/oqJphy6A124rAVDe/SKit8JGOvDYAQj71FUXqs17sXBxO/ExVw=="],
+
+    "@tonaljs/interval": ["@tonaljs/interval@5.1.0", "", { "dependencies": { "@tonaljs/pitch": "^5.0.2", "@tonaljs/pitch-distance": "^5.0.4", "@tonaljs/pitch-interval": "^6.0.0" } }, "sha512-GR9dUjn0j7yhjwjRh8HQxZYXOiVl05WfY3AFyMB9rfg807K4dSJmWfPTULPQXyHJ6NiZOPXcwRs8MxMLDxgdbg=="],
+
+    "@tonaljs/key": ["@tonaljs/key@4.11.2", "", { "dependencies": { "@tonaljs/note": "4.12.1", "@tonaljs/pitch-note": "6.1.0", "@tonaljs/roman-numeral": "4.9.1" } }, "sha512-fc1y5+NwS4S3amirzYLLB324PxJDO00oIBbLJclAddc46UBeYnu4FNz+1nZboHCXRQ/06/ftuaWD/l7HrAoulw=="],
+
+    "@tonaljs/midi": ["@tonaljs/midi@4.10.2", "", { "dependencies": { "@tonaljs/pitch-note": "6.1.0" } }, "sha512-MPamXhEwPL7L1udLfYMm3Ft8mLYtHr62Zi2w5zYHM2P7YwIvNoiX0+dvAN5is1Wvq4iVRa8AjFHerjOW/SZhGg=="],
+
+    "@tonaljs/mode": ["@tonaljs/mode@4.9.2", "", { "dependencies": { "@tonaljs/collection": "4.9.0", "@tonaljs/interval": "5.1.0", "@tonaljs/pcset": "4.10.1", "@tonaljs/pitch-distance": "5.0.5", "@tonaljs/pitch-note": "6.1.0", "@tonaljs/scale-type": "4.9.2" } }, "sha512-Il48fWX9SnGMzwNFVbizkWkr/SJ+aCIIHhjWfSf1agrQAoq81536qBXEyEyvia6aqEXC4OaXAQ5rSoBcmQRj1Q=="],
+
+    "@tonaljs/note": ["@tonaljs/note@4.12.1", "", { "dependencies": { "@tonaljs/midi": "4.10.2", "@tonaljs/pitch": "5.0.2", "@tonaljs/pitch-distance": "5.0.5", "@tonaljs/pitch-interval": "6.1.0", "@tonaljs/pitch-note": "6.1.0" } }, "sha512-yh6cnhu21bUb0VuIQWxObSbWBVp2cHIkJj4zZ4qsNOW4jSqn74+wHpSbOTDF8q+2hl6upz7TtBRavtqwPtLUCQ=="],
+
+    "@tonaljs/pcset": ["@tonaljs/pcset@4.10.1", "", { "dependencies": { "@tonaljs/collection": "4.9.0", "@tonaljs/pitch": "5.0.2", "@tonaljs/pitch-distance": "5.0.5", "@tonaljs/pitch-interval": "6.1.0", "@tonaljs/pitch-note": "6.1.0" } }, "sha512-CZG1rpKc38yMfpEJsbDTvsTmQqsek9xxcuMgK64Tr6sP1lEiDuZJbQeKVWWRnreBF2FQ1cEGLmfOpvSO+40csA=="],
+
+    "@tonaljs/pitch": ["@tonaljs/pitch@5.0.2", "", {}, "sha512-mxaXJPPe+LIJdjzpZEl8I8Wx3dEvlzkBbsr2Ltwc2dTAdnErAZ5R0TxVq2egF27lMvQN2QPQPWI9iDPPdVUmrg=="],
+
+    "@tonaljs/pitch-distance": ["@tonaljs/pitch-distance@5.0.5", "", { "dependencies": { "@tonaljs/pitch": "5.0.2", "@tonaljs/pitch-interval": "6.1.0", "@tonaljs/pitch-note": "6.1.0" } }, "sha512-dTfjsU0zyrj5YmiFio5prPaD5w7sBmHp4nnmlEg70nHY+SerAH0KiO9HM9usttVgRFUaXl0Gc7OI8YMGfSFmug=="],
+
+    "@tonaljs/pitch-interval": ["@tonaljs/pitch-interval@6.1.0", "", { "dependencies": { "@tonaljs/pitch": "5.0.2" } }, "sha512-9ZMxA7V4UgySnOKPIG6HECzhDb8mbiTCIdNNIzCIfz5XpjUmohku2YZpVVWMacLHgyeQicJzNoRiPel5oSAn4A=="],
+
+    "@tonaljs/pitch-note": ["@tonaljs/pitch-note@6.1.0", "", { "dependencies": { "@tonaljs/pitch": "5.0.2" } }, "sha512-A4OSLo8DjM38u73862LnDmL4YInDDRBmg0fojXcvu4cyU3oOlqndyeHOra1OVoH/WW46uNIxNs1wJDZNPWL5KQ=="],
+
+    "@tonaljs/progression": ["@tonaljs/progression@4.9.2", "", { "dependencies": { "@tonaljs/chord": "6.1.2", "@tonaljs/pitch-distance": "5.0.5", "@tonaljs/pitch-interval": "6.1.0", "@tonaljs/pitch-note": "6.1.0", "@tonaljs/roman-numeral": "4.9.1" } }, "sha512-1Pmau5tKoWmY2H/fp9WVJ5Qm4c+xlu7IEZb3R3uLbc26kJq97DbuSnfArIAQoZTum2V6lOEN/Dt34E9OrGKnoA=="],
+
+    "@tonaljs/range": ["@tonaljs/range@4.9.2", "", { "dependencies": { "@tonaljs/collection": "4.9.0", "@tonaljs/midi": "4.10.2" } }, "sha512-XhFbCJCrEEIVz3MNmdVp9QUyiJA6eqnNnQeNqto8AuT5BYuffHDoMkBmvvjPuV5Lh8zfF9D0aqglvqPbZ+neKQ=="],
+
+    "@tonaljs/rhythm-pattern": ["@tonaljs/rhythm-pattern@1.0.0", "", {}, "sha512-3hp4Yw49e6BTWApRNb7arJ6HiICsHRFZYijuPE+vR93lIo9+lxcOMh0OPc4DyupTN7cvFTSB70Z7B/IeEJxhCQ=="],
+
+    "@tonaljs/roman-numeral": ["@tonaljs/roman-numeral@4.9.1", "", { "dependencies": { "@tonaljs/pitch": "5.0.2", "@tonaljs/pitch-interval": "6.1.0", "@tonaljs/pitch-note": "6.1.0" } }, "sha512-dJGKBNHdPrNTE97ZDk4t6wpNmgYcpHyLkAvWkRP9I/HsDkeTFFQqNXosYIvspPWrFySlRpeqqFwcqV74MYoOag=="],
+
+    "@tonaljs/scale": ["@tonaljs/scale@4.13.4", "", { "dependencies": { "@tonaljs/chord-type": "5.1.1", "@tonaljs/collection": "4.9.0", "@tonaljs/note": "4.12.1", "@tonaljs/pcset": "4.10.1", "@tonaljs/pitch-distance": "5.0.5", "@tonaljs/pitch-note": "6.1.0", "@tonaljs/scale-type": "4.9.2" } }, "sha512-hyilnmsCmoGQiRhYWKM1QPrqaNH3KGEfrSfxeXcicPnEh12yvrVRm4djKmTVw7Rc/5P4GniPAA51+CS0C5dbLw=="],
+
+    "@tonaljs/scale-type": ["@tonaljs/scale-type@4.9.2", "", { "dependencies": { "@tonaljs/pcset": "4.10.1" } }, "sha512-XDRPySg0X6owJ6AVzVRpS4ZpgleAUQakuq5VtfQ0JitnJKGRYo5Y0w7Fl/wEz/X9aEMk2lxcdF8VGGMIsQFo0g=="],
+
+    "@tonaljs/time-signature": ["@tonaljs/time-signature@4.9.0", "", {}, "sha512-zRo8CBqg/2guzTlF2vxyVIuB5gmwWQaxlknJPUSDII8CTdQ/x3a1LlNoMKkvTUnqwCihe3WrNPZ5XUfOOTthYA=="],
+
+    "@tonaljs/voice-leading": ["@tonaljs/voice-leading@5.1.2", "", { "dependencies": { "@tonaljs/note": "4.12.1" } }, "sha512-lV5hsDZC4ekhh465d2aVFFqyG9AOZvwKdxU1+dNB/P6ldefU1yHC10mKdY7FrdhVgKeGZG1MbJh8rETaKVg7vA=="],
+
+    "@tonaljs/voicing": ["@tonaljs/voicing@5.1.3", "", { "dependencies": { "@tonaljs/chord": "6.1.2", "@tonaljs/interval": "5.1.0", "@tonaljs/note": "4.12.1", "@tonaljs/range": "4.9.2", "@tonaljs/voice-leading": "5.1.2", "@tonaljs/voicing-dictionary": "5.1.3" } }, "sha512-OLNcaIA086/4gwoXVa736yW0yP9TADi95/5LAS8KxMtzYBWPYzxyC1IxcE9bGqXsdBnI99au57J8+G6wroluyg=="],
+
+    "@tonaljs/voicing-dictionary": ["@tonaljs/voicing-dictionary@5.1.3", "", { "dependencies": { "@tonaljs/chord": "6.1.2", "@tonaljs/note": "4.12.1", "@tonaljs/voice-leading": "5.1.2" } }, "sha512-kRM6IOHq+ULgZtJdbGNz5OmfUo+WyA3EeqKVrlA9Uj7QqrrfOkzeQdE3jXEBnjO1oGP5ql6NS5QUF3rST+SqUQ=="],
+
     "@types/json-schema": ["@types/json-schema@7.0.15", "", {}, "sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA=="],
 
     "@types/lodash": ["@types/lodash@4.17.24", "", {}, "sha512-gIW7lQLZbue7lRSWEFql49QJJWThrTFFeIMJdp3eH4tKoxm1OvEPg02rm4wCCSHS0cL3/Fizimb35b7k8atwsQ=="],
 
     "@vercel/oidc": ["@vercel/oidc@3.1.0", "", {}, "sha512-Fw28YZpRnA3cAHHDlkt7xQHiJ0fcL+NRcIqsocZQUSmbzeIKRpwttJjik5ZGanXP+vlA4SbTg+AbA3bP363l+w=="],
+
+    "abcjs": ["abcjs@6.6.2", "", {}, "sha512-YLbp5lYUq0uOywWZx9EuTdm0TcflKZi7hOzz366A/LFl3qoAXSYIjznJQmr/VeHg8NcLxZYoN8dLi7PqCpxKEA=="],
 
     "accepts": ["accepts@2.0.0", "", { "dependencies": { "mime-types": "^3.0.0", "negotiator": "^1.0.0" } }, "sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng=="],
 
@@ -437,6 +498,8 @@
     "tinyglobby": ["tinyglobby@0.2.15", "", { "dependencies": { "fdir": "^6.5.0", "picomatch": "^4.0.3" } }, "sha512-j2Zq4NyQYG5XMST4cbs02Ak8iJUdxRM0XI5QyxXuZOzKOINmWurp3smXu3y5wDcJrptwpSjgXHzIQxR0omXljQ=="],
 
     "toidentifier": ["toidentifier@1.0.1", "", {}, "sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA=="],
+
+    "tonal": ["tonal@6.4.3", "", { "dependencies": { "@tonaljs/abc-notation": "4.9.1", "@tonaljs/array": "4.8.4", "@tonaljs/chord": "6.1.2", "@tonaljs/chord-type": "5.1.1", "@tonaljs/collection": "4.9.0", "@tonaljs/core": "5.0.2", "@tonaljs/duration-value": "4.9.0", "@tonaljs/interval": "5.1.0", "@tonaljs/key": "4.11.2", "@tonaljs/midi": "4.10.2", "@tonaljs/mode": "4.9.2", "@tonaljs/note": "4.12.1", "@tonaljs/pcset": "4.10.1", "@tonaljs/progression": "4.9.2", "@tonaljs/range": "4.9.2", "@tonaljs/rhythm-pattern": "1.0.0", "@tonaljs/roman-numeral": "4.9.1", "@tonaljs/scale": "4.13.4", "@tonaljs/scale-type": "4.9.2", "@tonaljs/time-signature": "4.9.0", "@tonaljs/voice-leading": "5.1.2", "@tonaljs/voicing": "5.1.3", "@tonaljs/voicing-dictionary": "5.1.3" } }, "sha512-p+0kwBBma3Ko2xtHVq8oYa+IAGRozkAkBk03swRvcEfxYa8Ktr0yrBYW1fsZlywaerEu346oebghrS8jDQmBsA=="],
 
     "tslib": ["tslib@2.8.1", "", {}, "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="],
 

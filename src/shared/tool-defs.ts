@@ -14,6 +14,13 @@ import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { STYLE_NAMES } from "../music-logic.js";
 import { DEFAULT_ABC_NOTATION } from "../abc-guide.js";
+import { analyzeHarmony, HARMONY_TASKS } from "./harmony.js";
+import {
+  convertAbcToStrudel,
+  DEFAULT_STRUDEL_SOUND,
+  type AbcToStrudelArgs,
+  type ParseOnlyFn,
+} from "./abc-to-strudel.js";
 
 // -----------------------------------------------------------------------------
 // Resource URIs
@@ -48,7 +55,9 @@ export const SERVER_INSTRUCTIONS =
   "topic 'genres' for templates, 'styles' for accompaniment presets, 'instruments' for the list) " +
   "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'). Use search-music-docs only " +
   "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
-  '("C", "Am7") above the notes and set a style.';
+  '("C", "Am7") above the notes and set a style. ' +
+  "Call analyze-harmony before writing chord symbols for a style preset; " +
+  "convert-abc-to-strudel turns a scored melody into a live pattern.";
 
 // -----------------------------------------------------------------------------
 // Server identity — icon + website (emitted verbatim in serverInfo by both
@@ -437,6 +446,126 @@ export async function searchMusicDocs(
       ],
     };
   }
+}
+
+// -----------------------------------------------------------------------------
+// analyze-harmony — music theory helper (no UI, pure computation)
+// -----------------------------------------------------------------------------
+
+export const ANALYZE_HARMONY_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+export const ANALYZE_HARMONY_DESCRIPTION =
+  "Music theory helper: name a chord from notes, guess the key, get a progression, " +
+  "or list what fits a key. Returns both the ABC chord-symbol spelling (for play-sheet-music) " +
+  "and the Strudel form (for play-live-pattern). " +
+  "Tasks: detect-chord (notes -> chord name + what to play next), " +
+  "detect-key (notes or chords -> best key + diatonic chords), " +
+  "suggest-progression (key [+ romanNumerals] -> chord symbols), " +
+  "scale-for-chord (chords -> the scale to improvise over each), " +
+  "key-chords (key -> every diatonic triad, seventh, and chord scale). " +
+  "Use it before writing chord symbols for a style preset, or to check a harmonization.";
+
+export const analyzeHarmonyInputSchema = z.object({
+  task: z
+    .enum(HARMONY_TASKS)
+    .describe(
+      "What to work out. detect-chord/detect-key need notes or chords; " +
+        "suggest-progression/key-chords need a key.",
+    ),
+  notes: z
+    .array(z.string())
+    .optional()
+    .describe('Note names, e.g. ["c4","e4","g4","b4"] or ["C","Eb","G"]. For detect-chord/detect-key.'),
+  chords: z
+    .array(z.string())
+    .optional()
+    .describe('Chord symbols, e.g. ["Dm7","G7","Cmaj7"]. For detect-key/scale-for-chord.'),
+  key: z
+    .string()
+    .optional()
+    .describe('Key, e.g. "C", "A minor", "F# major". For suggest-progression/key-chords.'),
+  romanNumerals: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Roman numerals to render in the key, e.g. ["ii7","V7","Imaj7"] or ["I","V","vi","IV"]. ' +
+        "Optional for suggest-progression — omit it to get common progressions instead.",
+    ),
+});
+
+/** Shared handler: identical text on both transports, never throws. */
+export function buildAnalyzeHarmonyResult(
+  args: z.infer<typeof analyzeHarmonyInputSchema>,
+): CallToolResult {
+  return { content: [{ type: "text", text: analyzeHarmony(args) }] };
+}
+
+// -----------------------------------------------------------------------------
+// convert-abc-to-strudel — bridge scored composition into live performance
+// -----------------------------------------------------------------------------
+
+export const CONVERT_ABC_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+export const CONVERT_ABC_DESCRIPTION =
+  "Turn an ABC melody into Strudel mini-notation so a scored piece can be remixed live. " +
+  "Returns runnable code — setcps() from the Q: tempo, one [...] bar group per bar inside " +
+  "note(\"<...>\"), plus a chord(\"<...>\").voicing() line when the ABC has chord symbols — " +
+  "then pass it to play-live-pattern. Durations become @ weights, rests become ~, " +
+  "triplets nest, and the key signature is folded into the note names. " +
+  "Lists what was lost (grace notes, dynamics, repeats, lyrics, other voices). " +
+  "Pick a single voice with `voice`; re-run per voice and stack() them for a full arrangement.";
+
+export const convertAbcInputSchema = z.object({
+  abcNotation: z.string().describe("ABC notation to convert (the same string you'd pass to play-sheet-music)."),
+  voice: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe(
+      "Which voice to convert, 1-based, counted across all staves (default 1). " +
+        "Multi-voice tunes report how many voices there are.",
+    ),
+  sound: z
+    .string()
+    .optional()
+    .describe(
+      `Strudel sound for the melody (default "${DEFAULT_STRUDEL_SOUND}"). ` +
+        "Use a GM soundfont name like gm_flute or gm_epiano1 — see get-strudel-guide topic 'sounds'.",
+    ),
+});
+
+/**
+ * Shared handler. The abcjs parser is injected so this module stays free of the
+ * abcjs import; each transport passes its own `ABCJS.parseOnly`.
+ */
+export function buildConvertAbcResult(
+  args: AbcToStrudelArgs,
+  parseOnly: ParseOnlyFn,
+): CallToolResult {
+  const result = convertAbcToStrudel(args, parseOnly);
+  if (!result.ok) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `${result.error}\n\nTip: use get-music-guide("abc-syntax") for notation reference.`,
+        },
+      ],
+    };
+  }
+  return { content: [{ type: "text", text: result.text }] };
 }
 
 // -----------------------------------------------------------------------------
