@@ -118,6 +118,10 @@ async function loadStrudelCDN(): Promise<void> {
         // Surfaced to the user instead of silently swallowed (see renderPattern).
         soundfontWarning = true;
       }
+      // The console watch can go in immediately; the eval-scope globals
+      // (initHydra, H, …) are only published when <strudel-editor> builds its
+      // REPL, so installEvalScopeHooks() is retried from the evaluate hook.
+      installConsoleWatch();
       resolve();
     };
     script.onerror = () => reject(new Error("Failed to load Strudel REPL"));
@@ -336,6 +340,177 @@ function syncHydraCanvasSize(w: number, h: number): void {
   }
 }
 
+// -----------------------------------------------------------------------------
+// Eval-scope patches
+//
+// @strudel/repl puts its exports on globalThis (verified: `initHydra` is a
+// plain writable, configurable data property, and a pattern's free identifiers
+// resolve to it), so replacing them here is picked up by evaluated patterns.
+// Three things need patching, all confirmed against the 1.3.0 bundle:
+//
+//   1. initHydra() gives us no other handle on the HydraRenderer — the module
+//      keeps it in a closure and `globalThis.hydra` is undefined — so wrapping
+//      is the only way to reach hush()/regl for teardown. It also lets us pin
+//      hydra-synth (upstream defaults to an UNVERSIONED unpkg URL) and re-assert
+//      the resolution once the engine is actually up.
+//   2. H(p) is `() => reify(p).queryArc(t, t)[0].value` — a zero-width query,
+//      so a pattern with a rest under the playhead yields NO hap and it throws
+//      "Cannot read properties of undefined". Hydra calls it every frame, so one
+//      rest kills the shader while the audio keeps going (measured: `H("1 ~")`
+//      throws, `H("<3 4 5>")` never does).
+//   3. hydra-synth's makeGlobal overwrites Strudel's `time`, `speed`, `shape`
+//      and `hush` globals. clearHydra() restores only speed and shape.
+// -----------------------------------------------------------------------------
+
+/** Pinned so a hydra-synth release can't silently change under the widget. */
+const HYDRA_SYNTH_CDN = "https://unpkg.com/hydra-synth@1.4.0";
+
+/** Strudel globals that hydra-synth's makeGlobal clobbers. */
+const CLOBBERED_GLOBALS = ["time", "speed", "shape", "hush"] as const;
+
+let evalScopeHooked = false;
+let hydraInstance: any = null;
+let strudelGlobals: Record<string, unknown> | null = null;
+// Set the first time a pattern initialises Hydra: after that, the clobbered
+// globals hold Hydra's values and are no longer worth snapshotting.
+let hydraEverInitialised = false;
+
+/**
+ * Remember Strudel's own values for the globals hydra-synth's makeGlobal takes
+ * over. The REPL publishes its eval scope in stages, so these are not all
+ * present at the same moment — fill each key in as it appears, and stop once
+ * Hydra has run and the values on globalThis are no longer Strudel's.
+ */
+function snapshotStrudelGlobals(): void {
+  if (hydraEverInitialised) return;
+  const w = window as any;
+  strudelGlobals ??= {};
+  for (const key of CLOBBERED_GLOBALS) {
+    if (strudelGlobals[key] === undefined && w[key] !== undefined) {
+      strudelGlobals[key] = w[key];
+    }
+  }
+}
+
+/**
+ * Replace a global with a wrapped version that SURVIVES republishing.
+ *
+ * A plain `globalThis.x = wrapper` does not hold: the REPL publishes its eval
+ * scope with `Object.assign(globalThis, module)` across several async chunks,
+ * so a wrapper installed mid-publish is silently overwritten by a later chunk
+ * (measured — the wrapper went in, and by the time a pattern ran the original
+ * was back). An accessor turns every republish into a call to our setter, which
+ * re-wraps the incoming original instead of losing to it.
+ */
+function defineWrappedGlobal(key: string, wrap: (original: any) => any): void {
+  const w = window as any;
+  let exposed = typeof w[key] === "function" ? wrap(w[key]) : w[key];
+  Object.defineProperty(w, key, {
+    configurable: true,
+    enumerable: true,
+    get: () => exposed,
+    set: (value) => {
+      exposed = typeof value === "function" ? wrap(value) : value;
+    },
+  });
+}
+
+function installEvalScopeHooks(): void {
+  const w = window as any;
+  if (evalScopeHooked || typeof w.initHydra !== "function") return;
+  evalScopeHooked = true;
+
+  snapshotStrudelGlobals();
+
+  defineWrappedGlobal("initHydra", (original) => async (options: Record<string, unknown> = {}) => {
+    // `src` first so an explicit caller value still wins. It is destructured out
+    // by initHydra and never reaches the Hydra constructor.
+    hydraEverInitialised = true;
+    const instance = await original({ src: HYDRA_SYNTH_CDN, ...options });
+    if (instance) hydraInstance = instance;
+    // The MutationObserver has normally adopted and sized the canvas already
+    // (it fires during getDrawContext, before initHydra's `await import`, which
+    // is what lets the size land before the HydraRenderer constructor reads it).
+    // Re-assert here now that the engine exists and setResolution is available.
+    const canvas = getHydraCanvas();
+    if (canvas) {
+      adoptHydraCanvas(canvas);
+      syncHydraCanvasSize(replSection.clientWidth, replSection.clientHeight);
+    }
+    return instance;
+  });
+
+  defineWrappedGlobal("H", (original) => (pattern: unknown) => {
+    const sample = original(pattern);
+    return () => {
+      try {
+        const value = Number(sample());
+        return Number.isFinite(value) ? value : 0;
+      } catch {
+        // Rest under the playhead — the zero-width query returns no hap and the
+        // upstream H throws. Hydra calls this every frame, so one rest would
+        // otherwise kill the shader while the audio kept going.
+        return 0;
+      }
+      // NOTE: the Number() above also flattens NOTE-valued patterns to 0 —
+      // H("<c3 e3>") feeds a shader 0 rather than a pitch. That is deliberate:
+      // Hydra parameters are numeric, and a silent 0 beats a per-frame throw.
+      // Patterns meant to drive a shader should carry numbers, as the guide's
+      // recipes do.
+    };
+  });
+}
+
+/**
+ * Put Strudel's own globals back after hydra-synth's makeGlobal took them.
+ *
+ * `speed` and `shape` are the ones that matter (they are Strudel controls a
+ * pattern can call) and they stick — upstream clearHydra() re-asserts them too.
+ * `time` does NOT stick: the REPL re-injects Hydra's sandbox props on every
+ * later evaluation, so the bare `time` global stays Hydra's clock (NaN once the
+ * renderer is destroyed). Nothing in Strudel's pattern API reads it — patterns
+ * use getTime() — and a fresh initHydra() re-establishes it, so we restore what
+ * we can and leave it there rather than fighting the sandbox with an accessor.
+ *
+ * Each key is isolated so one stubborn global cannot abort the rest of teardown.
+ */
+function restoreStrudelGlobals(): void {
+  if (!strudelGlobals) return;
+  const w = window as any;
+  for (const [key, value] of Object.entries(strudelGlobals)) {
+    if (value === undefined) continue;
+    try {
+      w[key] = value;
+      if (w[key] === value) continue;
+    } catch { /* accessor with no setter — redefine below */ }
+    try {
+      Object.defineProperty(w, key, {
+        value,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    } catch { /* non-configurable: leave it, Strudel's API still works */ }
+  }
+}
+
+/**
+ * Release the HydraRenderer. clearHydra() only hushes it and drops the canvas;
+ * the regl context (and the render loop driving it) survives, so destroy it.
+ * The next initHydra() builds a fresh renderer, having found no #hydra-canvas.
+ */
+function stopHydraInstance(): void {
+  const instance = hydraInstance;
+  hydraInstance = null;
+  if (!instance) return;
+  try {
+    instance.hush?.();
+  } catch { /* already torn down */ }
+  try {
+    instance.regl?.destroy?.();
+  } catch { /* regl may already be gone */ }
+}
+
 /** Stage or strike the Hydra layer for the pattern about to run. */
 function setHydraActive(active: boolean): void {
   hydraActive = active;
@@ -353,6 +528,8 @@ function setHydraActive(active: boolean): void {
   try {
     (window as any).clearHydra?.();
   } catch { /* hydra never initialised — nothing to clear */ }
+  stopHydraInstance();
+  restoreStrudelGlobals();
   getHydraCanvas()?.remove();
 }
 
@@ -387,6 +564,70 @@ function applyVizVisibility(): void {
 // through one place that stages the visuals for the code about to run and then
 // reports the real outcome to the status line and to the model.
 // =============================================================================
+
+// -----------------------------------------------------------------------------
+// Missing sounds
+//
+// An unknown sound name does NOT fail evaluation — the pattern is valid, and
+// superdough only discovers the sample is missing when it tries to trigger it,
+// a cycle later. It reports through Strudel's logger, which writes to
+// console.LOG (styled with %c), not console.error, so the only way to see it is
+// to watch the console. We pass everything through untouched and just pick the
+// sound name out.
+// -----------------------------------------------------------------------------
+
+const MISSING_SOUND_RE = /sound\s+(\S+?)\s+not found/i;
+const missingSounds = new Set<string>();
+let missingSoundTimer: ReturnType<typeof setTimeout> | null = null;
+let missingSoundReported = false;
+let consoleWatchInstalled = false;
+
+function noteMissingSound(name: string): void {
+  if (missingSoundReported || missingSounds.has(name)) return;
+  missingSounds.add(name);
+  if (missingSoundTimer !== null) return;
+  // Collect for a beat so several missing sounds become ONE report.
+  missingSoundTimer = setTimeout(() => {
+    missingSoundTimer = null;
+    missingSoundReported = true;
+    const list = [...missingSounds].join(", ");
+    setStatus(`Playing — sound not found: ${list}`, "error");
+    reportToModel(
+      `Strudel widget: sound not found: ${list}. The pattern is running, but that ` +
+        "part is silent — use a sound name from the guide's 'sounds' topic.",
+    );
+  }, 900);
+}
+
+/** Console methods as they were before installConsoleWatch(), for teardown. */
+const originalConsole: Partial<Record<"log" | "error", (...args: any[]) => void>> = {};
+
+function installConsoleWatch(): void {
+  if (consoleWatchInstalled) return;
+  consoleWatchInstalled = true;
+  for (const level of ["log", "error"] as const) {
+    const original = console[level].bind(console);
+    originalConsole[level] = console[level];
+    console[level] = (...args: unknown[]) => {
+      try {
+        const match = MISSING_SOUND_RE.exec(args.map(String).join(" "));
+        if (match) noteMissingSound(match[1]);
+      } catch { /* never let the watch break logging */ }
+      original(...args);
+    };
+  }
+}
+
+/** Hand the console back untouched when the host discards this widget. */
+function removeConsoleWatch(): void {
+  if (!consoleWatchInstalled) return;
+  consoleWatchInstalled = false;
+  for (const level of ["log", "error"] as const) {
+    const original = originalConsole[level];
+    if (original) console[level] = original;
+    delete originalConsole[level];
+  }
+}
 
 /** Reveal/stage the visual layers the given pattern asks for. */
 function stageVisuals(code: string): void {
@@ -472,16 +713,54 @@ function installEvaluateHook(editor: any): void {
   editor.__musicStudioHooked = true;
   const original = editor.evaluate.bind(editor);
   editor.evaluate = async (shouldPlay?: unknown) => {
+    // Idempotent, and cheap once it has taken. It must run here rather than at
+    // CDN load: initHydra/H only land on globalThis when the REPL's eval scope
+    // is published, which is after <strudel-editor> initialises.
+    installEvalScopeHooks();
+    snapshotStrudelGlobals();
     const code = typeof editor.code === "string" ? editor.code : currentCode;
     stageVisuals(code);
+    // A fresh pattern gets a fresh missing-sound report.
+    missingSounds.clear();
+    missingSoundReported = false;
+    if (missingSoundTimer !== null) {
+      clearTimeout(missingSoundTimer);
+      missingSoundTimer = null;
+    }
     try {
       await original(shouldPlay !== false);
     } catch (err) {
       reportEvaluation(code, err as Error);
       return;
     }
+    // Some of the clobbered globals (`time`) are only published onto globalThis
+    // by the evaluation itself, so the pre-eval snapshot above cannot see them
+    // on a cold widget. This second pass catches them, and no-ops once a
+    // pattern has initialised Hydra (after which they are Hydra's, not
+    // Strudel's). A widget whose FIRST pattern uses Hydra therefore has no
+    // Strudel value to put back — nothing observable depends on it.
+    snapshotStrudelGlobals();
     reportEvaluation(code, null);
   };
+}
+
+/**
+ * <strudel-editor> dispatches an `update` CustomEvent carrying the whole repl
+ * state whenever it changes. We report outcomes from the evaluate wrapper (one
+ * message per evaluation), so this listener only keeps the Play button honest
+ * for state changes we did not initiate — a pattern calling hush(), say. It
+ * deliberately leaves the status text alone so it can't overwrite an error.
+ */
+function installStateListener(element: HTMLElement): void {
+  if ((element as any).__musicStudioStateHooked) return;
+  (element as any).__musicStudioStateHooked = true;
+  element.addEventListener("update", (event) => {
+    const started = (event as CustomEvent).detail?.started;
+    if (typeof started !== "boolean" || started === isPlaying) return;
+    isPlaying = started;
+    playBtn.classList.toggle("playing", started);
+    playBtn.textContent = started ? "Playing" : "Play";
+  });
 }
 
 // =============================================================================
@@ -677,6 +956,8 @@ async function renderPattern(args: Record<string, unknown>) {
     const editor = await waitForEditor();
     // Route every evaluation (ours and the user's Ctrl+Enter) through one hook.
     installEvaluateHook(editor);
+    installEvalScopeHooks();
+    if (editorEl) installStateListener(editorEl);
 
     // Fix the broken layout (hide canvas, ensure editor visible)
     fixLayout();
@@ -847,6 +1128,11 @@ app.onteardown = () => {
       clearTimeout(hydraLateResize);
       hydraLateResize = null;
     }
+    if (missingSoundTimer !== null) {
+      clearTimeout(missingSoundTimer);
+      missingSoundTimer = null;
+    }
+    removeConsoleWatch();
     // Stop Hydra's WebGL render loop too — it runs independently of the
     // Strudel scheduler and would otherwise keep the GPU busy after teardown.
     setHydraActive(false);
