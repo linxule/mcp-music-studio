@@ -46,7 +46,14 @@ const container = document.getElementById("strudel-container")!;
 let editorEl: HTMLElement | null = null;
 let currentCode = "";
 let isPlaying = false;
-let cdnLoaded = false;
+
+/**
+ * Bumped by every renderPattern() and by teardown. Async work reads its own
+ * generation back after each `await`: if it no longer matches, a newer tool
+ * input (or the host discarding the widget) has taken over and the superseded
+ * run must stop touching the DOM rather than racing the current one.
+ */
+let renderGeneration = 0;
 
 /**
  * A viewer who asked for less motion gets no AUTO-revealed backdrop and no
@@ -145,22 +152,39 @@ let soundfontWarning = false;
  * So the editor owns the single prebake and we observe its promise for the
  * soundfont warning (watchPrebake below).
  */
+/**
+ * Single-flight: ONE shared promise, not a "loaded" boolean.
+ *
+ * The boolean was only set in the script's onload, so two overlapping callers
+ * (a streaming boot and a tool input, or two tool inputs in a row) each saw
+ * `false`, each appended a <script src=…> for the 1.7MB bundle and each raced
+ * to define the same custom element. Everyone now awaits the same promise; a
+ * rejection clears it so the CDN-retry affordance can genuinely retry.
+ */
+let cdnLoad: Promise<void> | null = null;
+
 async function loadStrudelCDN(): Promise<void> {
-  if (cdnLoaded) return;
-  return new Promise<void>((resolve, reject) => {
+  if (cdnLoad) return cdnLoad;
+  cdnLoad = new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
     script.src = STRUDEL_CDN;
     script.onload = () => {
-      cdnLoaded = true;
       // The console watch can go in immediately; the eval-scope globals
       // (initHydra, H, …) are only published when <strudel-editor> builds its
       // REPL, so installEvalScopeHooks() is retried from the evaluate hook.
       installConsoleWatch();
       resolve();
     };
-    script.onerror = () => reject(new Error("Failed to load Strudel REPL"));
+    script.onerror = () => {
+      script.remove();
+      reject(new Error("Failed to load Strudel REPL"));
+    };
     document.head.appendChild(script);
   });
+  cdnLoad.catch(() => {
+    cdnLoad = null;
+  });
+  return cdnLoad;
 }
 
 /**
@@ -1550,10 +1574,15 @@ let pendingPartialCode = "";
 
 function startStreamingBoot(): Promise<void> {
   if (streamingBoot) return streamingBoot;
+  const generation = renderGeneration;
   streamingBoot = (async () => {
     try {
       await loadStrudelCDN();
+      if (generation !== renderGeneration) return;
       const editor = await prepareEditor();
+      // A real tool input (or a teardown) landed while we were booting — it owns
+      // the buffer now, so don't write a half-streamed pattern over it.
+      if (generation !== renderGeneration) return;
       if (pendingPartialCode) editor.setCode(pendingPartialCode);
     } catch {
       // Speculative: renderPattern() runs the real load with its own error
@@ -1569,6 +1598,11 @@ async function renderPattern(args: Record<string, unknown>) {
   const code = args.code as string | undefined;
   if (!code) return;
 
+  // Every overlapping tool input gets its own generation; the older one stops
+  // at its next checkpoint instead of writing into a buffer it no longer owns.
+  const generation = ++renderGeneration;
+  const superseded = () => generation !== renderGeneration;
+
   lastRenderArgs = args;
   const bpm = args.bpm as number | undefined;
   const autoplay = args.autoplay as boolean | undefined;
@@ -1581,14 +1615,17 @@ async function renderPattern(args: Record<string, unknown>) {
     // let it finish rather than racing it with a second <strudel-editor>.
     if (streamingBoot) {
       await streamingBoot.catch(() => { /* falls through to the real load */ });
+      if (superseded()) return;
     }
     try {
       await loadStrudelCDN();
     } catch (cdnErr) {
+      if (superseded()) return;
       setStatus("Failed to load Strudel — click Retry", "error");
       showCdnError();
       return;
     }
+    if (superseded()) return;
 
     let finalCode = code;
     if (bpm) {
@@ -1613,6 +1650,7 @@ async function renderPattern(args: Record<string, unknown>) {
 
     setStatus("Initializing...");
     const editor = await prepareEditor();
+    if (superseded()) return;
 
     editor.setCode(finalCode);
 
@@ -1634,6 +1672,7 @@ async function renderPattern(args: Record<string, unknown>) {
       setStatus(`Ready — click Play or Ctrl+Enter${soundfontNote}`, "normal");
     }
   } catch (err) {
+    if (superseded()) return;
     setStatus(`Error: ${(err as Error).message}`, "error");
   }
 }
@@ -1790,6 +1829,9 @@ app.ontoolcancelled = (params) => {
 // tears this instance down, so a discarded widget leaves nothing running.
 app.onteardown = () => {
   try {
+    // Invalidate any in-flight render/boot so a late `await` can't repopulate
+    // the DOM of a widget the host has already discarded.
+    renderGeneration++;
     if (isRecording) stopRecording();
     if (mediaRecorder?.state === "recording") mediaRecorder.stop();
     mediaRecorder = null;
