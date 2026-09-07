@@ -418,7 +418,10 @@ export default {
       const handler = createMcpHandler(
         server as unknown as Parameters<typeof createMcpHandler>[0],
         {
-          route: null as unknown as string,
+          // `route` is optional and defaults to "/mcp"; the handler 404s
+          // anything else. We already matched, and we accept the trailing-slash
+          // form too, so hand it the path we actually dispatched on.
+          route: url.pathname,
           sessionIdGenerator: undefined,
           enableJsonResponse: true,
         },

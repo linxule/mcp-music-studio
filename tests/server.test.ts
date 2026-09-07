@@ -66,7 +66,14 @@ describe("tool registration", () => {
     expect(SERVER_INSTRUCTIONS).toContain("analyze-harmony");
     expect(SERVER_INSTRUCTIONS).toContain("convert-abc-to-strudel");
     // instructions are re-sent every turn and truncated at 2KB by Claude Code
-    expect(SERVER_INSTRUCTIONS.length).toBeLessThan(2048);
+    expect(SERVER_INSTRUCTIONS.length).toBeLessThan(2000);
+  });
+
+  it("offers analyze-harmony rather than ordering a detour through it", () => {
+    // Instructions ride on every turn; a standing "call X before Y" costs a
+    // round trip on every chord symbol the model writes.
+    expect(SERVER_INSTRUCTIONS).toContain("If unsure about chord spelling");
+    expect(SERVER_INSTRUCTIONS).not.toMatch(/call analyze-harmony before/i);
   });
 });
 
