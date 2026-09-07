@@ -12,10 +12,17 @@
 // =============================================================================
 
 import "./strudel-app.css";
-import { App } from "@modelcontextprotocol/ext-apps";
+import {
+  App,
+  applyDocumentTheme,
+  applyHostStyleVariables,
+  type McpUiHostContext,
+} from "@modelcontextprotocol/ext-apps";
 import { detectViz } from "./shared/viz-detect";
 import { injectTempo } from "./shared/tempo";
+import { applyVisualPreset } from "./shared/visual-presets";
 import { audioBufferToWavBase64 } from "./wav-encoder";
+import { sanitizeFileStem } from "./bytes-to-base64";
 import { VERSION } from "./version";
 
 const STRUDEL_CDN = "https://unpkg.com/@strudel/repl@1.3.0";
@@ -28,7 +35,10 @@ const downloadBtn = document.getElementById("download-btn") as HTMLButtonElement
 const sendBtn = document.getElementById("send-btn") as HTMLButtonElement;
 const fullscreenBtn = document.getElementById("fullscreen-btn") as HTMLButtonElement;
 const vizBtn = document.getElementById("viz-btn") as HTMLButtonElement;
+const stageBtn = document.getElementById("stage-btn") as HTMLButtonElement;
+const titleEl = document.getElementById("pattern-title") as HTMLElement;
 const replSection = document.querySelector(".repl-section") as HTMLElement;
+const mainEl = document.querySelector(".main") as HTMLElement;
 const vizCanvas = document.getElementById("test-canvas") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 const container = document.getElementById("strudel-container")!;
@@ -37,6 +47,21 @@ let editorEl: HTMLElement | null = null;
 let currentCode = "";
 let isPlaying = false;
 let cdnLoaded = false;
+
+/**
+ * A viewer who asked for less motion gets no AUTO-revealed backdrop and no
+ * Hydra preset — both are continuous, unprompted animation. The manual
+ * "Visuals" toggle and hand-written shader code still work: the setting is
+ * about what we start on our own, not about what the user asks for.
+ */
+const reducedMotionQuery =
+  typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-reduced-motion: reduce)")
+    : null;
+
+function prefersReducedMotion(): boolean {
+  return reducedMotionQuery?.matches === true;
+}
 
 // Visualization panel. The pattern's code decides whether a visual shows: the
 // panel auto-reveals when the code contains a viz method or initHydra(), unless
@@ -100,29 +125,51 @@ function getLiveCode(): string {
 // Set when prebake() soundfont registration fails — audio may be silent/absent.
 let soundfontWarning = false;
 
+/**
+ * Load the Strudel REPL bundle.
+ *
+ * We deliberately do NOT call prebake() ourselves. <strudel-editor>'s
+ * connectedCallback constructs StrudelMirror with the bundle's module-scoped
+ * `prebake` and calls it once, parking the promise on `editor.prebaked`:
+ *
+ *   this.editor = new StrudelMirror({ ..., prebake, ... })
+ *
+ * That reference is module-internal, so overwriting `window.strudel.prebake`
+ * cannot memoize it — and prebake() is not memoized upstream. Calling it here
+ * as well therefore ran the whole soundfont/sample registration TWICE per
+ * widget: verified in the dev harness, seven of the sample manifests
+ * (Dirt-Samples.json, tidal-drum-machines.json, piano.json, vcsl.json,
+ * mridangam.json, uzu strudel.json, drum-machine aliases) were each fetched
+ * twice per tool call.
+ *
+ * So the editor owns the single prebake and we observe its promise for the
+ * soundfont warning (watchPrebake below).
+ */
 async function loadStrudelCDN(): Promise<void> {
   if (cdnLoaded) return;
   return new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
     script.src = STRUDEL_CDN;
-    script.onload = async () => {
+    script.onload = () => {
       cdnLoaded = true;
-      // Trigger prebake to register soundfonts (128 GM instruments)
-      // and load default samples (dirt-samples, drum machines)
-      try {
-        const strudel = (window as any).strudel;
-        if (strudel?.prebake) await strudel.prebake();
-        soundfontWarning = false;
-      } catch {
-        // Non-fatal: the REPL still works, but soundfonts may be unavailable.
-        // Surfaced to the user instead of silently swallowed (see renderPattern).
-        soundfontWarning = true;
-      }
       resolve();
     };
     script.onerror = () => reject(new Error("Failed to load Strudel REPL"));
     document.head.appendChild(script);
   });
+}
+
+/**
+ * Watch the editor's single prebake() for failure, so silent audio is explained
+ * rather than swallowed. Non-blocking: the REPL is usable while samples load.
+ */
+function watchPrebake(editor: any): void {
+  const prebaked = editor?.prebaked;
+  if (!prebaked || typeof prebaked.then !== "function") return;
+  prebaked.then(
+    () => { soundfontWarning = false; },
+    () => { soundfontWarning = true; },
+  );
 }
 
 function setStatus(text: string, type: "normal" | "playing" | "error" = "normal") {
@@ -366,6 +413,442 @@ function applyVizVisibility(): void {
     // Backdrop just gained layout — size the backing store on the next frame.
     requestAnimationFrame(syncVizCanvasSize);
   }
+  // Stage mode shows ONLY the visuals; with the visuals off it would be a blank
+  // rectangle, so leaving them takes the stage down too.
+  if (!vizVisible && stageMode) {
+    stageMode = false;
+    applyStageMode();
+  }
+  syncStageAffordance();
+}
+
+// =============================================================================
+// Editor theme + the theme-derived visuals scrim  (`theme` tool parameter)
+//
+// @strudel/codemirror's activateTheme() (reached via StrudelMirror's
+// updateSettings({ theme })) does two things: it reconfigures the CodeMirror
+// theme extension, and it writes the theme's palette onto :root as
+// `--background`, `--foreground`, … with !important. That second effect is what
+// makes a theme-aware scrim possible without shipping our own copy of 39
+// palettes — we read the variable back out of the cascade.
+//
+// Verified in the dev harness against the live @strudel/repl@1.3.0 bundle:
+// `--background` goes #222 (strudelTheme) → #fff (githubLight).
+// =============================================================================
+
+/** The theme currently applied, so a re-render doesn't reconfigure needlessly. */
+let currentTheme: string | null = null;
+/** Theme requested by the most recent tool input, applied once an editor exists. */
+let pendingTheme: string | undefined;
+
+function applyEditorTheme(editor: any, theme: string | undefined): void {
+  if (theme && theme !== currentTheme) {
+    try {
+      // updateSettings() also reads fontSize/fontFamily off the object it is
+      // given, so merge over the element's current settings rather than handing
+      // it a lone { theme } and clobbering those with undefined.
+      const base = (editorEl as any)?.settings ?? {};
+      editor.updateSettings({ ...base, theme });
+      currentTheme = theme;
+    } catch {
+      // An unknown name is non-fatal upstream (activateTheme warns and falls
+      // back to strudelTheme); the scrim below still follows whatever landed.
+    }
+  }
+  syncVizTheme();
+}
+
+/** `#abc` / `#aabbcc` / `rgb()` / `rgba()` → [r, g, b], or null if unparseable. */
+function parseCssColor(value: string): [number, number, number] | null {
+  const text = value.trim();
+  const hex = /^#([0-9a-f]{3,8})$/i.exec(text);
+  if (hex) {
+    let digits = hex[1];
+    if (digits.length === 3 || digits.length === 4) {
+      digits = digits.slice(0, 3).split("").map((c) => c + c).join("");
+    }
+    if (digits.length < 6) return null;
+    return [
+      parseInt(digits.slice(0, 2), 16),
+      parseInt(digits.slice(2, 4), 16),
+      parseInt(digits.slice(4, 6), 16),
+    ];
+  }
+  const fn = /^rgba?\(([^)]+)\)$/i.exec(text);
+  if (fn) {
+    const parts = fn[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+    if (parts.length >= 3 && parts.slice(0, 3).every((n) => Number.isFinite(n))) {
+      return [parts[0], parts[1], parts[2]];
+    }
+  }
+  return null;
+}
+
+/**
+ * Rebuild the visuals stage + readability scrim from the ACTIVE editor theme.
+ *
+ * The v0.4.2 scrim was a hard-coded near-black. Under a light theme
+ * (githubLight, xcodeLight, solarizedLight, …) that put dark syntax colours on
+ * a dark veil — unreadable. Deriving both from the theme's own `--background`
+ * keeps one rule working in both directions: the stage IS the editor background
+ * and the veil is that same colour, so only the animation shows through.
+ */
+function syncVizTheme(): void {
+  const background = getComputedStyle(document.documentElement)
+    .getPropertyValue("--background");
+  const rgb = parseCssColor(background);
+  if (!rgb) return;
+  const [r, g, b] = rgb;
+  // Rec. 709 relative luminance, 0..1.
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  const isLight = luminance > 0.5;
+  const style = replSection.style;
+  style.setProperty("--viz-stage", `rgb(${r}, ${g}, ${b})`);
+  // A light theme needs a HEAVIER veil: dark code over a bright moving image is
+  // a worse contrast case than light code over a dark one.
+  style.setProperty("--viz-scrim", `rgba(${r}, ${g}, ${b}, ${isLight ? 0.72 : 0.5})`);
+  style.setProperty("--viz-gutter-scrim", `rgba(${r}, ${g}, ${b}, ${isLight ? 0.58 : 0.3})`);
+  // The glow that lifts code off the animation has to flip with it, or it turns
+  // into a dark smear around dark text.
+  style.setProperty(
+    "--viz-code-shadow",
+    isLight ? "0 1px 2px rgba(255, 255, 255, 0.95)" : "0 1px 2px rgba(0, 0, 0, 0.95)",
+  );
+}
+
+// =============================================================================
+// Audio-reactive visuals — `a`, driven by Strudel's OWN output
+//
+// hydra-synth's `a` comes from `new Audio(...)`, which opens the MICROPHONE via
+// getUserMedia and runs Meyda over it. @strudel/hydra passes `detectAudio:false`
+// (so `a` is simply undefined in the REPL) — which is right: we do not want a
+// permission prompt, and the mic hears the room, not the pattern.
+//
+// So we build the same object over an AnalyserNode tapped off the SAME master
+// bus the recorder taps (`getSuperdoughAudioController().output.destinationGain`).
+// Every hydra tutorial that reads `a.fft[0]`, `a0()`, `a.setBins(6)`,
+// `a.setSmooth(...)`, `a.setCutoff(...)`, `a.setScale(...)`, `a.show()/hide()`
+// works verbatim — but reacting to the music the widget is playing.
+//
+// Value semantics are ported from hydra-synth 1.4.0 src/lib/audio.js:
+//   bins[i]  = raw[i] * (1 - smooth) + prevBins[i] * smooth
+//   fft[i]   = max(0, (bins[i] - settings[i].cutoff) / settings[i].scale)
+// with the same defaults (4 bins, cutoff 2, scale 10, smooth 0.4, max 15).
+// The one deviation: hydra SUMS Meyda's bark-band loudness per band, which has
+// no meaning for an FFT magnitude array, so `raw` here is the band's mean
+// magnitude normalised 0..1 and then scaled by `max` into hydra's units — which
+// is what puts a loud band near fft ≈ 1.3 and silence at 0, the range the
+// cutoff/scale defaults were tuned for.
+// =============================================================================
+
+const ANALYSER_FFT_SIZE = 256;
+const ANALYSER_SMOOTHING = 0.8;
+/** Musical range. The -100..-30 dB default squashes Strudel's output flat. */
+const ANALYSER_MIN_DB = -90;
+const ANALYSER_MAX_DB = -20;
+/** How long to keep looking for Hydra after a render asks for it. */
+const ANALYSER_WAIT_MS = 20000;
+
+interface AudioBandSetting {
+  cutoff: number;
+  scale: number;
+  smooth: number;
+}
+
+interface StrudelAudioApi {
+  vol: number;
+  cutoff: number;
+  scale: number;
+  smooth: number;
+  max: number;
+  bins: number[];
+  prevBins: number[];
+  fft: number[];
+  settings: AudioBandSetting[];
+  isDrawing: boolean;
+  setBins(count: number): void;
+  setCutoff(value: number): void;
+  setSmooth(value: number): void;
+  setScale(value: number): void;
+  setMax(value: number): void;
+  show(): void;
+  hide(): void;
+  tick(): void;
+}
+
+let audioApi: StrudelAudioApi | null = null;
+let analyserNode: AnalyserNode | null = null;
+let analyserTapSource: AudioNode | null = null;
+let analyserBytes: Uint8Array<ArrayBuffer> | null = null;
+let analyserRaf: number | null = null;
+let analyserDeadline = 0;
+let audioMeterCanvas: HTMLCanvasElement | null = null;
+/** `a0`…`aN` globals we installed, so teardown can take them back off. */
+let installedBandGlobals: string[] = [];
+
+/**
+ * Hydra is live exactly when its canvas exists — @strudel/hydra uses the same
+ * fact as its own "already initialised" flag.
+ *
+ * TODO(merge): the Hydra-hardening branch keeps the instance in `hydraInstance`
+ * and the intent in `hydraActive`; swap this for those once the branches meet.
+ * Reads `window.__strudelHydra` first so the wiring is a one-line change.
+ */
+function isHydraLive(): boolean {
+  if ((window as any).__strudelHydra) return true;
+  return document.getElementById("hydra-canvas") !== null;
+}
+
+/** Tap the master bus with an AnalyserNode. Idempotent; false until audio exists. */
+function ensureAnalyser(): boolean {
+  if (analyserNode) return true;
+  try {
+    // The AudioContext is lazy — it only exists once something has played.
+    const ctx: AudioContext | undefined = (window as any).getAudioContext?.();
+    if (!ctx) return false;
+    const controller = (window as any).getSuperdoughAudioController?.();
+    const master: AudioNode | undefined = controller?.output?.destinationGain;
+    if (!master?.connect) return false;
+    const node = ctx.createAnalyser();
+    node.fftSize = ANALYSER_FFT_SIZE;
+    node.smoothingTimeConstant = ANALYSER_SMOOTHING;
+    node.minDecibels = ANALYSER_MIN_DB;
+    node.maxDecibels = ANALYSER_MAX_DB;
+    // Tap only: the analyser is never connected onward, so it reads the bus
+    // without adding a second path to the speakers.
+    master.connect(node);
+    analyserTapSource = master;
+    analyserNode = node;
+    analyserBytes = new Uint8Array(node.frequencyBinCount);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** hydra-synth's debug meter, ported — `a.show()` draws the live band levels. */
+function drawAudioMeter(api: StrudelAudioApi): void {
+  if (!audioMeterCanvas) return;
+  const ctx = audioMeterCanvas.getContext("2d");
+  if (!ctx) return;
+  const { width, height } = audioMeterCanvas;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#DFFFFF";
+  const spacing = width / Math.max(1, api.bins.length);
+  const scale = height / (api.max * 2);
+  api.bins.forEach((bin, index) => {
+    const barHeight = bin * scale;
+    ctx.fillRect(index * spacing, height - barHeight, spacing - 1, barHeight);
+  });
+}
+
+function createAudioApi(): StrudelAudioApi {
+  const api: StrudelAudioApi = {
+    vol: 0,
+    cutoff: 2,
+    scale: 10,
+    smooth: 0.4,
+    max: 15,
+    bins: [],
+    prevBins: [],
+    fft: [],
+    settings: [],
+    isDrawing: false,
+
+    setBins(count: number) {
+      const n = Math.max(1, Math.floor(count) || 1);
+      api.bins = new Array(n).fill(0);
+      api.prevBins = new Array(n).fill(0);
+      api.fft = new Array(n).fill(0);
+      api.settings = new Array(n).fill(0).map(() => ({
+        cutoff: api.cutoff,
+        scale: api.scale,
+        smooth: api.smooth,
+      }));
+      // hydra installs a0()…aN() alongside a.fft; tutorials use both forms.
+      for (const name of installedBandGlobals) delete (window as any)[name];
+      installedBandGlobals = [];
+      for (let i = 0; i < n; i++) {
+        const name = `a${i}`;
+        (window as any)[name] = (scale = 1, offset = 0) => () => api.fft[i] * scale + offset;
+        installedBandGlobals.push(name);
+      }
+    },
+
+    setCutoff(value: number) {
+      api.cutoff = value;
+      api.settings = api.settings.map((s) => ({ ...s, cutoff: value }));
+    },
+    setSmooth(value: number) {
+      api.smooth = value;
+      api.settings = api.settings.map((s) => ({ ...s, smooth: value }));
+    },
+    setScale(value: number) {
+      api.scale = value;
+      api.settings = api.settings.map((s) => ({ ...s, scale: value }));
+    },
+    setMax(value: number) {
+      api.max = value;
+    },
+
+    show() {
+      api.isDrawing = true;
+      if (!audioMeterCanvas) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 100;
+        canvas.height = 80;
+        canvas.className = "audio-meter";
+        replSection.appendChild(canvas);
+        audioMeterCanvas = canvas;
+      }
+      audioMeterCanvas.style.display = "block";
+    },
+    hide() {
+      api.isDrawing = false;
+      if (audioMeterCanvas) audioMeterCanvas.style.display = "none";
+    },
+
+    tick() {
+      const node = analyserNode;
+      const bytes = analyserBytes;
+      if (!node || !bytes) return;
+      node.getByteFrequencyData(bytes);
+      const count = api.bins.length;
+      const spacing = Math.max(1, Math.floor(bytes.length / count));
+      api.prevBins = api.bins.slice(0);
+      let total = 0;
+      for (let i = 0; i < count; i++) {
+        const start = i * spacing;
+        const end = Math.min(start + spacing, bytes.length);
+        let sum = 0;
+        for (let j = start; j < end; j++) sum += bytes[j];
+        // Mean magnitude 0..1, then into hydra's loudness units via `max`.
+        const level = sum / Math.max(1, end - start) / 255;
+        const raw = level * api.max;
+        const smooth = api.settings[i].smooth;
+        api.bins[i] = raw * (1 - smooth) + api.prevBins[i] * smooth;
+        total += api.bins[i];
+      }
+      api.vol = total / Math.max(1, count);
+      for (let i = 0; i < count; i++) {
+        api.fft[i] = Math.max(
+          0,
+          (api.bins[i] - api.settings[i].cutoff) / api.settings[i].scale,
+        );
+      }
+      if (api.isDrawing) drawAudioMeter(api);
+    },
+  };
+  api.setBins(4);
+  return api;
+}
+
+/**
+ * Publish `a` (and a0…a3) into the REPL's eval scope. Installed eagerly once an
+ * editor exists, so a shader's `() => a.fft[0] * 4` never sees an undefined `a`
+ * on Hydra's first frame — the analyser attaches later, and until it does the
+ * bands simply read 0.
+ */
+function installAudioReactiveGlobals(): void {
+  if (!audioApi) audioApi = createAudioApi();
+  (window as any).a = audioApi;
+}
+
+/**
+ * Drive the band analysis. Runs ONLY while Hydra is up — a pattern with no
+ * shader has nothing to react, so there is no reason to burn a frame callback.
+ * The loop stops itself once Hydra's canvas is gone.
+ */
+function startAnalyserLoop(): void {
+  analyserDeadline = performance.now() + ANALYSER_WAIT_MS;
+  if (analyserRaf !== null) return;
+  const frame = (now: number) => {
+    if (isHydraLive()) {
+      // Keep the window open while Hydra is alive; close it once it goes.
+      analyserDeadline = now + 1000;
+      if (analyserNode || ensureAnalyser()) audioApi?.tick();
+    } else if (now > analyserDeadline) {
+      analyserRaf = null;
+      return;
+    }
+    analyserRaf = requestAnimationFrame(frame);
+  };
+  analyserRaf = requestAnimationFrame(frame);
+}
+
+function stopAnalyserLoop(): void {
+  if (analyserRaf !== null) {
+    cancelAnimationFrame(analyserRaf);
+    analyserRaf = null;
+  }
+}
+
+function teardownAudioAnalyser(): void {
+  stopAnalyserLoop();
+  if (analyserTapSource && analyserNode) {
+    try {
+      (analyserTapSource as any).disconnect(analyserNode);
+    } catch { /* edge may already be gone */ }
+  }
+  analyserTapSource = null;
+  analyserNode = null;
+  analyserBytes = null;
+  for (const name of installedBandGlobals) delete (window as any)[name];
+  installedBandGlobals = [];
+  delete (window as any).a;
+  audioApi = null;
+  audioMeterCanvas?.remove();
+  audioMeterCanvas = null;
+}
+
+// =============================================================================
+// Stage mode — the visuals without the code
+//
+// Composes with the host's fullscreen display mode rather than replacing it:
+// "Stage" hides #strudel-container so the backdrop canvases (already absolutely
+// filling .repl-section) become the whole frame, and "⛶" asks the host for more
+// frame to fill. Either is useful alone; together they are a projector.
+// =============================================================================
+
+let stageMode = false;
+
+function applyStageMode(): void {
+  replSection.classList.toggle("stage-on", stageMode);
+  stageBtn.classList.toggle("active", stageMode);
+  stageBtn.setAttribute("aria-pressed", String(stageMode));
+  stageBtn.textContent = stageMode ? "Code" : "Stage";
+  stageBtn.title = stageMode
+    ? "Show the code again (Esc)"
+    : "Stage mode — hide the code and let the visuals fill the frame";
+  if (stageMode) requestAnimationFrame(syncVizCanvasSize);
+}
+
+/**
+ * Dim the button when there is nothing to stage, but leave it CLICKABLE so the
+ * click can say why — same choice the "Visuals" toggle already makes. A
+ * genuinely disabled button just swallows the question.
+ */
+function syncStageAffordance(): void {
+  const usable = vizVisible || stageMode;
+  stageBtn.setAttribute("aria-disabled", String(!usable));
+}
+
+// =============================================================================
+// Pattern title  (`title` tool parameter)
+// =============================================================================
+
+let patternTitle = "";
+
+function setPatternTitle(title: unknown): void {
+  patternTitle = typeof title === "string" ? title.trim() : "";
+  titleEl.textContent = patternTitle;
+  titleEl.title = patternTitle;
+  titleEl.hidden = patternTitle.length === 0;
+}
+
+/** Filename stem for the WAV export: the pattern's title, or a neutral default. */
+function recordingFileStem(): string {
+  return sanitizeFileStem(patternTitle, "strudel-recording");
 }
 
 // =============================================================================
@@ -394,8 +877,16 @@ function stageVisuals(code: string): void {
   // Stage the Hydra layer BEFORE evaluation so the canvas Hydra creates is
   // adopted and sized while hydra-synth is still importing.
   setHydraActive(intent.hydra);
+  if (intent.hydra) {
+    // Make `a` resolvable before the shader's first frame, and start reading
+    // the master bus (see the audio-reactive section).
+    installAudioReactiveGlobals();
+    startAnalyserLoop();
+  }
   if (!vizManual) {
-    vizVisible = intent.any;
+    // Reduced motion: never reveal a moving backdrop on our own initiative.
+    // The "Visuals" button still works — that is the user asking.
+    vizVisible = intent.any && !prefersReducedMotion();
     applyVizVisibility();
   }
   if (intent.any && vizVisible) {
@@ -583,7 +1074,7 @@ async function handleDownload(): Promise<void> {
         {
           type: "resource",
           resource: {
-            uri: "file:///strudel-recording.wav",
+            uri: `file:///${recordingFileStem()}.wav`,
             mimeType: "audio/wav",
             blob: wavBase64,
           },
@@ -634,6 +1125,70 @@ function showCdnError(): void {
   container.appendChild(box);
 }
 
+/**
+ * Create the <strudel-editor> element if it isn't there yet.
+ *
+ * Built programmatically (no innerHTML sink); the code goes in through the safe
+ * editor.setCode() API. Shared by renderPattern() and the streaming path below,
+ * which both need "an element exists" without caring who made it.
+ */
+function ensureEditorElement(): void {
+  if (editorEl) return;
+  const el = document.createElement("strudel-editor");
+  container.replaceChildren(el);
+  editorEl = el;
+}
+
+/** One-time per-editor setup: eval hook, prebake watch, theme, layout. */
+async function prepareEditor(): Promise<any> {
+  ensureEditorElement();
+  const editor = await waitForEditor();
+  // Route every evaluation (ours and the user's Ctrl+Enter) through one hook.
+  installEvaluateHook(editor);
+  // The editor owns the single prebake() — observe it for the soundfont warning.
+  watchPrebake(editor);
+  // Theme first, then the scrim derived from it.
+  applyEditorTheme(editor, pendingTheme);
+  // Make `a` resolvable in the eval scope from the very first evaluation.
+  installAudioReactiveGlobals();
+  // Fix the broken layout (hide canvas, ensure editor visible)
+  fixLayout();
+  // Re-check layout after a short delay (canvas may be created lazily)
+  setTimeout(fixLayout, 500);
+  setTimeout(fixLayout, 1500);
+  return editor;
+}
+
+// -----------------------------------------------------------------------------
+// Streaming boot
+//
+// ontoolinputpartial arrives while the model is still writing the pattern. On
+// the FIRST tool call there is no editor yet and the CDN hasn't been fetched, so
+// every partial chunk used to be dropped on the floor and the user watched an
+// empty box until the whole pattern landed. Start the load on the first partial
+// instead (the ABC widget does the same), and fill the buffer as it streams.
+// -----------------------------------------------------------------------------
+
+let streamingBoot: Promise<void> | null = null;
+let pendingPartialCode = "";
+
+function startStreamingBoot(): Promise<void> {
+  if (streamingBoot) return streamingBoot;
+  streamingBoot = (async () => {
+    try {
+      await loadStrudelCDN();
+      const editor = await prepareEditor();
+      if (pendingPartialCode) editor.setCode(pendingPartialCode);
+    } catch {
+      // Speculative: renderPattern() runs the real load with its own error
+      // surface (including the CDN retry affordance). Clear the memo so a
+      // failure here can't wedge the actual render behind a rejected promise.
+      streamingBoot = null;
+    }
+  })();
+  return streamingBoot;
+}
+
 async function renderPattern(args: Record<string, unknown>) {
   const code = args.code as string | undefined;
   if (!code) return;
@@ -641,9 +1196,16 @@ async function renderPattern(args: Record<string, unknown>) {
   lastRenderArgs = args;
   const bpm = args.bpm as number | undefined;
   const autoplay = args.autoplay as boolean | undefined;
+  pendingTheme = typeof args.theme === "string" ? args.theme : undefined;
+  setPatternTitle(args.title);
 
   try {
     setStatus("Loading Strudel...");
+    // A streaming boot may already be loading the CDN and building the editor —
+    // let it finish rather than racing it with a second <strudel-editor>.
+    if (streamingBoot) {
+      await streamingBoot.catch(() => { /* falls through to the real load */ });
+    }
     try {
       await loadStrudelCDN();
     } catch (cdnErr) {
@@ -656,7 +1218,15 @@ async function renderPattern(args: Record<string, unknown>) {
     if (bpm) {
       finalCode = injectBpm(finalCode, bpm);
     }
+    // Fold in the `visuals` preset AFTER the tempo injection, so a Hydra recipe
+    // keeps `await initHydra()` on the first line where the engine expects it.
+    // Reduced motion drops the Hydra presets (a WebGL shader is exactly the
+    // continuous animation that setting is asking us not to start).
+    finalCode = applyVisualPreset(finalCode, args.visuals, {
+      allowHydra: !prefersReducedMotion(),
+    });
     currentCode = finalCode;
+    pendingPartialCode = "";
 
     // Auto-reveal the visuals when the pattern includes a viz method, unless the
     // user has taken manual control of the "Visuals" toggle. (stageVisuals also
@@ -665,24 +1235,8 @@ async function renderPattern(args: Record<string, unknown>) {
     // backdrop they asked for.)
     stageVisuals(finalCode);
 
-    // Create the <strudel-editor> element programmatically (no innerHTML sink).
-    // The code is loaded via the safe editor.setCode() API below.
-    if (!editorEl) {
-      const newEditor = document.createElement("strudel-editor");
-      container.replaceChildren(newEditor);
-      editorEl = newEditor;
-    }
-
     setStatus("Initializing...");
-    const editor = await waitForEditor();
-    // Route every evaluation (ours and the user's Ctrl+Enter) through one hook.
-    installEvaluateHook(editor);
-
-    // Fix the broken layout (hide canvas, ensure editor visible)
-    fixLayout();
-    // Re-check layout after a short delay (canvas may be created lazily)
-    setTimeout(fixLayout, 500);
-    setTimeout(fixLayout, 1500);
+    const editor = await prepareEditor();
 
     editor.setCode(finalCode);
 
@@ -788,6 +1342,31 @@ vizBtn.addEventListener("click", () => {
   applyVizVisibility();
 });
 
+// Stage mode — visuals only. Dimmed but clickable with nothing to stage, so the
+// click can explain itself instead of silently doing nothing.
+stageBtn.addEventListener("click", () => {
+  if (!stageMode && !vizVisible) {
+    setStatus(
+      "Stage mode needs a visual — add .pianoroll() or `await initHydra()`, or set the visuals parameter",
+      "normal",
+    );
+    return;
+  }
+  stageMode = !stageMode;
+  applyStageMode();
+});
+
+// Escape leaves the stage, the way it leaves any other "took over the frame"
+// mode. Bound on the document so it works with focus inside CodeMirror.
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && stageMode) {
+    stageMode = false;
+    applyStageMode();
+  }
+});
+
+syncStageAffordance();
+
 // Keep the canvas backing store DPR-correct as the editor/iframe resizes.
 vizResizeObserver = new ResizeObserver(() => syncVizCanvasSize());
 vizResizeObserver.observe(replSection);
@@ -806,10 +1385,22 @@ app.ontoolinputpartial = (params) => {
   const code = params.arguments?.code as string | undefined;
   if (!code) return;
   setStatus("Composing pattern...");
+  // The title streams too — show it while the pattern is still being written.
+  if (typeof params.arguments?.title === "string") {
+    setPatternTitle(params.arguments.title);
+  }
+  if (typeof params.arguments?.theme === "string") {
+    pendingTheme = params.arguments.theme as string;
+  }
+  pendingPartialCode = code;
   const editor = getEditor();
   if (editor?.setCode) {
     editor.setCode(code);
+    return;
   }
+  // First tool call: no editor exists yet, so this chunk (and every chunk until
+  // the CDN lands) would be dropped. Boot the editor now and replay into it.
+  void startStreamingBoot();
 };
 
 // Generation cancelled — clear the stuck "Composing pattern..." status
@@ -850,11 +1441,35 @@ app.onteardown = () => {
     // Stop Hydra's WebGL render loop too — it runs independently of the
     // Strudel scheduler and would otherwise keep the GPU busy after teardown.
     setHydraActive(false);
+    // Release the analyser tap and take `a` / a0…aN back off the eval scope.
+    teardownAudioAnalyser();
   } catch { /* best-effort cleanup */ }
   return {};
 };
 
 app.onerror = console.error;
+
+/**
+ * Follow the host's own chrome: theme (which may differ from the OS preference),
+ * any CSS variable tokens it hands us, and the safe-area insets that keep the
+ * toolbar out from under a notch. Mirrors src/mcp-app.ts.
+ */
+function handleHostContextChanged(ctx: McpUiHostContext) {
+  if (ctx.theme) {
+    applyDocumentTheme(ctx.theme);
+  }
+  if (ctx.styles?.variables) {
+    applyHostStyleVariables(ctx.styles.variables);
+  }
+  if (ctx.safeAreaInsets) {
+    mainEl.style.paddingTop = `${ctx.safeAreaInsets.top}px`;
+    mainEl.style.paddingRight = `${ctx.safeAreaInsets.right}px`;
+    mainEl.style.paddingBottom = `${ctx.safeAreaInsets.bottom}px`;
+    mainEl.style.paddingLeft = `${ctx.safeAreaInsets.left}px`;
+  }
+}
+
+app.onhostcontextchanged = handleHostContextChanged;
 
 // Connect, then read host capabilities and gate features accordingly.
 app.connect().then(() => {
@@ -874,5 +1489,10 @@ app.connect().then(() => {
   // "Send to chat" needs the host to accept ui/message.
   if (caps?.message) {
     sendBtn.hidden = false;
+  }
+
+  const ctx = app.getHostContext();
+  if (ctx) {
+    handleHostContextChanged(ctx);
   }
 });

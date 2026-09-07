@@ -15,7 +15,10 @@
         <button id="download-btn" class="control-btn" title="Download recording" aria-label="Download recording" disabled>↓</button>
         <button id="send-btn" class="control-btn" title="Send current pattern to chat" aria-label="Send current pattern to chat" hidden>Send to chat</button>
         <button id="viz-btn" class="control-btn" title="Toggle visuals" aria-label="Toggle visuals" aria-pressed="false">Visuals</button>
+        <button id="stage-btn" class="control-btn" title="Stage mode — hide the code and let the visuals fill the frame" aria-label="Stage mode" aria-pressed="false">Stage</button>
         <button id="fullscreen-btn" class="control-btn" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button>
+        <!-- args.title, rendered by the widget; doubles as the WAV filename stem. -->
+        <span id="pattern-title" class="pattern-title" hidden></span>
         <span id="status" class="status" role="status" aria-live="polite">Ready</span>
       </div>
     </header>
