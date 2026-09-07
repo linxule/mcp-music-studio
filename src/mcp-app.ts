@@ -15,13 +15,18 @@ import "./global.css";
 import "./mcp-app.css";
 import {
   DEFAULT_INSTRUMENT,
+  DEFAULT_SOUNDFONT,
   INSTRUMENTS,
+  SOUNDFONTS,
   STYLE_PRESETS,
   applyStyleToAbc,
   isStyleName,
   prepareToolInput,
+  soundFontSynthOptions,
+  type SoundFontName,
 } from "./music-logic";
 import { audioBufferToWavBase64 } from "./wav-encoder";
+import { bytesToBase64, sanitizeFileStem } from "./bytes-to-base64";
 import { VERSION } from "./version";
 
 // =============================================================================
@@ -33,7 +38,10 @@ interface AppState {
   synthControl: ABCJS.SynthObjectController | null;
   currentInstrument: string;
   currentStyle: string;
+  currentSoundFont: SoundFontName;
   currentAbc: string | null;
+  /** Synth options carried in from the tool call (swing, etc.). */
+  toolSynthOpts: Record<string, unknown>;
   highlightedEls: HTMLElement[];
 }
 
@@ -42,9 +50,24 @@ const state: AppState = {
   synthControl: null,
   currentInstrument: DEFAULT_INSTRUMENT,
   currentStyle: "",
+  currentSoundFont: DEFAULT_SOUNDFONT,
   currentAbc: null,
+  toolSynthOpts: {},
   highlightedEls: [],
 };
+
+/**
+ * Every synth option the widget currently applies — the single place that
+ * decides what `setTune()` and `getMidiFile()` both see, so the exported MIDI
+ * matches what is playing.
+ */
+function currentSynthOptions(): Record<string, unknown> {
+  return {
+    program: INSTRUMENTS[state.currentInstrument] ?? 0,
+    ...soundFontSynthOptions(state.currentSoundFont),
+    ...state.toolSynthOpts,
+  };
+}
 
 // =============================================================================
 // DOM References
@@ -56,6 +79,7 @@ const sheetMusicEl = document.getElementById("sheet-music")!;
 const audioControlsEl = document.getElementById("audio-controls")!;
 const instrumentSelectorEl = document.getElementById("instrument-selector")!;
 const styleSelectorEl = document.getElementById("style-selector")!;
+const soundFontSelectorEl = document.getElementById("soundfont-selector")!;
 const toolbarEl = document.getElementById("toolbar")!;
 
 // =============================================================================
@@ -120,12 +144,12 @@ instrumentSelect.addEventListener("change", () => {
 async function applySettings(): Promise<void> {
   if (!state.synthControl || !state.visualObj?.[0]) return;
   try {
-    const program = INSTRUMENTS[state.currentInstrument] ?? 0;
-    const opts: Record<string, unknown> = { program };
+    // Re-primes the synth: a sound-font change means every sample is refetched
+    // from the new bank, so this can take a moment on first use.
     await state.synthControl.setTune(
       state.visualObj[0],
       false,
-      opts as SynthOptions,
+      currentSynthOptions() as SynthOptions,
     );
   } catch (error) {
     console.error("Failed to apply settings:", error);
@@ -175,6 +199,44 @@ styleSelectorEl.appendChild(styleLabel);
 styleSelectorEl.appendChild(styleSelect);
 
 // =============================================================================
+// Sound Font Selector
+// =============================================================================
+//
+// Switches the sample bank abcjs streams from. Changing it re-primes the synth
+// (every sample is refetched), so it only re-applies settings — no re-render.
+
+const soundFontSelect = document.createElement("select");
+soundFontSelect.id = "soundfont-select";
+soundFontSelect.className = "control-select";
+
+for (const [name, font] of Object.entries(SOUNDFONTS)) {
+  const option = document.createElement("option");
+  option.value = name;
+  option.textContent = font.label;
+  if (name === state.currentSoundFont) option.selected = true;
+  soundFontSelect.appendChild(option);
+}
+
+soundFontSelect.addEventListener("change", () => {
+  state.currentSoundFont = soundFontSelect.value as SoundFontName;
+  if (state.visualObj && state.synthControl) {
+    setStatus("Loading sounds…");
+    applySettings()
+      .then(() => setStatus("Click ▶ to play"))
+      .catch((err) =>
+        setStatus(`Sound change failed: ${(err as Error).message}`, true),
+      );
+  }
+});
+
+const soundFontLabel = document.createElement("label");
+soundFontLabel.className = "control-label";
+soundFontLabel.htmlFor = "soundfont-select";
+soundFontLabel.textContent = "Sound";
+soundFontSelectorEl.appendChild(soundFontLabel);
+soundFontSelectorEl.appendChild(soundFontSelect);
+
+// =============================================================================
 // Fullscreen Button
 // =============================================================================
 
@@ -214,7 +276,7 @@ let messageSupported = false;
 function extractTitle(abc: string | null): string {
   if (!abc) return "music";
   const match = abc.match(/T:\s*(.+)/);
-  return match ? match[1].trim().replace(/[^a-zA-Z0-9_-]/g, "_") : "music";
+  return match ? sanitizeFileStem(match[1]) : "music";
 }
 
 downloadBtn.addEventListener("click", async () => {
@@ -248,6 +310,74 @@ downloadBtn.addEventListener("click", async () => {
   } finally {
     downloadBtn.disabled = false;
     downloadBtn.textContent = "↓";
+  }
+});
+
+// =============================================================================
+// MIDI Download Button
+// =============================================================================
+//
+// getMidiFile() renders a standard MIDI file straight from the parsed tune,
+// so unlike the WAV export it needs no prior playback. It takes the same
+// SynthOptions the player uses (MidiFileOptions extends SynthOptions), which
+// is why style-preset tracks — drums, bass, chords — land as separate MIDI
+// tracks at the right tempo. Sound-font options are stripped: they only
+// affect sample playback and mean nothing in an SMF.
+
+const midiBtn = document.createElement("button");
+midiBtn.className = "toolbar-btn toolbar-btn-text";
+midiBtn.textContent = "MIDI";
+midiBtn.title = "Download MIDI file";
+midiBtn.setAttribute("aria-label", "Download score as a MIDI file");
+midiBtn.disabled = true;
+toolbarEl.appendChild(midiBtn);
+
+function midiExportOptions(): ABCJS.MidiFileOptions {
+  const {
+    soundFontUrl: _soundFontUrl,
+    soundFontVolumeMultiplier: _soundFontVolumeMultiplier,
+    ...musical
+  } = currentSynthOptions();
+  return {
+    ...musical,
+    midiOutputType: "binary",
+  } as ABCJS.MidiFileOptions;
+}
+
+midiBtn.addEventListener("click", async () => {
+  const tune = state.visualObj?.[0];
+  if (!tune) {
+    setStatus("Nothing to export yet", true);
+    return;
+  }
+  midiBtn.disabled = true;
+  midiBtn.textContent = "...";
+  try {
+    // midiOutputType "binary" returns a Uint8Array (abcjs get-midi-file.js).
+    const midi = ABCJS.synth.getMidiFile(tune, midiExportOptions()) as
+      | Uint8Array
+      | undefined;
+    if (!midi || midi.length === 0) {
+      throw new Error("MIDI generation produced no data");
+    }
+    const title = extractTitle(state.currentAbc);
+    await app.downloadFile({
+      contents: [
+        {
+          type: "resource",
+          resource: {
+            uri: `file:///${title}.mid`,
+            mimeType: "audio/midi",
+            blob: bytesToBase64(midi),
+          },
+        },
+      ],
+    });
+  } catch (err) {
+    setStatus(`MIDI download failed: ${(err as Error).message}`, true);
+  } finally {
+    midiBtn.disabled = false;
+    midiBtn.textContent = "MIDI";
   }
 });
 
@@ -324,6 +454,12 @@ async function renderAbc(
   try {
     setStatus("Rendering...");
 
+    // Remember tool-supplied synth options (swing, ...) so later re-renders
+    // triggered by the toolbar don't silently drop them.
+    if (extraSynthOpts) {
+      state.toolSynthOpts = extraSynthOpts;
+    }
+
     // Stop any active playback before re-rendering
     if (state.synthControl) {
       state.synthControl.pause();
@@ -356,17 +492,17 @@ async function renderAbc(
       displayWarp: true,
     });
 
-    const program = INSTRUMENTS[state.currentInstrument] ?? 0;
-    const synthOpts: Record<string, unknown> = { program, ...extraSynthOpts };
     await state.synthControl.setTune(
       state.visualObj[0],
       false,
-      synthOpts as SynthOptions,
+      currentSynthOptions() as SynthOptions,
     );
 
     // Show toolbar once we have content
     toolbarEl.classList.add("visible");
     downloadBtn.disabled = !downloadSupported;
+    // MIDI is generated from the parsed tune, so it needs no prior playback.
+    midiBtn.disabled = !downloadSupported;
     sendBtn.disabled = !messageSupported;
 
     // Autoplay — attempt to start playback immediately
@@ -532,6 +668,10 @@ app.connect().then(() => {
     downloadBtn.hidden = true;
     downloadBtn.disabled = true;
     downloadBtn.title = "Audio download isn't supported by this host";
+    // Same capability gates the MIDI export.
+    midiBtn.hidden = true;
+    midiBtn.disabled = true;
+    midiBtn.title = "File download isn't supported by this host";
   }
 
   // Gate the Send-to-chat button on the host's message capability so it can't
