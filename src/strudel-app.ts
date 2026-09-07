@@ -166,10 +166,12 @@ async function loadStrudelCDN(): Promise<void> {
     const script = document.createElement("script");
     script.src = STRUDEL_CDN;
     script.onload = () => {
-      // The console watch can go in immediately; the eval-scope globals
-      // (initHydra, H, …) are only published when <strudel-editor> builds its
-      // REPL, so installEvalScopeHooks() is retried from the evaluate hook.
       installConsoleWatch();
+      // The eval-scope globals (initHydra, H, …) are only published once
+      // <strudel-editor> builds its REPL — which is exactly why the accessors go
+      // in NOW: their setters catch that publish. Waiting for the globals to
+      // exist meant the first evaluation of a session ran unwrapped.
+      installEvalScopeHooks();
       resolve();
     };
     script.onerror = () => {
@@ -584,22 +586,56 @@ function snapshotStrudelGlobals(): void {
  * was back). An accessor turns every republish into a call to our setter, which
  * re-wraps the incoming original instead of losing to it.
  */
+const WRAPPED_MARK = "__musicStudioWrapped";
+
+function isWrapped(value: unknown): boolean {
+  return typeof value === "function" && (value as any)[WRAPPED_MARK] === true;
+}
+
 function defineWrappedGlobal(key: string, wrap: (original: any) => any): void {
   const w = window as any;
-  let exposed = typeof w[key] === "function" ? wrap(w[key]) : w[key];
+  const apply = (value: any) => {
+    if (typeof value !== "function" || isWrapped(value)) return value;
+    const wrapped = wrap(value);
+    try {
+      Object.defineProperty(wrapped, WRAPPED_MARK, { value: true, configurable: true });
+    } catch { /* exotic function — the re-check below just re-wraps it */ }
+    return wrapped;
+  };
+  // Reading through any accessor already installed, so re-asserting is a no-op
+  // rather than a double-wrap.
+  let exposed = apply(w[key]);
   Object.defineProperty(w, key, {
     configurable: true,
     enumerable: true,
     get: () => exposed,
     set: (value) => {
-      exposed = typeof value === "function" ? wrap(value) : value;
+      exposed = apply(value);
     },
   });
 }
 
+/**
+ * Install the accessors, EAGERLY and repeatedly.
+ *
+ * This used to bail out unless `window.initHydra` was already a function — and
+ * on a cold widget it isn't. The REPL publishes its eval scope asynchronously
+ * after <strudel-editor> is constructed, so both call sites (prepareEditor and
+ * the top of the evaluate hook) ran too early on the FIRST evaluation and the
+ * hooks only landed from the second one onward. Measured consequence: the first
+ * `await initHydra()` of a session ran unwrapped, so the HydraRenderer was
+ * constructed with hydra-synth's default `autoLoop: true` and left an
+ * unstoppable raf-loop behind, and the first pattern's `H()` could still throw
+ * on a rest.
+ *
+ * The accessor was always meant to handle "not published yet" — its setter
+ * wraps whatever arrives. So define it whether or not the global exists, from
+ * the moment the bundle loads, and re-assert if a later publish used
+ * defineProperty (which replaces an accessor instead of calling its setter).
+ */
 function installEvalScopeHooks(): void {
   const w = window as any;
-  if (evalScopeHooked || typeof w.initHydra !== "function") return;
+  if (evalScopeHooked && isWrapped(w.initHydra) && isWrapped(w.H)) return;
   evalScopeHooked = true;
 
   snapshotStrudelGlobals();
