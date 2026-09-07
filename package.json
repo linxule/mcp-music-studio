@@ -59,6 +59,10 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
+    "@strudel/core": "1.2.6",
+    "@strudel/mini": "1.2.6",
+    "@strudel/tonal": "1.2.6",
+    "@strudel/transpiler": "1.2.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
     "@types/node": "22.10.0",

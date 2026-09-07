@@ -13,9 +13,16 @@
  * registerSynthSounds() / registerZZFXSounds() / registerSoundfonts(), then
  * aliasBank()s the tidal-drum-machines alias file.
  *
+ * The GM soundfont names are read out of the SHIPPED dist bundle rather than
+ * @strudel/soundfonts' source, because those two disagree: the bundle's
+ * registration map has 125 gm_* keys, and registerSoundfonts() iterates it
+ * directly with no alias step. gm_acoustic_piano, gm_bright_acoustic_piano,
+ * gm_electric_grand_piano and gm_honky_tonk_piano exist only upstream — in the
+ * widget they are "sound not found", i.e. silence. What ships is what counts.
+ *
  * Usage: bun scripts/sync-strudel-sounds.mjs
  */
-import { writeFile, readFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -82,6 +89,29 @@ const SYNTHS = [
   "z_noise",
 ];
 
+/** The pinned dist bundle the widget loads from the CDN. */
+const REPL_BUNDLE = `https://unpkg.com/@strudel/repl@${STRUDEL_REPL_VERSION}/dist/index.js`;
+
+/**
+ * GM soundfont names, straight out of the bundle's registration map. Entries
+ * look like `gm_reed_organ:["0200_JCLive_sf2_file", ...]`, so anchoring on the
+ * four-digit sf2 filename avoids matching prose or doc examples.
+ */
+async function fetchGmNames() {
+  const res = await fetch(REPL_BUNDLE);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${REPL_BUNDLE}`);
+  const source = await res.text();
+  const names = new Set();
+  for (const [, name] of source.matchAll(/\b(gm_[a-z0-9_]+)\s*:\s*\[\s*"\d{4}_/g)) {
+    names.add(name);
+  }
+  if (names.size < 100) {
+    throw new Error(`only ${names.size} gm_* names found in ${REPL_BUNDLE} — did the bundle shape change?`);
+  }
+  console.error(`  ${String(names.size).padStart(4)} gm names ${REPL_BUNDLE}`);
+  return [...names].sort();
+}
+
 async function fetchJson(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
@@ -116,7 +146,10 @@ async function main() {
   }
   console.error(`  ${String(Object.keys(aliases).length).padStart(4)} aliases ${BANK_ALIASES}`);
 
-  const gm = JSON.parse(await readFile(join(FIXTURES, "gm-sound-names.json"), "utf8"));
+  const gm = await fetchGmNames();
+  // One name per line, matching the fixture's existing shape.
+  const gmJson = `[\n${gm.map((name) => JSON.stringify(name)).join(",\n")}\n]\n`;
+  await writeFile(join(FIXTURES, "gm-sound-names.json"), gmJson);
 
   const fixture = {
     _comment:

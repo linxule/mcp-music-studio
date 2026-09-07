@@ -74,6 +74,15 @@ Commas layer patterns within a single string — shorthand for stack():
   stack(s("bd*4"), s("~ cp ~ cp"), s("hh*8"))
 Very useful for compact drum patterns.
 
+### CHORDS need commas, not spaces
+This is the single most common mistake with note names. Inside brackets,
+SPACES subdivide time and COMMAS stack voices:
+note("[c4 e4 g4]")   three notes ONE AFTER ANOTHER — an arpeggio, not a chord
+note("[c4,e4,g4]")   three notes AT THE SAME TIME — a chord
+note("<[c4,e4,g4] [f4,a4,c5]>")   one chord per cycle
+Write a chord with commas whenever you mean simultaneity; use spaces only
+when you actually want the notes to arpeggiate.
+
 ## Common Patterns
 
 ### Basic 4/4 beat
@@ -176,9 +185,12 @@ Hand and effect percussion:
   shaker_large, shaker_small, sleighbells, slapstick, tambourine, tambourine2,
   vibraslap, flexatone
 
-These are ordinary sounds: note("c4 e4 g4").s("marimba"), s("gong").room(0.8),
-note("<c3 g3>").s("steinway").gain(0.5). Many are multi-sample — pick a variant
-with s("kalimba:2") or let the index cycle with s("kalimba:<0 1 2>").
+These are ordinary sounds — play them like any other:
+note("c4 e4 g4").s("marimba")
+s("gong").room(0.8)
+note("<c3 g3>").s("steinway").gain(0.5)
+Many are multi-sample: pick a variant with s("kalimba:2"), or let the index
+cycle with s("kalimba:<0 1 2>").
 
 Sample variants: s("bd:0"), s("bd:1"), s("bd:2")
 
@@ -265,13 +277,26 @@ Chain effects with dot notation: note("c3 e3").s("sawtooth").lpf(800).room(0.5)
 .decay(s)         decay time
 .sustain(0-1)     sustain level
 .release(s)       release time
-.ad(a, d)         shorthand: attack + decay (no sustain)
-.ar(a, r)         shorthand: attack + release
-.adsr(a,d,s,r)    full ADSR
+
+### Envelope shorthands take ONE colon-joined string
+.ad(".a:.d")      shorthand: attack + decay (no sustain)
+.ar(".a:.r")      shorthand: attack + release
+.adsr(".a:.d:.s:.r")  full ADSR
+
+These are COMPOSITE controls, not multi-argument functions. Commas do not
+work: .adsr(.1,.2,.3,.4) patterns the ATTACK over four values, producing four
+stacked notes with no decay, sustain or release at all. Same trap for .ad and
+.ar. Write the values as one string joined by colons:
+note("c3 e3 g3").s("sawtooth").adsr(".01:.2:.3:.5")
+note("c3 e3 g3").s("sawtooth").ad(".01:.15")
+Or set .attack()/.decay()/.sustain()/.release() individually — those DO take a
+single number each.
 
 ## Gain & Dynamics
 .gain(0-1)        volume (default 0.8)
-.velocity(0-1)    alias for gain in note context
+.velocity(0-1)    per-note velocity — a SEPARATE control from .gain(), not an
+                  alias; the two multiply, so .gain(0.8).velocity(0.5) is
+                  quieter than either alone
 .amp(0-1)         amplitude
 
 ## Distortion
@@ -362,28 +387,60 @@ note("c5 e5 g5").s("sine")
 .rarely(fn)       apply ~25% of the time
 .almostAlways(fn) apply ~90% of the time
 .almostNever(fn)  apply ~10% of the time
-.choose(a,b,c)    random choice each cycle
-.wchoose([a,3],[b,1]) weighted random choice
-.rand()           random float 0-1 per cycle
-.irand(n)         random integer 0 to n-1
+
+Every one of these takes a FUNCTION, never a pattern. .sometimes(gain(0.7))
+looks plausible and is fatal: gain(0.7) is a Pattern, the query then throws
+"e is not a function", and the ENTIRE stack — not just that layer — falls
+silent. Write .sometimes(x => x.gain(0.7)), or pass a control function that is
+still curried, like .sometimes(fast(2)).
+
+### Random sources are GLOBALS, not methods
+choose("bd","sd")       random pick:  s(choose("bd","sd","hh"))
+wchoose(["bd",3],["sd",1])  weighted pick: s(wchoose(["bd",3],["sd",1]))
+rand                    random float 0-1 — a VALUE, not a call: .gain(rand)
+irand(n)                random integer 0..n-1: n(irand(12)).scale("C4:minor")
+perlin                  smooth random: .lpf(perlin.range(400, 3000))
+
+These are continuous signals: they have no events of their own, so they take
+their structure from whatever they feed (s("bd*4").gain(rand) gives one value
+per kick), or you give them structure with .segment(n):
+s(wchoose(["bd",3],["sd",1])).segment(4)
+There is NO .choose() / .wchoose() / .rand() / .irand() Pattern method.
+Writing s("bd*4").choose("bd","sd") raises no error — it just plays nothing.
 
 ## Repetition & Alternation
-.every(n, fn)     apply function every n cycles
-  Example: .every(4, fast(2))   double speed every 4th cycle
-.firstOf(n, fn)   apply only on first of every n cycles
-.lastOf(n, fn)    apply only on last of every n cycles
+.every(n, fn)     alias for .firstOf — applies fn on the FIRST cycle of each
+                  group of n, i.e. cycles 0, n, 2n ... (not the last)
+  Example: .every(4, fast(2))   double speed on cycles 0, 4, 8 ...
+.firstOf(n, fn)   same thing, named honestly
+.lastOf(n, fn)    apply on the LAST cycle of every n — this is the one you
+                  want for an end-of-phrase fill
+  Example: .lastOf(8, x => x.fast(2))   double-time on cycles 7, 15, 23 ...
 .when(fn, fn2)    conditional transformation
 
+fn is a function here too. .every(8, s("bd*8")) passes a Pattern and silences
+the layer; to swap in a different pattern for one cycle use a callback that
+ignores its argument: .lastOf(8, () => s("bd*8")).
+
 ## Euclidean
-.euclid(hits, steps)           distribute hits evenly
-.euclid(hits, steps, rotation) with rotation offset
-  Example: note("c3").euclid(3,8)  tresillo pattern
+.euclid(hits, steps)           distribute hits evenly — exactly TWO arguments
+.euclidRot(hits, steps, rot)   the rotated variant. A third argument to
+                               .euclid() throws "expects 2 inputs but got 3"
+                               (mini-notation "bd(3,8,1)" does take three)
+.euclidLegato(hits, steps)     same placement, but each hit is held until
+                               the next one (no gaps)
+  Example: s("bd").euclid(3,8)       tresillo
+  Example: s("bd").euclidRot(3,8,1)  tresillo rotated one step
 
 ## Combination
 stack(pat1, pat2)     layer patterns simultaneously
-cat(pat1, pat2)       concatenate patterns sequentially
-seq(pat1, pat2)       alias for cat
-sequence(pat1, pat2)  alias for cat
+cat(pat1, pat2)       ONE pattern per cycle (alias slowcat): bd on cycle 0,
+                      sd on cycle 1, bd again on cycle 2 ...
+seq(pat1, pat2)       all of them INSIDE one cycle (alias fastcat) — the
+                      code equivalent of the mini-notation "bd sd"
+sequence(pat1, pat2)  same as seq
+  seq is NOT an alias for cat: seq(s("bd"), s("sd")) fires twice per cycle,
+  cat(s("bd"), s("sd")) fires once and alternates.
 
 ## Pitch & Scale
 .transpose(n)         transpose by n semitones
@@ -394,11 +451,15 @@ sequence(pat1, pat2)  alias for cat
 n("0 2 4 6")                    scale degrees (0-indexed)
 n("0 2 4 6").scale("C4:minor")  play C minor scale degrees
 n("0 1 2 3 4 5 6 7").scale("C4:hirajoshi")  exotic scale
-n("<0 2 4> <1 3 5>").scale("C4:melodic:minor")  alternating chords
+n("<0 2 4> <1 3 5>").scale("C4:melodic:minor")  two notes per cycle
+n("[0,2,4]").scale("C4:minor")  a CHORD — commas stack, spaces arpeggiate
 
-n() vs note(): n() uses scale degrees (numbers), note() uses note names.
-n() is much more natural for working with exotic scales — you don't need
-to spell out every note name. Combine with .scale() to set key + mode.
+In "<0 2 4> <1 3 5>" each slot steps through its own list, one degree per
+cycle — that is alternation, not a chord.
+
+Use n() for scale degrees (numbers) and note() for note names. Degrees are
+much more natural for exotic scales — you don't have to spell out every note.
+Combine with .scale() to set key + mode.
 
 Scale names go through tonal.js, which replaces ":" with a space and then
 looks the name up. So a MULTI-WORD scale is spelled with a colon between the
@@ -457,7 +518,7 @@ stack(
   s("hh*8").gain(0.4).pan(sine.range(0.3, 0.7)),
   note("[c2 ~ c2 ~] [~ c2] [c2 ~] [~ c2 c2 ~]")
     .s("sawtooth").lpf(600).lpq(5).gain(0.5),
-  note("<[c4 eb4] [g4 bb4] [c4 f4] [eb4 g4]>")
+  note("<[c4,eb4] [g4,bb4] [c4,f4] [eb4,g4]>")
     .s("square").gain(0.15).room(0.4).lpf(1200)
 )
 
@@ -491,7 +552,7 @@ setcps(0.25)
 stack(
   note("<c3 eb3 g3 bb3>").s("sine")
     .attack(2).release(4).gain(0.3).room(0.9).roomsize(8),
-  note("<[c4 eb4 g4] [bb3 d4 f4] [ab3 c4 eb4] [g3 bb3 d4]>")
+  note("<[c4,eb4,g4] [bb3,d4,f4] [ab3,c4,eb4] [g3,bb3,d4]>")
     .s("triangle").attack(1).release(3).gain(0.15)
     .delay(0.4).delaytime(0.75).delayfeedback(0.6),
   note("c2").s("sine").gain(0.4).lpf(200).slow(2)
@@ -505,7 +566,7 @@ stack(
   s("~ [~ bd] ~ bd").gain(0.6),
   note("[c2 ~ g2 ~] [a2 ~ e2 ~] [d2 ~ a2 ~] [g1 ~ d2 ~]")
     .s("gm_acoustic_bass").gain(0.5),
-  note("<[c4 e4 g4 bb4] [a3 c4 e4 g4] [d4 f4 a4 c5] [g3 b3 d4 f4]>")
+  note("<[c4,e4,g4,bb4] [a3,c4,e4,g4] [d4,f4,a4,c5] [g3,b3,d4,f4]>")
     .s("gm_epiano1").gain(0.3).room(0.4)
 )
 
@@ -542,7 +603,7 @@ stack(
   s("hh*8").gain(rand.range(0.1, 0.4)),
   note("[c2 ~] [~ eb2] [~ c2] [g1 ~]").s("sawtooth")
     .lpf(sine.range(200, 800).slow(4)).gain(0.5),
-  note("<[c4 eb4 g4]!2 [bb3 d4 f4]!2>")
+  note("<[c4,eb4,g4]!2 [bb3,d4,f4]!2>")
     .s("square").gain(0.15).room(0.3).lpf(2000)
 )
 
@@ -551,7 +612,7 @@ stack(
 setcps(0.5416)
 stack(
   s("bd*4"),
-  s("~ [~ cp]").sometimes(gain(0.7)),
+  s("~ [~ cp]").sometimes(x => x.gain(0.7)),
   s("hh*8").gain(0.3).sometimes(fast(2)),
   note("c2!3 [~ c2]")
     .s("sine").lpf(sine.range(100, 400).slow(16)).gain(0.5),
@@ -571,7 +632,7 @@ let drums = stack(
 )
 let bass = note("[c2 ~ c2 ~] [~ c2 c2 ~]")
   .s("sawtooth").lpf(500).gain(0.5)
-let chords = note("<[c4 eb4 g4] [ab3 c4 eb4] [bb3 d4 f4] [g3 bb3 d4]>")
+let chords = note("<[c4,eb4,g4] [ab3,c4,eb4] [bb3,d4,f4] [g3,bb3,d4]>")
   .s("gm_pad_warm").gain(0.2).room(0.5)
 let melody = note("c5 [~ eb5] g5 [~ f5] eb5 [~ c5] bb4 [~ g4]")
   .s("gm_flute").gain(0.3).room(0.4).delay(0.2).delaytime(0.375)
@@ -1081,13 +1142,15 @@ arrange(
 )
 
 ## Wavetable Oscillator
-Strudel 1.3 has a real wavetable oscillator, but "wt_" is a BANK, not a sound
-prefix, and NO wavetable pack is prebaked in this widget. There is no wt_*
-sound you can just play. The old wt_flute / wt_saw / wt_piano names are
-silent: they were never registered.
+Strudel 1.3 has a real wavetable oscillator, but NO wavetable pack is prebaked
+in this widget, so there is no wt_* sound you can just play. The old wt_flute /
+wt_saw / wt_piano names are silent: they were never registered.
 
-To use it you must load a wavetable pack yourself first, then select it as a
-bank. Upstream's own example, for reference:
+"wt_" is what the BANK contributes, not something you type as a sound name.
+The oscillator switches on when the registered sound key starts with "wt_",
+and the bank is what builds that key: bank + sound name -> the registered
+"wt_<bank>_<sound>" entry. So you must load a wavetable pack first, then
+select it as a bank. Upstream's own example, for reference:
 
 samples('github:<owner>/<wavetable-pack>')                 // needs samples()
 s("squelch").bank("wt_digital").seg(8).note("F1")          // needs samples()
@@ -1136,14 +1199,23 @@ ZZFX parameters: .slide(), .deltaSlide(), .zmod() (FM),
 .pattack(0.01)        pitch envelope attack
 .pdecay(0.2)          pitch envelope decay
 .penv(12)             pitch sweep range in semitones
-.pcurve(2)            envelope curve shape
+.pcurve(0)            envelope curve: 0 = linear (default), 1 = exponential.
+                      Only those two values are defined — anything else falls
+                      back to linear. Pattern it: .pcurve("<0 1>")
 
 ### Compressor
 .compressor("threshold:ratio:knee:attack:release")
 Example: .compressor("-20:4:10:0.003:0.1")
 
 ### Convolution Reverb
-.iresponse("ir:hall")   impulse response reverb (loads IR sample)
+.iresponse(sample)      use a LOADED sample as the reverb impulse response
+                        (synonym .ir()). Needs .room() on as well, and the
+                        name must be a sound that is actually registered —
+                        "ir:hall" is not one: the colon is read as a sample
+                        INDEX, so it asks for sample "hall" of a sound called
+                        "ir" that does not exist, and you get no reverb.
+  Example: s("bd sd [~ bd] sd").room(.8).ir("<shaker_large:0 shaker_large:2>")
+.irspeed(n) / .irbegin(0-1)   resample / trim the impulse response
 
 ## Continuous Signals (modulation sources)
 Use these to animate any parameter over time:
@@ -1188,14 +1260,34 @@ layer plays NOTHING.
   colons.
 
 For exotic scales, n() with scale degrees is easier than note() with note names:
-n("0 2 4 6 7").scale("C4:hirajoshi")   // much easier than spelling out C D# E G G#
+n("0 2 4 6 7").scale("C4:hirajoshi")
+// C4:hirajoshi is C D Eb G Ab, so degrees 0 2 4 6 7 sound C4 Eb4 Ab4 D5 Eb5
+// — much easier than spelling those out by name
 
 If a pattern with .scale() plays nothing at all, the scale name is wrong —
 @strudel/tonal throws "Invalid scale name" and the whole layer is dropped.
 
 ## Chord Voicings
-voicing("Cmaj7")              auto voice-led chord
-voicing("<Cmaj7 Dm7 G7 Cmaj7>")  chord progression with voice leading
+voicing("C^7")                auto voice-led chord
+voicing("<C^7 D-7 G7 C^7>")   chord progression with voice leading
+
+USE iREAL SYMBOLS. The default dictionary is "ireal", whose keys are iReal Pro
+chord suffixes. A symbol it does not know voices to NOTHING — silently, and
+only for that chord, so a progression can half-disappear while still making
+sound. "Cmaj7" is the classic casualty: it yields zero notes. Spell it "C^7"
+or "CM7".
+
+  major 7th     C^7   CM7        (NOT "Cmaj7")
+  minor 7th     C-7   Cm7
+  dominant 7th  C7
+  half-dim      Ch7   Cm7b5
+  diminished    Co7
+  major triad   C           minor triad   C-   Cm
+  6th           C6    sixth-ninth  C69     add9   Cadd9
+  altered/ext   C7b9  C7#9  C7#11  C13  C^9  C-9  C-11
+
+Check every chord in a progression, not just the first. If a section sounds
+thin, one symbol in it probably voiced to silence.
 
 Config: .anchor("c4") .mode("below") .dict("lefthand")
 
