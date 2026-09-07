@@ -45,7 +45,7 @@
     "id": "shadowed",
     "code": "const setcps = x => x; setcps(0.5); note(\"c3\")",
     "bpm": 90,
-    "result": "reject"
+    "result": "leave"
   },
   {
     "id": "effectful",
@@ -57,7 +57,7 @@
     "id": "alias",
     "code": "const tempo = setcps; note(\"c3\")",
     "bpm": 90,
-    "result": "reject"
+    "result": "leave"
   },
   {
     "id": "top-await",
@@ -70,5 +70,125 @@
     "code": "const t = `${setcps(0.5)}`; note(\"c3\")",
     "bpm": 90,
     "result": "reject"
+  },
+  {
+    "id": "iife-leading",
+    "code": "(() => note(\"c3\"))()",
+    "bpm": 120,
+    "result": "insert"
+  },
+  {
+    "id": "array-literal-leading",
+    "code": "[\"bd\", \"hh\"].forEach((s) => sound(s))",
+    "bpm": 120,
+    "result": "insert"
+  },
+  {
+    "id": "use-strict-then-iife",
+    "code": "\"use strict\";\n(function () { return note(\"c3\"); })()",
+    "bpm": 120,
+    "result": "insert"
+  },
+  {
+    "id": "conditional-setter",
+    "code": "if (false)\n  setcps(0.25);\nnote(\"c3\")",
+    "bpm": 120,
+    "result": "reject"
+  },
+  {
+    "id": "else-setter",
+    "code": "if (a) { note(\"c3\") } else setcps(0.25);\nnote(\"e3\")",
+    "bpm": 120,
+    "result": "reject"
+  },
+  {
+    "id": "while-header-setter",
+    "code": "while (false)\n  setcps(0.25);\nnote(\"c3\")",
+    "bpm": 120,
+    "result": "reject"
+  },
+  {
+    "id": "assigned-setter",
+    "code": "let x;\nx =\n  setcps(0.5);\nnote(\"c3\")",
+    "bpm": 120,
+    "result": "reject"
+  },
+  {
+    "id": "labelled-setter",
+    "code": "foo: setcps(0.5);\nnote(\"c3\")",
+    "bpm": 120,
+    "result": "reject"
+  },
+  {
+    "id": "block-comment-before-setter",
+    "code": "/* tempo */\nsetcps(0.9)\nnote(\"c3\")",
+    "bpm": 120,
+    "result": "transform"
+  },
+  {
+    "id": "block-comment-inline-before-setter",
+    "code": "note(\"c3\")\n/* tempo */ setcps(0.9)",
+    "bpm": 120,
+    "result": "transform"
+  },
+  {
+    "id": "shadow-let",
+    "code": "let setcps = (x) => x;\nsetcps(0.5);\nnote(\"c3\")",
+    "bpm": 90,
+    "result": "leave"
+  },
+  {
+    "id": "shadow-function",
+    "code": "function setcps(x) { return x; }\nsetcps(0.5);\nnote(\"c3\")",
+    "bpm": 90,
+    "result": "leave"
+  },
+  {
+    "id": "destructured-binding",
+    "code": "const { setcps } = globalThis;\nsetcps(0.5);\nnote(\"c3\")",
+    "bpm": 90,
+    "result": "leave"
+  },
+  {
+    "id": "member-call",
+    "code": "clock.setcps(0.5); note(\"c3\")",
+    "bpm": 90,
+    "result": "reject"
+  },
+  {
+    "id": "arrow-body-setter",
+    "code": "const f = () => setcps(0.5); note(\"c3\")",
+    "bpm": 90,
+    "result": "reject"
+  },
+  {
+    "id": "arrow-body-setter-wrapped",
+    "code": "const f = () =>\n  setcps(0.5);\nnote(\"c3\")",
+    "bpm": 90,
+    "result": "reject"
+  },
+  {
+    "id": "call-argument-setter",
+    "code": "stack(setcps(0.5), note(\"c3\"))",
+    "bpm": 90,
+    "result": "reject"
+  },
+  {
+    "id": "string-argument",
+    "code": "setcps('0.5'); note(\"c3\")",
+    "bpm": 90,
+    "result": "reject"
+  },
+  {
+    "id": "plain-numeric",
+    "code": "setcps(0.75)\nsound(\"bd hh\")",
+    "bpm": 120,
+    "result": "transform"
+  },
+  {
+    "id": "setter-after-call",
+    "code": "samples('github:felixroos/dough-samples')\nsetcps(0.9)\nnote(\"c3\")",
+    "bpm": 120,
+    "result": "transform"
   }
 ]
