@@ -139,6 +139,21 @@ html, body {
   background: #14111d;  /* dark stage so the purple/blue visuals read well */
 }
 
+/* Hydra (WebGL) layer. Same footprint as #test-canvas but painted first in
+   the DOM, so the 2D pianoroll/scope draws ON TOP of the shader. Low internal
+   resolution + pixelated upscale keeps the GPU cost small inside the inline
+   iframe (see HYDRA_MAX_WIDTH in strudel-app.ts). */
+.hydra-canvas {
+  image-rendering: pixelated;
+}
+
+/* When Hydra is active, #test-canvas must not paint its opaque stage over the
+   shader. Strudel's draw functions clearRect() each frame, so a transparent
+   background is safe. */
+.repl-section.hydra-on #test-canvas {
+  background: transparent;
+}
+
 .strudel-container {
   position: relative;
   z-index: 1;           /* code editor stacks above the backdrop canvas */
@@ -228,7 +243,7 @@ html, body {
 /* Hide a STRAY full-viewport visualization canvas, but never our pre-created
    #test-canvas (which lives in .repl-section, not as a body child — the :not()
    is belt-and-suspenders in case a fallback ever creates one). */
-body > canvas[style*="position"]:not(#test-canvas) {
+body > canvas[style*="position"]:not(#test-canvas):not(#hydra-canvas) {
   display: none !important;
 }
 

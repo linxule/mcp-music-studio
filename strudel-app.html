@@ -29,6 +29,14 @@
         toggles "Visuals"; the code editor sits on top with a translucent scrim.
         JS owns the DPR-correct backing size.
       -->
+      <!--
+        Hydra canvas sits UNDER #test-canvas. @strudel/hydra's initHydra() calls
+        getDrawContext("hydra-canvas"), which reuses this element by id — so the
+        WebGL shader layer lives inside the widget instead of as a stray
+        position:fixed canvas on <body> (which fixLayout() hides). Agents enable it
+        with `await initHydra()` at the top of a pattern; see guide topic "visuals".
+      -->
+      <canvas id="hydra-canvas" class="viz-canvas hydra-canvas"></canvas>
       <canvas id="test-canvas" class="viz-canvas"></canvas>
       <div id="strudel-container" class="strudel-container">
         <!-- strudel-editor web component will be created here -->

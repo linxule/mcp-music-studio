@@ -13,6 +13,7 @@
 
 import "./strudel-app.css";
 import { App } from "@modelcontextprotocol/ext-apps";
+import { detectViz } from "./shared/viz-detect";
 import { audioBufferToWavBase64 } from "./wav-encoder";
 import { VERSION } from "./version";
 
@@ -37,14 +38,18 @@ let isPlaying = false;
 let cdnLoaded = false;
 
 // Visualization panel. The pattern's code decides whether a visual shows: the
-// panel auto-reveals when the code contains a viz method, unless the user has
-// manually toggled it (vizManual sticks their choice across re-renders).
+// panel auto-reveals when the code contains a viz method or initHydra(), unless
+// the user has manually toggled it (vizManual sticks their choice across
+// re-renders). Detection lives in src/shared/viz-detect.ts (pure, unit-tested).
 let vizVisible = false;
 let vizManual = false;
 let vizResizeObserver: ResizeObserver | null = null;
-// Strudel viz methods that paint to #test-canvas (all resolve via getDrawContext).
-const VIZ_METHOD_RE =
-  /\.(pianoroll|punchcard|wordfall|spiral|pitchwheel|tscope|scope|fscope|spectrum)\s*\(/;
+// True while the current pattern uses Hydra (WebGL layer under #test-canvas).
+let hydraActive = false;
+// Hydra renders at this many CSS px wide at most, then upscales (pixelated).
+// 960px is plenty for a widget backdrop and keeps the GPU cost low inside the
+// inline iframe; strudel.cc itself defaults to pixelRatio 1 at window size.
+const HYDRA_MAX_WIDTH = 960;
 
 // Host capabilities (populated after connect)
 let canDownload = false;
@@ -166,7 +171,8 @@ function fixLayout(): void {
   // @strudel/draw's getDrawContext) — but never our own pre-created
   // #test-canvas, which getDrawContext should be reusing instead.
   document.querySelectorAll("body > canvas").forEach((canvas) => {
-    if ((canvas as HTMLElement).id === "test-canvas") return;
+    const id = (canvas as HTMLElement).id;
+    if (id === "test-canvas" || id === "hydra-canvas") return;
     const style = (canvas as HTMLElement).style;
     if (style.position === "fixed") {
       style.display = "none";
@@ -205,6 +211,105 @@ function syncVizCanvasSize(): void {
   const bh = Math.round(h * dpr);
   if (vizCanvas.width !== bw) vizCanvas.width = bw;
   if (vizCanvas.height !== bh) vizCanvas.height = bh;
+  if (hydraActive) syncHydraCanvasSize(w, h);
+}
+
+// -----------------------------------------------------------------------------
+// Hydra (WebGL) layer
+//
+// @strudel/hydra's initHydra() does getDrawContext("hydra-canvas"), which
+// REUSES an element with that id if one exists — so we keep a #hydra-canvas
+// inside .repl-section (static HTML) and Hydra paints there, under the 2D
+// #test-canvas. hydra-synth takes its render resolution from canvas.width/height
+// at construction time, so the backing store must be sized BEFORE the pattern
+// evaluates; afterwards we go through the global setResolution() hydra exposes.
+// clearHydra() (also in eval scope) REMOVES the element, so ensureHydraCanvas()
+// re-creates it in place whenever it has gone missing.
+// -----------------------------------------------------------------------------
+
+/** Find or re-create the in-widget Hydra canvas (clearHydra() removes it). */
+function ensureHydraCanvas(): HTMLCanvasElement {
+  let c = document.getElementById("hydra-canvas") as HTMLCanvasElement | null;
+  if (!c) {
+    c = document.createElement("canvas");
+    c.id = "hydra-canvas";
+    c.className = "viz-canvas hydra-canvas";
+    replSection.insertBefore(c, vizCanvas);
+  }
+  markOnContextBind(c);
+  return c;
+}
+
+/**
+ * Record the moment Hydra binds a WebGL context to the canvas. We can't hook
+ * initHydra() itself (it runs inside the pattern's eval), but getDrawContext()
+ * has to call canvas.getContext(), so wrapping that on our element is a
+ * reliable, allocation-free signal. Probing with getContext() ourselves would
+ * CREATE a context and confuse the check.
+ */
+function markOnContextBind(c: HTMLCanvasElement): void {
+  if ((c as any).__ctxHooked) return;
+  (c as any).__ctxHooked = true;
+  const orig = c.getContext.bind(c);
+  (c as any).getContext = (...args: unknown[]) => {
+    const ctx = (orig as any)(...args);
+    if (ctx) c.dataset.hydraBound = "1";
+    return ctx;
+  };
+}
+
+/**
+ * Hydra resolution = panel size capped at HYDRA_MAX_WIDTH CSS px (aspect kept),
+ * upscaled with image-rendering:pixelated. Before Hydra has initialised we set
+ * canvas.width/height directly (hydra-synth reads them in its constructor);
+ * once it's live, changing them behind its back would desync its viewport, so
+ * we call the setResolution() global it installs instead.
+ */
+function syncHydraCanvasSize(w: number, h: number): void {
+  const c = ensureHydraCanvas();
+  const scale = Math.min(1, HYDRA_MAX_WIDTH / w);
+  const rw = Math.max(1, Math.round(w * scale));
+  const rh = Math.max(1, Math.round(h * scale));
+  if (c.width === rw && c.height === rh) return;
+  const setRes = (window as any).setResolution;
+  const live = typeof setRes === "function" && hasHydraInstance();
+  if (live) {
+    try {
+      setRes(rw, rh);
+      return;
+    } catch { /* fall through to a direct resize */ }
+  }
+  c.width = rw;
+  c.height = rh;
+}
+
+/** True once Hydra has bound a WebGL context to the CURRENT #hydra-canvas. */
+function hasHydraInstance(): boolean {
+  const c = document.getElementById("hydra-canvas") as HTMLCanvasElement | null;
+  return c?.dataset.hydraBound === "1";
+}
+
+/** Stage or strike the Hydra layer for the pattern about to run. */
+function setHydraActive(active: boolean): void {
+  if (active === hydraActive && (!active || document.getElementById("hydra-canvas"))) {
+    return;
+  }
+  hydraActive = active;
+  replSection.classList.toggle("hydra-on", active);
+  if (active) {
+    ensureHydraCanvas();
+    return;
+  }
+  // Pattern no longer uses Hydra: stop its render loop so a stale shader
+  // doesn't keep animating under the code. clearHydra() (exported by
+  // @strudel/hydra into the eval scope) hushes + removes the canvas; we then
+  // put a fresh, unbound one back so a later initHydra() finds it in-widget
+  // rather than prepending a position:fixed canvas to <body>.
+  try {
+    (window as any).clearHydra?.();
+  } catch { /* hydra never initialised — nothing to clear */ }
+  document.getElementById("hydra-canvas")?.remove();
+  ensureHydraCanvas();
 }
 
 /** Reflect viz visibility on the backdrop + editor scrim + toggle button. */
@@ -398,10 +503,19 @@ async function renderPattern(args: Record<string, unknown>) {
     // line comments stripped so a commented-out ".pianoroll()" (the guide uses
     // such examples) doesn't flip the scrim on with nothing to draw. The (^|[^:])
     // guard avoids stripping the "//" inside protocol URLs like https://….
+    const intent = detectViz(finalCode);
+    // Stage the Hydra layer BEFORE evaluation so initHydra() finds a canvas
+    // that is already sized for the panel (hydra-synth reads canvas.width /
+    // height in its constructor and keeps that resolution).
+    setHydraActive(intent.hydra);
     if (!vizManual) {
-      const codeForVizScan = finalCode.replace(/(^|[^:])\/\/.*$/gm, "$1");
-      vizVisible = VIZ_METHOD_RE.test(codeForVizScan);
+      vizVisible = intent.any;
       applyVizVisibility();
+    }
+    if (intent.hydra && vizVisible) {
+      // applyVizVisibility() defers sizing to the next frame; Hydra may init
+      // sooner than that (it only awaits the hydra-synth import), so size now.
+      syncVizCanvasSize();
     }
 
     // Create the <strudel-editor> element programmatically (no innerHTML sink).
@@ -515,14 +629,20 @@ fullscreenBtn.addEventListener("click", () => {
 // turning them on for a plain pattern would show an empty dark stage. Turning
 // OFF always works; turning ON requires a draw method (else nudge the user).
 vizBtn.addEventListener("click", () => {
-  if (!vizVisible && !VIZ_METHOD_RE.test(getLiveCode())) {
-    setStatus("Add .scope(), .pianoroll() or .spectrum() to the pattern to see visuals", "normal");
+  if (!vizVisible && !detectViz(getLiveCode()).any) {
+    setStatus(
+      "Add .pianoroll(), .scope() or `await initHydra()` to the pattern to see visuals",
+      "normal",
+    );
     return;
   }
   vizManual = true;
   vizVisible = !vizVisible;
   applyVizVisibility();
 });
+
+// Hook the static #hydra-canvas so we can tell when Hydra binds to it.
+ensureHydraCanvas();
 
 // Keep the canvas backing store DPR-correct as the editor/iframe resizes.
 vizResizeObserver = new ResizeObserver(() => syncVizCanvasSize());
@@ -578,6 +698,9 @@ app.onteardown = () => {
     recordingStream = null;
     vizResizeObserver?.disconnect();
     vizResizeObserver = null;
+    // Stop Hydra's WebGL render loop too — it runs independently of the
+    // Strudel scheduler and would otherwise keep the GPU busy after teardown.
+    setHydraActive(false);
   } catch { /* best-effort cleanup */ }
   return {};
 };

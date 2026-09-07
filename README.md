@@ -44,8 +44,9 @@ Write code → hear it play → edit in a live REPL.
 - **Full effects chain** — filters, reverb, delay, FM synthesis
 - **Editable REPL** — users can tweak the code and hear changes instantly
 - **Live visuals** — add `.pianoroll()` / `.scope()` / `.spectrum()` to animate behind the code (native strudel.cc overlay)
+- **Hydra shader backgrounds** — `await initHydra()` + Hydra code for fully custom, music-synced WebGL visuals (`H(pattern)` drives shader params, `feedStrudel` post-processes the piano roll)
 - **Record & download** — capture live audio and export as WAV
-- **`get-strudel-guide`** — 7 reference topics (mini-notation, sounds, effects, patterns, genres, tips, advanced)
+- **`get-strudel-guide`** — 8 reference topics (mini-notation, sounds, effects, patterns, genres, tips, visuals, advanced)
 
 ### Shared
 - **`search-music-docs`** — semantic search over strudel.cc and ABCJS documentation
@@ -195,7 +196,7 @@ Clients that support ext-apps render the interactive UI inline automatically (`a
 | `play-sheet-music` | ABC notation → visual sheet music + multi-instrument audio |
 | `play-live-pattern` | Strudel code → live-coded patterns with synthesis + effects |
 | `get-music-guide` | ABC reference (7 topics: instruments, drums, syntax, genres...) |
-| `get-strudel-guide` | Strudel reference (7 topics: sounds, effects, patterns, genres...) |
+| `get-strudel-guide` | Strudel reference (8 topics: sounds, effects, visuals, genres...) |
 | `search-music-docs` | Semantic search over strudel.cc and ABCJS docs |
 
 ## Prompts

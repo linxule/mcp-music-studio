@@ -212,9 +212,11 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "128 GM instruments, built-in synths, and a full effects chain. " +
   "Patterns play in a REPL the user can edit directly. " +
   "Add .pianoroll() to a pattern to show a live piano-roll animation in the widget " +
-  "(or .punchcard()/.scope()/.spectrum() — use one visual per pattern). " +
+  "(or .punchcard()/.scope()/.spectrum() — one draw method per pattern). " +
+  "For a custom animated background, start the code with `await initHydra()` and write " +
+  "Hydra shader code (H(pattern) syncs it to the music) — see get-strudel-guide topic 'visuals'. " +
   "Use get-strudel-guide for genre templates, sound references, and advanced features " +
-  "like visualization, arrangement, and sample loading.";
+  "like arrangement and sample loading.";
 
 export const PLAY_LIVE_EXT_APPS_SUFFIX =
   "\n\nThe Strudel REPL renders inline with an editable code editor, " +
@@ -290,11 +292,13 @@ export const GET_STRUDEL_GUIDE_DESCRIPTION =
   "patterns (transformations, probability, euclidean, arrangement), " +
   "genres (complete templates: techno/house/dnb/ambient/jazz/lofi/synthwave), " +
   "tips (tempo, common mistakes, ABC↔Strudel crossover), " +
-  "advanced (visualization, sample loading, wavetables, ZZFX, continuous signals, chord voicings).";
+  "visuals (pianoroll/scope draw methods + Hydra shader backgrounds with recipes), " +
+  "advanced (sample loading, wavetables, ZZFX, continuous signals, chord voicings).";
 
 export const GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION =
   "Reference topic. Start with 'genres' for working templates, " +
-  "'sounds' for instruments, 'advanced' for visualization and sample loading.";
+  "'sounds' for instruments, 'visuals' for animations and Hydra backgrounds, " +
+  "'advanced' for sample loading.";
 
 // -----------------------------------------------------------------------------
 // search-music-docs — shared core (cache + key are injected per transport)
