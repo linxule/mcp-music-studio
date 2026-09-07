@@ -50,7 +50,7 @@
     "@cloudflare/vite-plugin": "^1.30.0",
     "@modelcontextprotocol/ext-apps": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.24.0",
-    "abcjs": "^6.4.4",
+    "abcjs": "^6.7.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "wrangler": "^4.76.0",
