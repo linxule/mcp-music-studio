@@ -21,6 +21,26 @@
       <span id="status" class="status" role="status" aria-live="polite">Loading score…</span>
     </header>
 
+    <!-- Collapsible ABC source editor. Hidden until the toolbar's "Edit"
+         button is pressed; edits re-render the score below it. -->
+    <section id="editor-pane" class="editor-pane" hidden>
+      <label class="control-label" for="abc-editor">ABC source</label>
+      <textarea
+        id="abc-editor"
+        class="abc-editor"
+        rows="6"
+        spellcheck="false"
+        autocomplete="off"
+        autocapitalize="off"
+        autocorrect="off"
+        aria-describedby="editor-hint"
+      ></textarea>
+      <p id="editor-message" class="editor-message" role="status" aria-live="polite" hidden></p>
+      <p id="editor-hint" class="editor-hint">
+        Re-renders as you type. ⌘/Ctrl+Enter to re-render and play.
+      </p>
+    </section>
+
     <section class="sheet-section">
       <div id="sheet-music" class="sheet-music-container">
         <!-- ABC notation will be rendered here by abcjs -->

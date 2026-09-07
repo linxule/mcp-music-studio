@@ -126,4 +126,25 @@ K:G
 "G"G2 B2 d2 B2 | "C"c2 e2 "D"d4 | "G"B2 d2 g2 d2 | "D"A2 F2 "G"G4 |]`,
     },
   },
+  {
+    // Two voices, so the Edit pane's bar counting (per voice, not summed) and
+    // the multi-stave re-render are both easy to eyeball.
+    id: "abc-two-voice",
+    label: "ABC — 2-voice invention (Edit pane)",
+    widget: "abc",
+    args: {
+      title: "Two-Voice Invention",
+      style: "classical",
+      abcNotation: `X:1
+T:Two-Voice Invention
+M:4/4
+L:1/8
+Q:1/4=96
+K:C
+V:1 clef=treble
+V:2 clef=bass
+[V:1] "C"c2 e2 g2 e2 | "F"f2 a2 "G"g2 f2 | "C"e2 g2 c'2 g2 | "G"d2 f2 "C"e4 |]
+[V:2] "C"C,2 G,2 E,2 G,2 | "F"F,2 C2 "G"G,2 B,2 | "C"C,2 E,2 G,2 E,2 | "G"G,,2 B,,2 "C"C,4 |]`,
+    },
+  },
 ];

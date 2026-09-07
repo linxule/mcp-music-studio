@@ -189,6 +189,77 @@ body {
   background: var(--color-card-bg);
 }
 
+/* Toggle buttons (Edit) read as pressed rather than merely hovered. */
+.toolbar-btn[aria-pressed="true"] {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #ffffff;
+}
+
+.toolbar-btn[aria-pressed="true"]:hover {
+  background: var(--color-primary);
+}
+
+/* ABC source editor (collapsible pane between the toolbar and the score) */
+.editor-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* `display: flex` above would otherwise defeat the `hidden` attribute. */
+.editor-pane[hidden] {
+  display: none;
+}
+
+.abc-editor {
+  width: 100%;
+  box-sizing: border-box;
+  /* ~6 rows; `rows="6"` is the no-CSS floor, this is the visual one. */
+  min-height: 9.5rem;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-card-bg);
+  color: var(--color-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  tab-size: 2;
+  /* ABC is line-oriented: never soft-wrap a bar, scroll instead. */
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
+.abc-editor:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -1px;
+}
+
+/* Inline parse feedback, directly under the textarea. */
+.editor-message {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--color-danger);
+}
+
+/* Non-fatal abcjs warnings — the score still rendered, so don't shout. */
+.editor-message.warn {
+  color: var(--color-text-muted);
+}
+
+.editor-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
 /* Loading skeleton / spinner (pre-render and streaming states) */
 .loading-skeleton {
   display: flex;
