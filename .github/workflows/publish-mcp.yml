@@ -40,9 +40,17 @@ jobs:
       - name: Build package
         run: bun run build
 
+      # A tag can be cut from a commit CI never saw. npm and the MCP Registry
+      # both reject a re-publish of the same version, so a broken publish is not
+      # fixable in place — test before, not after.
+      - name: Run tests
+        run: bunx vitest run
+
       - name: Publish to npm (OIDC Trusted Publishing)
         run: |
-          npm install -g npm@latest   # OIDC trusted publishing needs npm >= 11.5.1
+          # Pinned to the 11.x line: OIDC trusted publishing needs >= 11.5.1, and
+          # `@latest` would silently adopt a future major mid-release.
+          npm install -g "npm@^11.5.1"
           npm publish --ignore-scripts
 
       - name: Update server.json version

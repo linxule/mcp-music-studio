@@ -70,6 +70,7 @@ import {
   registerMusicPrompts,
   SERVER_ICONS,
   WEBSITE_URL,
+  uiToolMeta,
 } from "./src/shared/tool-defs.js";
 
 const DIST_DIR = import.meta.filename.endsWith(".ts")
@@ -241,7 +242,7 @@ export function createServer(options?: ServerOptions): McpServer {
         (inlineMode ? PLAY_SHEET_EXT_APPS_SUFFIX : PLAY_SHEET_FALLBACK_SUFFIX),
       inputSchema: playSheetInputSchema,
       annotations: PLAY_TOOL_ANNOTATIONS,
-      _meta: { ui: { resourceUri: SHEET_RESOURCE_URI } },
+      _meta: uiToolMeta(SHEET_RESOURCE_URI),
     },
     playHandler,
   );
@@ -376,7 +377,7 @@ export function createServer(options?: ServerOptions): McpServer {
         (inlineMode ? PLAY_LIVE_EXT_APPS_SUFFIX : PLAY_LIVE_FALLBACK_SUFFIX),
       inputSchema: playLiveInputSchema,
       annotations: PLAY_TOOL_ANNOTATIONS,
-      _meta: { ui: { resourceUri: STRUDEL_RESOURCE_URI } },
+      _meta: uiToolMeta(STRUDEL_RESOURCE_URI),
     },
     strudelPlayHandler,
   );

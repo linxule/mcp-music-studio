@@ -58,6 +58,7 @@ import {
   registerMusicPrompts,
   WORKER_SERVER_ICONS,
   WEBSITE_URL,
+  uiToolMeta,
 } from "../../src/shared/tool-defs.js";
 import type { ParseOnlyFn } from "../../src/shared/abc-to-strudel.js";
 
@@ -152,10 +153,38 @@ function trackRequest(env: Env, ctx: ExecutionContext, request: Request) {
 const EXT_APPS_MIME = "text/html;profile=mcp-app" as const;
 
 // =============================================================================
+// Widget build identity
+// =============================================================================
+//
+// The worker inlines dist/mcp-app.html and dist/strudel-app.html at BUILD time,
+// so a deploy that skipped `bun run build` serves stale widgets while VERSION
+// still reads current. /health therefore reports a fingerprint of the HTML that
+// is actually bundled, letting a stale deploy be spotted from outside.
+//
+// FNV-1a: a few lines, synchronous (crypto.subtle is async and can't run at
+// module scope), and identity is all that's wanted here — not collision
+// resistance against an adversary.
+
+function widgetFingerprint(html: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < html.length; i++) {
+    hash ^= html.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${hash.toString(16).padStart(8, "0")}-${html.length}`;
+}
+
+export const WIDGET_BUILD = {
+  abc: widgetFingerprint(sheetMusicHtml),
+  strudel: widgetFingerprint(strudelHtml),
+} as const;
+
+// =============================================================================
 // Server factory — creates a fresh McpServer per request (stateless)
 // =============================================================================
 
-function createMusicServer(env: Env): McpServer {
+/** Exported so tests/transport-parity.test.ts can build it over InMemoryTransport. */
+export function createMusicServer(env: Env): McpServer {
   const server = new McpServer(
     {
       name: "Music Studio",
@@ -220,10 +249,7 @@ function createMusicServer(env: Env): McpServer {
       description: PLAY_SHEET_BASE_DESCRIPTION + PLAY_SHEET_EXT_APPS_SUFFIX,
       inputSchema: playSheetInputSchema,
       annotations: PLAY_TOOL_ANNOTATIONS,
-      _meta: {
-        ui: { resourceUri: SHEET_RESOURCE_URI },
-        "ui/resourceUri": SHEET_RESOURCE_URI,
-      },
+      _meta: uiToolMeta(SHEET_RESOURCE_URI),
     },
     async () => ({
       content: [{ type: "text" as const, text: PLAY_SHEET_NEUTRAL_TEXT }],
@@ -240,10 +266,7 @@ function createMusicServer(env: Env): McpServer {
       description: PLAY_LIVE_BASE_DESCRIPTION + PLAY_LIVE_EXT_APPS_SUFFIX,
       inputSchema: playLiveInputSchema,
       annotations: PLAY_TOOL_ANNOTATIONS,
-      _meta: {
-        ui: { resourceUri: STRUDEL_RESOURCE_URI },
-        "ui/resourceUri": STRUDEL_RESOURCE_URI,
-      },
+      _meta: uiToolMeta(STRUDEL_RESOURCE_URI),
     },
     async (args) => buildPlayLiveResult(args),
   );
@@ -376,9 +399,10 @@ export default {
 
     // Lightweight liveness probe — keeps uptime checks off the MCP transport.
     if (url.pathname === "/health" || url.pathname === "/healthz") {
-      return new Response(JSON.stringify({ status: "ok", version: VERSION }), {
-        headers: { "content-type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ status: "ok", version: VERSION, widgets: WIDGET_BUILD }),
+        { headers: { "content-type": "application/json" } },
+      );
     }
 
     if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
