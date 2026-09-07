@@ -133,6 +133,10 @@ visible to you.
 ### Dirt-Samples (the 9-entry subset that dough-samples actually ships)
   casio, crow, east, insect, jazz, metal, numbers, space, wind
 
+The famous full Dirt library (arpy, bass, jungle, tabla, gabba, ...) is NOT
+preloaded. Pull it in first if you want it — one line, and CSP-safe:
+samples('github:tidalcycles/dirt-samples')
+
 ### Piano
   piano
 
@@ -581,6 +585,11 @@ arrange(
 
   tips: `# Strudel Tips & Common Mistakes
 
+## Reference
+Docs and the interactive REPL: strudel.cc (tutorial at strudel.cc/learn).
+Source: codeberg.org/uzu/strudel — the project moved off GitHub, so any
+github.com/tidalcycles/strudel link you may have memorised is stale.
+
 ## Tempo Conversion
 Strudel uses cycles per second (cps), not BPM.
 Formula: cps = bpm / 60 / 4  (for 4/4 time)
@@ -820,6 +829,13 @@ s("bd*2 [~ sd] hh*4").bank("RolandTR909")
 H(pattern) turns a Strudel pattern into a live value Hydra reads every frame,
 so the visual follows the SAME sequence the music plays.
 
+AVOID ~ RESTS IN AN H() PATTERN. H is
+  o => () => reify(o).queryArc(getTime(), getTime())[0].value
+— a zero-width query lands on a rest, returns [], and [0].value throws inside
+Hydra's per-frame uniform evaluation. Use a low number where you would have
+used a rest ("1 0 0.6 0" rather than "1 ~ 0.6 ~"), or wrap it:
+() => (H(p)() ?? 0).
+
 await initHydra()
 const seq = "<3 4 5 [6 7]>*2"
 shape(H(seq), 0.4, 0.05)
@@ -887,6 +903,12 @@ Output:   .out(o0)
 
 ### Troubleshooting
 - "initHydra is not defined": the engine failed to load; ask the user to re-run.
+- "osc is not defined" (or shape/noise/voronoi/src/o0 is not defined): Hydra
+  never finished initialising — either await initHydra() is missing, is not on
+  the first line, or the load failed. Hydra's drawing functions only exist
+  AFTER initHydra() resolves. Re-run with await initHydra() at the top.
+- "Cannot read properties of undefined (reading 'value')" from a frame
+  callback: an H() pattern hit a ~ rest. See the H() recipe above.
 - Nothing visible: you probably forgot .out(o0), or the colors are too dark.
 - Choppy audio: simplify the shader (fewer modulate/kaleid stages).
 - The pattern used Hydra before but not now: the widget stops the old shader

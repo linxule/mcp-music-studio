@@ -132,6 +132,11 @@ export const STRUDEL_CSP: { resourceDomains: string[]; connectDomains: string[] 
     "https://cdn.jsdelivr.net",
     "https://felixroos.github.io",
     "https://tidalcycles.github.io",
+    // samples('shabda:...') resolves through shabda.ndre.gr, which then serves
+    // the audio from cdn.freesound.org. Both are needed or the fetch fails and
+    // the sound is never registered (silent layer, no error).
+    "https://shabda.ndre.gr",
+    "https://cdn.freesound.org",
   ],
 };
 
@@ -217,7 +222,7 @@ export const playSheetInputSchema = z.object({
 
 export const PLAY_LIVE_BASE_DESCRIPTION =
   "Live-code music patterns using TidalCycles mini-notation in JavaScript. " +
-  "Layer drums, synths, and bass with stack(). Choose from 72 drum machine banks, " +
+  "Layer drums, synths, and bass with stack(). Choose from 71 drum machine banks, " +
   "128 GM instruments, built-in synths, and a full effects chain. " +
   "Patterns play in a REPL the user can edit directly. " +
   "Add .pianoroll() to a pattern to show a live piano-roll animation in the widget " +
@@ -296,7 +301,8 @@ export const GET_MUSIC_GUIDE_TOPIC_DESCRIPTION =
 
 export const GET_STRUDEL_GUIDE_DESCRIPTION =
   "Reference material for Strudel live coding (performance mode). " +
-  "Topics: mini-notation (pattern syntax), sounds (synths, 72 drum banks, 128 GM instruments), " +
+  "Topics: mini-notation (pattern syntax), " +
+  "sounds (synths, 71 drum banks, 128 GM instruments, 128 vcsl orchestral/percussion samples), " +
   "effects (filters, reverb, delay, FM synthesis, envelopes), " +
   "patterns (transformations, probability, euclidean, arrangement), " +
   "genres (complete templates: techno/house/dnb/ambient/jazz/lofi/synthwave), " +
