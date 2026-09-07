@@ -28,6 +28,12 @@ describe("viz-detect", () => {
     expect(detectViz(withUrl).strudelViz).toBe(true);
   });
 
+  it("ignores visuals inside block comments", () => {
+    const r = detectViz('/* .pianoroll()\n await initHydra() */\ns("bd sd")');
+    expect(r.any).toBe(false);
+    expect(detectViz('s("bd").pianoroll() /* x */').strudelViz).toBe(true);
+  });
+
   it("detects the all(pianoroll) form the guide documents", () => {
     const code = 'note("c3 e3").s("piano")\ns("bd*4")\nall(pianoroll)';
     expect(detectViz(code)).toEqual({ strudelViz: true, hydra: false, any: true });

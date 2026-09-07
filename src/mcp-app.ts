@@ -167,11 +167,13 @@ instrumentSelect.addEventListener("change", () => {
 async function applySettings(): Promise<void> {
   if (!state.synthControl || !state.visualObj?.[0]) return;
   try {
-    // Re-primes the synth: a sound-font change means every sample is refetched
-    // from the new bank, so this can take a moment on first use.
+    // userAction MUST be true: abcjs sets isLoaded in go() and never clears it,
+    // so setTune(..., false) after a first play leaves the OLD audio buffer in
+    // place and the next Play replays the previous instrument/bank. `true`
+    // forces go() to re-prime with the new options (the user did click).
     await state.synthControl.setTune(
       state.visualObj[0],
-      false,
+      true,
       currentSynthOptions() as SynthOptions,
     );
   } catch (error) {

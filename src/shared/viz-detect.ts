@@ -37,7 +37,9 @@ export const HYDRA_INIT_RE = /\binitHydra\s*\(/;
  * `https://…` (e.g. in samples('https://...') calls).
  */
 export function stripLineComments(code: string): string {
-  return code.replace(/(^|[^:])\/\/.*$/gm, "$1");
+  return code
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
 export interface VizIntent {
