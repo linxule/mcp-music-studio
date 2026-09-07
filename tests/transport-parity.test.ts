@@ -178,6 +178,61 @@ describe("tool results — the click-to-play link", () => {
     }
   });
 
+  // T5: the Worker used to return an unconditional "sheet music ready" receipt
+  // while the local server ran the same ABC through abcjs. Both now validate.
+  it("both transports reject the same broken ABC, identically", async () => {
+    const args = { abcNotation: "X:1\nK:C\n{}[|" };
+    const results = [];
+    for (const client of [local, worker]) {
+      const res = await client.callTool({ name: "play-sheet-music", arguments: args });
+      expect(res.isError, "broken notation must not be reported as ready").toBe(
+        true,
+      );
+      // No point minting a share link to a page that renders an error.
+      expect(linkOf(res.content)).toBeUndefined();
+      results.push((res.content as { text?: string }[])[0]?.text);
+    }
+    expect(results[0]).toContain("ABC notation has errors");
+    expect(results[0]).toBe(results[1]);
+  });
+
+  it("both transports reject a score with no notes or rests", async () => {
+    for (const client of [local, worker]) {
+      const res = await client.callTool({
+        name: "play-sheet-music",
+        arguments: { abcNotation: "X:1\nT:Nothing\nK:C\n" },
+      });
+      expect(res.isError).toBe(true);
+      expect((res.content as { text?: string }[])[0]?.text).toContain(
+        "no notes or rests",
+      );
+    }
+  });
+
+  it("differs on a good score ONLY by the local --render-mode hint", async () => {
+    const args = { abcNotation: "X:1\nK:C\nCDEF|" };
+    const [l, w] = await Promise.all([
+      local.callTool({ name: "play-sheet-music", arguments: args }),
+      worker.callTool({ name: "play-sheet-music", arguments: args }),
+    ]);
+    const textOf = (r: typeof l) =>
+      (r.content as { type: string; text?: string }[])[0]!.text!;
+    // The worker has no --render-mode flag, so it omits that one sentence...
+    expect(textOf(w)).not.toContain("--render-mode");
+    expect(textOf(l)).toContain("--render-mode browser");
+    // ...and with the hint and the (origin-specific) link line removed, the
+    // two results are the same text.
+    const strip = (t: string) =>
+      t
+        .replace(
+          " Re-run with --render-mode browser to open a playable version in your browser.",
+          "",
+        )
+        .replace(/\n\n▶ Play in browser: \S+/, "")
+        .trim();
+    expect(strip(textOf(l))).toBe(strip(textOf(w)));
+  });
+
   it("the Worker links the origin it was reached on; stdio links the hosted one", async () => {
     const custom = await connect(
       createMusicServer(WORKER_ENV, "https://music.example.com"),

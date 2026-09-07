@@ -90,8 +90,10 @@ describe("play-sheet-music handler", () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.content[0]?.type).toBe("text");
+    // Wording is conditional on purpose: on a terminal client nothing plays,
+    // so "will still play" was a claim the server can't make.
     expect(result.content[0]?.text).toContain(
-      "Parsed with warnings (will still play):",
+      "Parsed with warnings (the score still renders in MCP-app hosts):",
     );
     expect(result.content[0]?.text).toContain("Measure overflow warning");
   });

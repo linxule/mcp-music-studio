@@ -109,6 +109,32 @@ export const PLAY_TOOL_ANNOTATIONS = {
   openWorldHint: false,
 } as const;
 
+/**
+ * Play-tool annotations for a given local render mode.
+ *
+ * `readOnlyHint` was hard-coded `true`, which is a lie in `--render-mode
+ * browser`: that mode writes an HTML file under `--output-dir` and shells out to
+ * the OS to open it. A client reading the hint may decide the call is safe to
+ * make without asking — so the hint has to follow the mode.
+ *
+ * `html` and `auto` stay read-only on purpose: `html` returns the player as an
+ * inline resource block (a pure string build, nothing touched), and `auto`
+ * returns text plus a link. Neither writes anything, so marking them
+ * non-read-only would just be a different inaccuracy.
+ */
+export function playToolAnnotations(renderMode: "auto" | "html" | "browser") {
+  if (renderMode !== "browser") return PLAY_TOOL_ANNOTATIONS;
+  return {
+    // Writes a file to disk...
+    readOnlyHint: false,
+    // ...but only ever a new player page; it destroys nothing.
+    destructiveHint: false,
+    idempotentHint: false,
+    // ...and launches the user's browser, which is squarely "the open world".
+    openWorldHint: true,
+  } as const;
+}
+
 export const GUIDE_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
   destructiveHint: false,
@@ -271,9 +297,25 @@ export function attachPlayLink(
   };
 }
 
+// -----------------------------------------------------------------------------
+// Input bounds
+//
+// Every free-form field below is bounded. Unbounded strings/arrays are the
+// cheapest way to make a server do unbounded work: a multi-megabyte `code` or
+// `abcNotation` is parsed, hashed, URL-encoded for the share link, and (on the
+// worker) written to KV. These caps are far above any real piece of music.
+// -----------------------------------------------------------------------------
+
+/** Max length of a score or pattern, in characters. */
+export const MAX_SOURCE_CHARS = 64 * 1024;
+
+/** Max entries in a note/chord list for analyze-harmony. */
+export const MAX_HARMONY_ITEMS = 64;
+
 export const playSheetInputSchema = z.object({
   abcNotation: z
     .string()
+    .max(MAX_SOURCE_CHARS)
     .default(DEFAULT_ABC_NOTATION)
     .describe(
       'ABC notation string. Include chord symbols ("C", "Am7") above notes for auto-accompaniment with style presets.',
@@ -375,6 +417,7 @@ export const PLAY_LIVE_FALLBACK_SUFFIX =
 export const playLiveInputSchema = z.object({
   code: z
     .string()
+    .max(MAX_SOURCE_CHARS)
     .describe(
       "Strudel pattern code. Uses TidalCycles mini-notation in JavaScript. " +
         "Use stack() to layer drums, bass, and melody. " +
@@ -475,9 +518,27 @@ export const SEARCH_DOCS_DESCRIPTION =
   "cover what you need — for specific functions, advanced techniques, or when " +
   "you're unsure about syntax. Powered by semantic search over strudel.cc and ABCJS docs.";
 
+/** Max query length accepted (code points) — bounds KV-key cardinality and upstream cost. */
+export const SEARCH_DOCS_MAX_QUERY = 500;
+
+/**
+ * Hard cap on how much of the upstream response body is read, in bytes.
+ *
+ * `res.text()` buffers whatever context7.com sends before the result is
+ * truncated to SEARCH_DOCS_MAX_CHARS — an upstream that answers with 200 MB
+ * would be faithfully held in memory first (and on the Worker, that is the
+ * isolate's memory). The reader stops here instead; the payload is truncated
+ * for the model anyway.
+ */
+export const SEARCH_DOCS_MAX_BODY_BYTES = 256 * 1024;
+
+/** How long to wait on context7.com before giving up. */
+export const SEARCH_DOCS_TIMEOUT_MS = 15_000;
+
 export const searchDocsInputSchema = z.object({
   query: z
     .string()
+    .max(SEARCH_DOCS_MAX_QUERY)
     .describe(
       "What you want to know. Be specific. " +
         "Good: 'how to use FM synthesis with envelope' or 'chop and slice sample manipulation'. " +
@@ -511,15 +572,6 @@ export interface SearchDocsDeps {
 }
 
 /**
- * Shared search-music-docs implementation. Behavior is identical across
- * transports; only the cache adapter and API key differ (injected via deps).
- * Never reflects the raw upstream error body (status only) to avoid relaying
- * upstream-controlled text into the model context.
- */
-/** Max query length accepted — bounds KV-key cardinality and upstream cost. */
-export const SEARCH_DOCS_MAX_QUERY = 500;
-
-/**
  * Cache key for a (library, query) pair.
  *
  * Workers KV caps keys at 512 BYTES, but the query is capped at 500 CODE POINTS.
@@ -542,6 +594,63 @@ export async function buildSearchCacheKey(
   return `ctx7:${library}:${hex}`;
 }
 
+/**
+ * Truncate to `maxCodePoints` Unicode code points.
+ *
+ * Code points, not UTF-16 units, so an astral character straddling the cap
+ * can't be split into a broken surrogate half. Walked with an index rather than
+ * `Array.from(query)`, which materialised an array of every code point in the
+ * input *before* applying the cap — the one allocation the cap exists to avoid.
+ */
+export function truncateCodePoints(
+  value: string,
+  maxCodePoints: number,
+): string {
+  let count = 0;
+  for (let i = 0; i < value.length; ) {
+    if (count === maxCodePoints) return value.slice(0, i);
+    // A surrogate pair is one code point but two UTF-16 units.
+    i += value.codePointAt(i)! > 0xffff ? 2 : 1;
+    count++;
+  }
+  return value;
+}
+
+/**
+ * Read at most `maxBytes` of a response body, then hang up.
+ *
+ * Falls back to `.text()` only when the runtime gave us no stream to read
+ * (some fetch mocks), where the body is already in memory anyway.
+ */
+async function readCappedText(
+  res: Response,
+  maxBytes: number,
+): Promise<string> {
+  const body = res.body;
+  if (!body?.getReader) return (await res.text()).slice(0, maxBytes);
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const room = maxBytes - total;
+      const chunk = value.byteLength > room ? value.subarray(0, room) : value;
+      total += chunk.byteLength;
+      text += decoder.decode(chunk, { stream: true });
+    }
+    text += decoder.decode();
+  } finally {
+    // Signals the upstream we're done; the remaining bytes are never buffered.
+    await reader.cancel().catch(() => {});
+  }
+  return text;
+}
+
 export async function searchMusicDocs(
   query: string,
   library: "strudel" | "abcjs",
@@ -549,13 +658,7 @@ export async function searchMusicDocs(
 ): Promise<CallToolResult> {
   const libraryId = CONTEXT7_LIBRARY_IDS[library] ?? CONTEXT7_LIBRARY_IDS.strudel;
   const maxChars = deps.maxChars ?? SEARCH_DOCS_MAX_CHARS;
-  // Truncate by Unicode code points (not UTF-16 units) so an astral character
-  // straddling the cap can't be split into a broken surrogate half.
-  const codePoints = Array.from(query);
-  const q =
-    codePoints.length > SEARCH_DOCS_MAX_QUERY
-      ? codePoints.slice(0, SEARCH_DOCS_MAX_QUERY).join("")
-      : query;
+  const q = truncateCodePoints(query, SEARCH_DOCS_MAX_QUERY);
   const cacheKey = await buildSearchCacheKey(library, q);
 
   if (deps.cacheGet) {
@@ -572,9 +675,16 @@ export async function searchMusicDocs(
   const apiKey = deps.apiKey ?? "";
 
   try {
-    let res = await fetch(url);
+    // Without a deadline a hung upstream pins the tool call open indefinitely
+    // (and, on the Worker, holds the request alive until the platform kills it).
+    let res = await fetch(url, {
+      signal: AbortSignal.timeout(SEARCH_DOCS_TIMEOUT_MS),
+    });
     if (res.status === 429 && apiKey && apiKey.startsWith("ctx7sk")) {
-      res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(SEARCH_DOCS_TIMEOUT_MS),
+      });
     }
 
     if (!res.ok) {
@@ -589,7 +699,7 @@ export async function searchMusicDocs(
       };
     }
 
-    const raw = await res.text();
+    const raw = await readCappedText(res, SEARCH_DOCS_MAX_BODY_BYTES);
     if (!raw || raw.trim().length === 0) {
       return {
         content: [
@@ -661,10 +771,12 @@ export const analyzeHarmonyInputSchema = z.object({
     ),
   notes: z
     .array(z.string())
+    .max(MAX_HARMONY_ITEMS)
     .optional()
     .describe('Note names, e.g. ["c4","e4","g4","b4"] or ["C","Eb","G"]. For detect-chord/detect-key.'),
   chords: z
     .array(z.string())
+    .max(MAX_HARMONY_ITEMS)
     .optional()
     .describe('Chord symbols, e.g. ["Dm7","G7","Cmaj7"]. For detect-key/scale-for-chord.'),
   key: z
@@ -673,6 +785,7 @@ export const analyzeHarmonyInputSchema = z.object({
     .describe('Key, e.g. "C", "A minor", "F# major". For suggest-progression/key-chords.'),
   romanNumerals: z
     .array(z.string())
+    .max(MAX_HARMONY_ITEMS)
     .optional()
     .describe(
       'Roman numerals to render in the key, e.g. ["ii7","V7","Imaj7"] or ["I","V","vi","IV"]. ' +
@@ -708,7 +821,10 @@ export const CONVERT_ABC_DESCRIPTION =
   "Pick a single voice with `voice`; re-run per voice and stack() them for a full arrangement.";
 
 export const convertAbcInputSchema = z.object({
-  abcNotation: z.string().describe("ABC notation to convert (the same string you'd pass to play-sheet-music)."),
+  abcNotation: z
+    .string()
+    .max(MAX_SOURCE_CHARS)
+    .describe("ABC notation to convert (the same string you'd pass to play-sheet-music)."),
   voice: z
     .number()
     .int()
