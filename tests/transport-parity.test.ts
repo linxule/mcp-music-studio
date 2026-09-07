@@ -1,0 +1,177 @@
+import { describe, expect, it } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+import { createServer } from "../server";
+import { createMusicServer } from "../worker/src/index";
+
+// =============================================================================
+// Local (stdio/HTTP) vs Cloudflare Worker parity
+// =============================================================================
+//
+// Both transports import their tool definitions from src/shared/tool-defs, but
+// they each do their own registration wiring: server.ts goes through
+// @modelcontextprotocol/ext-apps' registerAppTool/registerAppResource and reads
+// widget HTML from disk, while the Worker calls registerTool/resource directly
+// with the HTML inlined at build time. Nothing structural forced those two call
+// sites to agree — the `_meta` resourceUri pair was hand-written in both places
+// and had already drifted (the Worker emitted the legacy flat spelling, the
+// local server didn't). This test drives real clients over InMemoryTransport and
+// diffs the wire-level listings, so drift fails here instead of in a host.
+//
+// The Worker's `env` is only read inside tool handlers (KV cache, analytics,
+// API key). Listing never touches it, so an empty object is enough.
+const WORKER_ENV = {} as never;
+
+async function connect(server: McpServer) {
+  const client = new Client({ name: "parity-test", version: "0.0.0" });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  await Promise.all([
+    client.connect(clientTransport),
+    server.connect(serverTransport),
+  ]);
+  return client;
+}
+
+// The local server's play-tool descriptions vary with --render-mode; "auto" is
+// the default and the mode whose wording matches the (always ext-apps) Worker.
+const local = await connect(createServer({ defaultRenderMode: "auto" }));
+const worker = await connect(createMusicServer(WORKER_ENV));
+
+const byName = <T extends { name: string }>(xs: T[]) =>
+  [...xs].sort((a, b) => a.name.localeCompare(b.name));
+const byUri = <T extends { uri: string }>(xs: T[]) =>
+  [...xs].sort((a, b) => a.uri.localeCompare(b.uri));
+
+describe("tools/list parity", () => {
+  it("exposes the same tool names on both transports", async () => {
+    const l = byName((await local.listTools()).tools).map((t) => t.name);
+    const w = byName((await worker.listTools()).tools).map((t) => t.name);
+    expect(l).toEqual(w);
+    // Guard against a listing that is empty on both sides passing vacuously.
+    expect(l).toContain("play-sheet-music");
+    expect(l).toContain("play-live-pattern");
+    expect(l.length).toBe(5);
+  });
+
+  it("exposes identical tool definitions (title, description, schema, annotations, _meta)", async () => {
+    const l = byName((await local.listTools()).tools);
+    const w = byName((await worker.listTools()).tools);
+    expect(l).toEqual(w);
+  });
+
+  it("links both play tools to their UI resource in both _meta spellings", async () => {
+    for (const client of [local, worker]) {
+      const tools = (await client.listTools()).tools;
+      const sheet = tools.find((t) => t.name === "play-sheet-music");
+      const strudel = tools.find((t) => t.name === "play-live-pattern");
+      expect(sheet?._meta).toEqual({
+        ui: { resourceUri: "ui://sheet-music/mcp-app.html" },
+        "ui/resourceUri": "ui://sheet-music/mcp-app.html",
+      });
+      expect(strudel?._meta).toEqual({
+        ui: { resourceUri: "ui://strudel/strudel-app.html" },
+        "ui/resourceUri": "ui://strudel/strudel-app.html",
+      });
+    }
+  });
+
+  it("marks the play tools non-idempotent (each call starts audio)", async () => {
+    for (const client of [local, worker]) {
+      const tools = (await client.listTools()).tools;
+      for (const name of ["play-sheet-music", "play-live-pattern"]) {
+        expect(tools.find((t) => t.name === name)?.annotations).toMatchObject({
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false,
+        });
+      }
+    }
+  });
+});
+
+describe("resources/list parity", () => {
+  it("exposes identical resource listings", async () => {
+    const l = byUri((await local.listResources()).resources);
+    const w = byUri((await worker.listResources()).resources);
+    expect(l).toEqual(w);
+    expect(l.map((r) => r.uri)).toContain("ui://sheet-music/mcp-app.html");
+    expect(l.map((r) => r.uri)).toContain("ui://strudel/strudel-app.html");
+    // Both guide families are mirrored as resources.
+    expect(l.filter((r) => r.uri.startsWith("music://guide/")).length).toBe(7);
+    expect(
+      l.filter((r) => r.uri.startsWith("music://strudel-guide/")).length,
+    ).toBe(7);
+  });
+
+  it("serves both UI resources with the ext-apps mime type and CSP _meta", async () => {
+    for (const client of [local, worker]) {
+      const sheet = await client.readResource({
+        uri: "ui://sheet-music/mcp-app.html",
+      });
+      expect(sheet.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
+      expect(sheet.contents[0]?._meta).toEqual({
+        ui: { csp: { connectDomains: ["https://paulrosen.github.io"] } },
+      });
+
+      const strudel = await client.readResource({
+        uri: "ui://strudel/strudel-app.html",
+      });
+      expect(strudel.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
+      const csp = (
+        strudel.contents[0]?._meta as {
+          ui: { csp: { resourceDomains: string[]; connectDomains: string[] } };
+        }
+      ).ui.csp;
+      expect(csp.resourceDomains).toContain("https://unpkg.com");
+      expect(csp.connectDomains).toContain("https://felixroos.github.io");
+    }
+  });
+});
+
+describe("prompts/list parity", () => {
+  it("exposes identical prompt listings", async () => {
+    const l = byName((await local.listPrompts()).prompts);
+    const w = byName((await worker.listPrompts()).prompts);
+    expect(l).toEqual(w);
+    expect(l.map((p) => p.name)).toEqual([
+      "arrange-tune",
+      "compose-beat",
+      "harmonize-melody",
+    ]);
+  });
+});
+
+describe("serverInfo — documented, deliberate differences", () => {
+  it("shares name, version and instructions", () => {
+    const l = local.getServerVersion();
+    const w = worker.getServerVersion();
+    expect(l?.name).toBe(w?.name);
+    expect(l?.version).toBe(w?.version);
+    expect(local.getInstructions()).toBe(worker.getInstructions());
+    expect(local.getInstructions()).toBeTruthy();
+  });
+
+  it("differs ONLY in the icon URL — the worker serves its own same-origin /icon.png", () => {
+    const l = local.getServerVersion() as { icons?: { src: string }[] };
+    const w = worker.getServerVersion() as { icons?: { src: string }[] };
+
+    expect(l.icons?.[0]?.src).toBe(
+      "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/icons/logo-256.png",
+    );
+    expect(w.icons?.[0]?.src).toBe(
+      "https://mcp-music-studio.linxule.workers.dev/icon.png",
+    );
+
+    // Everything else about serverInfo is identical — normalise the one
+    // whitelisted field and the two records must match exactly.
+    const norm = (v: unknown) => ({
+      ...(v as Record<string, unknown>),
+      icons: undefined,
+    });
+    expect(norm(l)).toEqual(norm(w));
+  });
+});

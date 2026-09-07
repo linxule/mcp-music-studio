@@ -47,6 +47,7 @@ import {
   registerMusicPrompts,
   WORKER_SERVER_ICONS,
   WEBSITE_URL,
+  uiToolMeta,
 } from "../../src/shared/tool-defs.js";
 
 // Bundled ext-apps HTML (wrangler imports as text via rules config)
@@ -143,7 +144,8 @@ const EXT_APPS_MIME = "text/html;profile=mcp-app" as const;
 // Server factory — creates a fresh McpServer per request (stateless)
 // =============================================================================
 
-function createMusicServer(env: Env): McpServer {
+/** Exported so tests/transport-parity.test.ts can build it over InMemoryTransport. */
+export function createMusicServer(env: Env): McpServer {
   const server = new McpServer(
     {
       name: "Music Studio",
@@ -208,10 +210,7 @@ function createMusicServer(env: Env): McpServer {
       description: PLAY_SHEET_BASE_DESCRIPTION + PLAY_SHEET_EXT_APPS_SUFFIX,
       inputSchema: playSheetInputSchema,
       annotations: PLAY_TOOL_ANNOTATIONS,
-      _meta: {
-        ui: { resourceUri: SHEET_RESOURCE_URI },
-        "ui/resourceUri": SHEET_RESOURCE_URI,
-      },
+      _meta: uiToolMeta(SHEET_RESOURCE_URI),
     },
     async () => ({
       content: [{ type: "text" as const, text: PLAY_SHEET_NEUTRAL_TEXT }],
@@ -228,10 +227,7 @@ function createMusicServer(env: Env): McpServer {
       description: PLAY_LIVE_BASE_DESCRIPTION + PLAY_LIVE_EXT_APPS_SUFFIX,
       inputSchema: playLiveInputSchema,
       annotations: PLAY_TOOL_ANNOTATIONS,
-      _meta: {
-        ui: { resourceUri: STRUDEL_RESOURCE_URI },
-        "ui/resourceUri": STRUDEL_RESOURCE_URI,
-      },
+      _meta: uiToolMeta(STRUDEL_RESOURCE_URI),
     },
     async (args) => buildPlayLiveResult(args),
   );
