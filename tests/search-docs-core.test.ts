@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildSearchCacheKey,
   searchMusicDocs,
   SEARCH_DOCS_MAX_CHARS,
   SEARCH_DOCS_MAX_QUERY,
@@ -73,8 +74,23 @@ describe("searchMusicDocs (shared core)", () => {
     const longQuery = "q".repeat(SEARCH_DOCS_MAX_QUERY + 100);
     await searchMusicDocs(longQuery, "strudel", { cacheGet });
     const key = cacheGet.mock.calls[0]?.[0] as string;
-    // key = `ctx7:strudel:<q>` where q is capped to SEARCH_DOCS_MAX_QUERY
-    expect(key.length).toBe("ctx7:strudel:".length + SEARCH_DOCS_MAX_QUERY);
+    // The truncated query — not the raw one — is what gets hashed into the key.
+    expect(key).toBe(
+      await buildSearchCacheKey("strudel", "q".repeat(SEARCH_DOCS_MAX_QUERY)),
+    );
+  });
+
+  it("uses a cache key that fits KV's 512-byte limit for any legal query", async () => {
+    const cacheGet = vi.fn(async () => null);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("docs", { status: 200 }),
+    );
+    // 500 code points of 4-byte emoji: ~2000 UTF-8 bytes, which used to blow
+    // straight past KV's 512-byte key limit and silently disable the cache.
+    const astral = "🎹".repeat(SEARCH_DOCS_MAX_QUERY);
+    await searchMusicDocs(astral, "strudel", { cacheGet });
+    const key = cacheGet.mock.calls[0]?.[0] as string;
+    expect(new TextEncoder().encode(key).byteLength).toBeLessThanOrEqual(512);
   });
 
   it("writes successful results to the cache adapter", async () => {

@@ -86,10 +86,16 @@ export const WORKER_SERVER_ICONS = [
 // Tool annotations (MCP hints — all tools here are read-only, non-destructive)
 // -----------------------------------------------------------------------------
 
+/**
+ * The play tools mutate no server state, but they are NOT idempotent: each call
+ * instantiates a widget and starts audio, so repeating one with the same
+ * arguments has an additional effect on the world. `idempotentHint: true` would
+ * invite a client to coalesce or silently retry a call the user can hear.
+ */
 export const PLAY_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
   destructiveHint: false,
-  idempotentHint: true,
+  idempotentHint: false,
   openWorldHint: false,
 } as const;
 
@@ -125,6 +131,30 @@ export const STRUDEL_CSP: { resourceDomains: string[]; connectDomains: string[] 
     "https://tidalcycles.github.io",
   ],
 };
+
+// -----------------------------------------------------------------------------
+// UI tool _meta — single source for both transports
+// -----------------------------------------------------------------------------
+
+/**
+ * `_meta` linking a tool to its ext-apps UI resource.
+ *
+ * Both spellings are emitted: the nested `ui.resourceUri` of the current spec
+ * and the flat legacy `"ui/resourceUri"` some hosts still read. `registerAppTool`
+ * from @modelcontextprotocol/ext-apps back-fills whichever is missing, but the
+ * Worker calls `registerTool` directly (the ext-apps helper isn't in its bundle),
+ * so the pair used to be hand-written in two places and could silently drift.
+ * tests/transport-parity.test.ts pins the two transports together.
+ */
+export function uiToolMeta(resourceUri: string): {
+  ui: { resourceUri: string };
+  "ui/resourceUri": string;
+} {
+  return {
+    ui: { resourceUri },
+    "ui/resourceUri": resourceUri,
+  };
+}
 
 // -----------------------------------------------------------------------------
 // play-sheet-music
@@ -351,6 +381,29 @@ export interface SearchDocsDeps {
 /** Max query length accepted — bounds KV-key cardinality and upstream cost. */
 export const SEARCH_DOCS_MAX_QUERY = 500;
 
+/**
+ * Cache key for a (library, query) pair.
+ *
+ * Workers KV caps keys at 512 BYTES, but the query is capped at 500 CODE POINTS.
+ * A 500-character CJK or emoji query is 1500-2000 UTF-8 bytes, so the literal
+ * key `ctx7:<library>:<query>` overflowed the limit and every KV read/write
+ * threw — silently disabling the cache for exactly the queries most likely to
+ * repeat. Hashing gives a fixed 77-byte ASCII key regardless of the input.
+ */
+export async function buildSearchCacheKey(
+  library: string,
+  query: string,
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(query),
+  );
+  const hex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `ctx7:${library}:${hex}`;
+}
+
 export async function searchMusicDocs(
   query: string,
   library: "strudel" | "abcjs",
@@ -365,7 +418,7 @@ export async function searchMusicDocs(
     codePoints.length > SEARCH_DOCS_MAX_QUERY
       ? codePoints.slice(0, SEARCH_DOCS_MAX_QUERY).join("")
       : query;
-  const cacheKey = `ctx7:${library}:${q}`;
+  const cacheKey = await buildSearchCacheKey(library, q);
 
   if (deps.cacheGet) {
     try {
