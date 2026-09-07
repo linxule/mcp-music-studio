@@ -129,6 +129,88 @@ export interface MusicToolInput {
   transpose?: number;
 }
 
+// =============================================================================
+// Sound fonts
+// =============================================================================
+//
+// abcjs streams one mp3 per pitch, composing the URL as
+//   <soundFontUrl><instrument>-mp3/<NoteName>.mp3
+// (see node_modules/abcjs/src/synth/load-note.js). Any MIDI.js-format bank
+// laid out that way works, but it MUST also ship a `percussion-mp3/` folder:
+// `%%MIDI drumon` (every style preset except `classical`) resolves GM program
+// 128 to the instrument name `percussion`, and a bank without it drops the
+// drums silently — one console error per note, no visible failure.
+//
+// All three banks below are paulrosen mirrors, verified to carry
+// `percussion-mp3/` plus every instrument in INSTRUMENTS. The gleitz mirror
+// hosts the same MusyngKite/FluidR3 samples in the same layout but has no
+// percussion folder, so it is deliberately not offered here.
+//
+// `volumeMultiplier` mirrors abcjs's own per-bank defaults so switching banks
+// doesn't change perceived loudness (create-synth.js applies 3.0 to its
+// default/alternate banks and 0.4 to the original `abcjs/` bank).
+
+export interface SoundFontOption {
+  /** Human label for the widget's Sound selector. */
+  label: string;
+  /** Base URL passed to abcjs as `soundFontUrl` (trailing slash required). */
+  url: string;
+  /** Passed as `soundFontVolumeMultiplier`; matches abcjs's per-bank default. */
+  volumeMultiplier: number;
+}
+
+export const SOUNDFONT_NAMES = ["default", "musyngkite", "dry"] as const;
+
+export type SoundFontName = (typeof SOUNDFONT_NAMES)[number];
+
+export const DEFAULT_SOUNDFONT: SoundFontName = "default";
+
+const SOUNDFONT_HOST = "https://paulrosen.github.io/midi-js-soundfonts";
+
+export const SOUNDFONTS: Record<SoundFontName, SoundFontOption> = {
+  // abcjs's own default bank — current behaviour, unchanged.
+  default: {
+    label: "Default (FluidR3)",
+    url: `${SOUNDFONT_HOST}/FluidR3_GM/`,
+    volumeMultiplier: 3.0,
+  },
+  // abcjs's `alternateSoundFontUrl`: fuller, more dynamic, larger samples
+  // (first-play latency rises).
+  musyngkite: {
+    label: "MusyngKite (fuller)",
+    url: `${SOUNDFONT_HOST}/MusyngKite/`,
+    volumeMultiplier: 3.0,
+  },
+  // abcjs's `originalSoundFontUrl`: smaller, drier, fastest to load.
+  dry: {
+    label: "Dry (lightweight)",
+    url: `${SOUNDFONT_HOST}/abcjs/`,
+    volumeMultiplier: 0.4,
+  },
+};
+
+export function isSoundFontName(name: string): name is SoundFontName {
+  return name in SOUNDFONTS;
+}
+
+export function resolveSoundFont(name: string | undefined): SoundFontOption {
+  return name && isSoundFontName(name)
+    ? SOUNDFONTS[name]
+    : SOUNDFONTS[DEFAULT_SOUNDFONT];
+}
+
+/** Synth options fragment for a sound font, ready to spread into SynthOptions. */
+export function soundFontSynthOptions(name: string | undefined): {
+  soundFontUrl: string;
+  soundFontVolumeMultiplier: number;
+} {
+  const font = resolveSoundFont(name);
+  return {
+    soundFontUrl: font.url,
+    soundFontVolumeMultiplier: font.volumeMultiplier,
+  };
+}
+
 export interface InvocationSettings {
   instrument: string;
   style: string;
