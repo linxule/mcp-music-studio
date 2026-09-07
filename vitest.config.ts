@@ -43,10 +43,29 @@ export default defineConfig({
         find: /^agents\/mcp$/,
         replacement: path.resolve(root, "tests/stubs/agents-mcp.ts"),
       },
+      // @strudel/core (a devDependency, used by tests/guide-executable.test.ts to
+      // actually RUN the guide's examples) statically imports @kabelsalat/web,
+      // whose package.json is `"type": "module"` with `main` pointing at an IIFE
+      // bundle and only `module` pointing at real ESM. Node/vitest follow `main`
+      // and blow up with "does not provide an export named 'SalatRepl'".
+      // Pin the ESM build. Upstream packaging bug; harmless everywhere else.
+      {
+        find: /^@kabelsalat\/web$/,
+        replacement: path.resolve(
+          root,
+          "node_modules/@kabelsalat/web/dist/index.mjs",
+        ),
+      },
     ],
   },
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    server: {
+      // Externalized deps are loaded by Node directly, which bypasses the
+      // @kabelsalat/web alias above. Process the Strudel packages through Vite
+      // so the alias (and its ESM entry) actually applies.
+      deps: { inline: [/@strudel\//, /@kabelsalat\//] },
+    },
   },
 });
