@@ -577,7 +577,9 @@ playBtn.addEventListener("click", () => {
       editor.stop();
       updatePlayState(false);
     } else {
-      editor.evaluate(currentCode, true);
+      // Evaluate the LIVE buffer (the user may have edited the code), not the
+      // code the tool originally delivered — Send-to-chat already does this.
+      editor.evaluate(getLiveCode(), true);
       updatePlayState(true);
     }
   } catch (err) {
