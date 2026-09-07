@@ -99,66 +99,115 @@ Formula: cps = bpm / 60 / 4`,
 
 ## Built-in Synthesizers
 Use with s() or sound():
-- "sine"        pure sine wave
-- "sawtooth"    sawtooth wave (rich, buzzy)
-- "square"      square wave (hollow, retro)
-- "triangle"    triangle wave (soft, default)
+- "sine"        pure sine wave            (alias "sin")
+- "sawtooth"    sawtooth wave, buzzy      (alias "saw")
+- "square"      square wave, hollow       (alias "sqr")
+- "triangle"    triangle wave, soft       (alias "tri")
+- "supersaw"    detuned saw stack (use .detune() / .spread())
+- "pulse"       pulse wave (use .pw() for pulse width)
+- "sbd"         synthesized bass drum (use .decay(), .penv())
+- "bytebeat"    algorithmic bit-math oscillator
 - "white"       white noise
 - "pink"        pink noise (softer)
 - "brown"       brown noise (very soft, rumble)
-- "crackle"     noise crackles
+- "crackle"     noise crackles (use .density())
 
-## Wavetable Synthesis
-- "wt_*" prefix: 1000+ waveforms from AKWF library
-- Example: s("wt_piano"), s("wt_violin")
+## ZZFX Retro Synths
+Chip-tune / game sound engine. Six oscillator flavours plus the raw engine:
+- "z_sine", "z_sawtooth", "z_triangle", "z_square", "z_tan", "z_noise", "zzfx"
 
-## ZZFX Synths
-- "z_sawtooth", "z_square", "z_sine", "z_noise", "z_tan"
-- Retro chip-tune style sounds
+## Wavetable Oscillator
+Strudel 1.3 has a wavetable oscillator, but NO wavetable pack is preloaded in
+this widget, so there is no wt_* sound you can just play. See the "advanced"
+topic for the parameters (.wt(), .warp(), .warpmode()) and how to load a pack.
 
-## Dirt Samples (default sample library)
-Loaded by default from tidalcycles/Dirt-Samples:
-- bd, sd, hh, oh, cp, cr, cb, rim, mt, ht, lt
-- bass, bass3, bassfwomp
-- arpy, bleep, blip, gabba, jungbass, jungle
-- casio, gretsch, east, jazz
-- feel, future, hc, ho, if, industrial
-- kurt, latibro, lighter, lt, made, metal
-- moan, mouth, msg, newnotes, odx, off
-- pad, pebbles, perc, pluck, psr, rave
-- realclaps, reverbkick, rm, rs, sax, sheffield
-- short, sine, space, speakspell, speechless
-- stab, stomp, tabla, tabla2, tech, tok, trump, ul
-- ulgab, uxay, v, voodoo, wind, wobble, world, xmas
+## Sample Libraries Loaded by Default
+prebake() loads exactly six manifests. Anything outside these lists must be
+loaded first with samples() (see the "advanced" topic) or it will not sound —
+superdough throws "sound not found" and that layer goes SILENT with no error
+visible to you.
+
+### Default drum kit (uzu-drumkit) — what bare s("bd sd hh") plays
+  bd, brk, cb, cp, cr, hh, ht, lt, misc, mt, oh, rd, rim, sd, sh, tb
+
+### Dirt-Samples (the 9-entry subset that dough-samples actually ships)
+  casio, crow, east, insect, jazz, metal, numbers, space, wind
+
+### Piano
+  piano
+
+### Mridangam (South Indian hand drum)
+  ardha, chaapu, dhi, dhin, dhum, gumki, ka, ki, na, nam, ta, tha, thom
+
+### VCSL — 128 orchestral, world, and percussion instruments
+Pitched keys and organs:
+  clavisynth, fmpiano, kawai, piano1, steinway, organ_4inch, organ_8inch,
+  organ_full, pipeorgan_loud, pipeorgan_loud_pedal, pipeorgan_quiet,
+  pipeorgan_quiet_pedal
+Strings, harps, plucked:
+  harp, folkharp, strumstick, dantranh, dantranh_tremolo, dantranh_vibrato,
+  psaltery_pluck, psaltery_spiccato, psaltery_bow
+Winds and reeds:
+  sax, sax_stacc, sax_vib, saxello, saxello_stacc, saxello_vib, harmonica,
+  harmonica_soft, harmonica_vib, super64, super64_acc, super64_vib, ocarina,
+  ocarina_vib, ocarina_small, ocarina_small_stacc, recorder_soprano_stacc,
+  recorder_soprano_sus, recorder_alto_stacc, recorder_alto_sus,
+  recorder_alto_vib, recorder_tenor_stacc, recorder_tenor_sus,
+  recorder_tenor_vib, recorder_bass_stacc, recorder_bass_sus,
+  recorder_bass_vib, didgeridoo, ballwhistle, trainwhistle, siren
+Mallets and tuned percussion:
+  marimba, balafon, balafon_hard, balafon_soft, kalimba, kalimba2, kalimba3,
+  kalimba4, kalimba5, glockenspiel, vibraphone, vibraphone_soft,
+  vibraphone_bowed, xylophone_soft_pp, xylophone_soft_ff, xylophone_medium_pp,
+  xylophone_medium_ff, xylophone_hard_pp, xylophone_hard_ff, tubularbells,
+  tubularbells2, handbells, handchimes, belltree, marktrees, fingercymbal,
+  triangles, gong, gong2, wineglass, wineglass_slow, woodblock, slitdrum
+Drums:
+  bassdrum1, bassdrum2, timpani, timpani2, timpani_roll, snare_modern,
+  snare_hi, snare_low, snare_rim, tom_mallet, tom_stick, tom_rim, tom2_mallet,
+  tom2_stick, tom2_rim, bongo, conga, darbuka, framedrum, cajon, oceandrum,
+  hihat, sus_cymbal, sus_cymbal2, clash, clash2
+Hand and effect percussion:
+  clap, clave, cowbell, cabasa, agogo, anvil, brakedrum, guiro, ratchet,
+  shaker_large, shaker_small, sleighbells, slapstick, tambourine, tambourine2,
+  vibraslap, flexatone
+
+These are ordinary sounds: note("c4 e4 g4").s("marimba"), s("gong").room(0.8),
+note("<c3 g3>").s("steinway").gain(0.5). Many are multi-sample — pick a variant
+with s("kalimba:2") or let the index cycle with s("kalimba:<0 1 2>").
 
 Sample variants: s("bd:0"), s("bd:1"), s("bd:2")
 
-## Drum Machine Banks (72 machines via tidal-drum-machines)
+## Drum Machine Banks (71 machines via tidal-drum-machines)
 Use with .bank("MachineName"):
 s("bd sd hh oh").bank("RolandTR808")
 s("bd sd hh oh").bank("RolandTR909")
 
 ### Popular Banks
-RolandTR808, RolandTR909, RolandTR707, RolandTR606, RolandTR505
-LinnDrum, LinnLM1, Linn9000
-AkaiMPC60, AkaiXR10, AkaiLinn
-KorgKR55, KorgKPR77, KorgMinipops, KorgM1, KorgDDM110
-BossDR110, BossDR220, BossDR55, BossDR550, BossDR660
+RolandTR808, RolandTR909, RolandTR707, RolandTR606, RolandTR505, RolandTR626,
+RolandTR727, RolandCompurhythm78, RolandCompurhythm1000
+LinnDrum, LinnLM1, LinnLM2, Linn9000
+AkaiMPC60, AkaiXR10, AkaiLinn, MPC1000
+KorgKR55, KorgKPR77, KorgMinipops, KorgM1, KorgDDM110, KorgPoly800
+BossDR110, BossDR220, BossDR55, BossDR550
 EmuDrumulator, EmuSP12, EmuModular
 OberheimDMX, AlesisSR16, AlesisHR16
-SequentialCircuitsDrumtracks, MFB512
+SequentialCircuitsDrumtracks, SequentialCircuitsTom, MFB512
 SimmonsSDS5, SimmonsSDS400
 CasioRZ1, CasioSK1, CasioVL1
 YamahaRX5, YamahaRX21, YamahaRY30, YamahaRM50
+(The full 71 also includes short aliases — .bank("Linn") works as well as
+.bank("AkaiLinn").)
 
 ### Standard Drum Abbreviations (work across banks)
 bd=kick, sd=snare, hh=closed hi-hat, oh=open hi-hat
 rim=rimshot, cp=clap, cr=crash, rd=ride
 ht=high tom, mt=mid tom, lt=low tom
-sh=shaker, cb=cowbell, tb=tambourine
-perc=percussion, misc=miscellaneous, fx=effects
+sh=shaker, cb=cowbell, tb=tambourine, brk=break, misc=miscellaneous
+perc and fx exist in the drum-machine banks but NOT in the default kit — reach
+for them only after a .bank() — on the bare default kit they are silent.
 
-## General MIDI Soundfonts (127 instruments)
+## General MIDI Soundfonts (128 instruments)
 Use with .s("gm_instrument_name"):
 note("c3 e3 g3").s("gm_piano")
 note("c2 e2 g2").s("gm_electric_bass_finger")
@@ -341,15 +390,35 @@ sequence(pat1, pat2)  alias for cat
 n("0 2 4 6")                    scale degrees (0-indexed)
 n("0 2 4 6").scale("C4:minor")  play C minor scale degrees
 n("0 1 2 3 4 5 6 7").scale("C4:hirajoshi")  exotic scale
-n("<0 2 4> <1 3 5>").scale("C4:melodicMinor")  alternating chords
+n("<0 2 4> <1 3 5>").scale("C4:melodic:minor")  alternating chords
 
 n() vs note(): n() uses scale degrees (numbers), note() uses note names.
 n() is much more natural for working with exotic scales — you don't need
 to spell out every note name. Combine with .scale() to set key + mode.
 
-Available scales: major, minor, dorian, phrygian, lydian, mixolydian,
-locrian, melodicMinor, harmonicMinor, whole, chromatic, blues,
-pentatonic, minPent, hex, bebop, diminished
+Scale names go through tonal.js, which replaces ":" with a space and then
+looks the name up. So a MULTI-WORD scale is spelled with a colon between the
+words — "C4:melodic:minor", not "C4:melodicMinor". A name tonal does not know
+throws and the layer produces NO notes.
+
+Single-word scales: major, minor, ionian, dorian, phrygian, lydian,
+mixolydian, aeolian, locrian, chromatic, pentatonic, blues, augmented,
+diminished, altered, dominant, bebop, arabian, balinese, chinese, egyptian,
+enigmatic, flamenco, gypsy, hindu, hirajoshi, indian, in-sen, iwato, kumoi,
+kumoijoshi, overtone, pelog, persian, piongio, prometheus, ritusen, scriabin,
+spanish, ultralocrian
+
+Multi-word scales (mind the colon): major:pentatonic, minor:pentatonic,
+major:blues, minor:blues, harmonic:minor, harmonic:major, melodic:minor,
+whole:tone, whole:tone:pentatonic, half-whole:diminished,
+whole-half:diminished, bebop:major, bebop:minor, bebop:locrian, minor:bebop,
+lydian:dominant, lydian:augmented, lydian:minor, lydian:pentatonic,
+phrygian:dominant, mixolydian:pentatonic, double:harmonic:major,
+double:harmonic:lydian, hungarian:major, hungarian:minor, romanian:minor,
+ukrainian:dorian, spanish:heptatonic, six:tone:symmetric, composite:blues,
+locrian:pentatonic, ionian:pentatonic, minor:hexatonic, super:locrian,
+leading:whole:tone, altered:dorian, minor:six:pentatonic, purvi:raga,
+todi:raga, kafi:raga, malkos:raga
 
 ## Off / Superimpose
 .off(time, fn)    play original + transformed copy offset in time
@@ -704,12 +773,19 @@ Example:
 note("c3 e3 g3 c4").s("sawtooth").lpf(2000).pianoroll()
 
 ### pianoroll options
-.pianoroll({ cycles: 4, playhead: 0.5, vertical: 0, labels: 1, fold: 0 })
-  cycles    how many cycles are visible at once (default 4)
-  playhead  position of the now-line, 0–1 (default 0.5)
-  vertical  1 = scroll vertically instead of horizontally
-  labels    1 = draw note-name labels
-  fold      1 = collapse unused pitch rows
+.pianoroll({ cycles: 8, labels: 1, vertical: 1 })   // override what you need
+  cycles    how many cycles are visible at once   (default 4)
+  playhead  position of the now-line, 0–1         (default 0.5)
+  vertical  1 = scroll vertically, not horizontally (default 0)
+  labels    1 = draw note-name labels             (default false)
+  fold      1 = collapse unused pitch rows        (default 1 — already on;
+            pass fold: 0 to show the full pitch range instead)
+  minMidi / maxMidi   pitch range when fold is 0  (defaults 10 / 90)
+  autorange 1 = fit the range to the notes present (default 0)
+  smear     1 = do not clear the canvas — leaves trails (default 0)
+  flipTime  1 = reverse the time axis             (default 0)
+  hideInactive  1 = only draw the note under the playhead (default 0)
+  background  canvas background colour            (default "transparent")
 
 ### Per-pattern colors
 .color("cyan") / .color("#ff7aa2") tints that pattern's notes in the pianoroll
@@ -824,7 +900,16 @@ Quick reminder: one Strudel draw method per pattern; Hydra can be layered
 underneath it.
 
 ## Loading Extra Samples
-Load additional sample packs at runtime:
+Load additional sample packs at runtime. IMPORTANT: inside the inline widget a
+host Content-Security-Policy is in force, and only these sources can load —
+
+  github:  ->  raw.githubusercontent.com   ALLOWED
+  shabda:  ->  shabda.ndre.gr + cdn.freesound.org   ALLOWED
+  any other https:// URL                    BLOCKED (the fetch fails silently
+                                            and the sound is never registered)
+
+The browser-mode fallback (--render-mode browser) has no such CSP, so arbitrary
+URLs work there. Prefer github:/shabda: so the same code works in both.
 
 ### From GitHub
 samples('github:tidalcycles/dirt-samples')
@@ -833,14 +918,18 @@ samples('github:tidalcycles/dirt-samples')
 samples('shabda:bass:4,hihat:4')     search freesound
 samples('shabda/speech:hello,world') text-to-speech
 
-### Custom URL
+### Custom URL — browser mode only (blocked by the inline widget's CSP)
 samples({
   kick: 'kick/kick01.wav',
   snare: 'snare/snare01.wav'
 }, 'https://example.com/samples/')
 
-### From a strudel.json manifest
+### From a strudel.json manifest — browser mode only
 samples('https://example.com/strudel.json')
+
+Whatever the source: a sample name that was never registered makes superdough
+throw "sound not found" and that layer is SILENT. Only name sounds you loaded
+or that the "sounds" topic lists as preloaded.
 
 ## Song Arrangement
 Structure multi-section compositions:
@@ -852,11 +941,32 @@ arrange(
   [4, bass.slow(2)]                  // 4 cycles: outro
 )
 
-## Wavetable Synthesis
-1000+ wavetables from AKWF library. Use wt_ prefix:
-note("c3 e3 g3").s("wt_flute")
-note("c2 ~ c2 ~").s("wt_saw")
-note("c4 e4").s("wt_square").lpf(1000)
+## Wavetable Oscillator
+Strudel 1.3 has a real wavetable oscillator, but "wt_" is a BANK, not a sound
+prefix, and NO wavetable pack is prebaked in this widget. There is no wt_*
+sound you can just play. The old wt_flute / wt_saw / wt_piano names are
+silent: they were never registered.
+
+To use it you must load a wavetable pack yourself first, then select it as a
+bank. Upstream's own example, for reference:
+
+samples('github:<owner>/<wavetable-pack>')                 // needs samples()
+s("squelch").bank("wt_digital").seg(8).note("F1")          // needs samples()
+  .wt("0 0.25 0.5 0.75 1")                                 // needs samples()
+
+Wavetable parameters (they only do something once a wt_ bank is loaded):
+.wt(0-1)          position in the wavetable (synonym .wavetablePosition)
+.wtenv(0-1)       amount of the position envelope
+.wtattack/.wtdecay/.wtsustain/.wtrelease   position envelope
+.wtrate/.wtdepth/.wtskew/.wtdc            position LFO
+.warp(0-1)        waveform warp amount
+.warpmode("...")  none, asym, bendp, bendm, bendmp, sync, quant, fold, pwm,
+                  orbit, spin, chaos, primes, binary, brownian, reciprocal,
+                  wormhole, logistic, sigmoid, fractal, flip
+.wtphaserand(0-1) randomise the starting phase
+
+For out-of-the-box gritty/retro timbres without loading anything, use the ZZFX
+z_* sounds below, or "supersaw"/"pulse"/"bytebeat".
 
 ## ZZFX Retro Sounds
 Chip-tune / game sound engine. Use z_ prefix:
@@ -921,20 +1031,35 @@ note("c3 e3 g3 c4").s("sawtooth")
   .delay(saw.range(0, 0.4).slow(16))   // rising delay
 
 ## Scales (100+ via tonaljs)
-Beyond the basics (major, minor, dorian, etc.), Strudel has:
-- bebop, bebopMajor, bebopMinor, bebopDominant
-- wholetone, augmented, diminished
-- persian, arabian, japanese, chinese, egyptian
-- prometheus, enigmatic, neapolitan
-- hirajoshi, iwato, kumoi, pelog
-- And many more. Use: .scale("C:scaleName")
+Strudel hands the scale name to tonal.js after replacing ":" with " ", so a
+multi-word scale name uses colons between the WORDS. Camel-case names such as
+"bebopMajor" or "wholetone" are not scales tonal knows — they throw and the
+layer plays NOTHING.
+
+- bebop, bebop:major, bebop:minor, bebop:locrian, minor:bebop
+- whole:tone, augmented, diminished, half-whole:diminished
+- persian, arabian, chinese, indian, egyptian, balinese
+- prometheus, enigmatic, scriabin, flamenco, gypsy, oriental
+- hirajoshi, iwato, kumoi, kumoijoshi, in-sen, pelog, ritusen
+- purvi:raga, todi:raga, kafi:raga, malkos:raga
+- major:pentatonic, minor:pentatonic (NOT "minPent"), major:blues, minor:blues
+- harmonic:minor, harmonic:major, melodic:minor, lydian:dominant,
+  phrygian:dominant, hungarian:minor, ukrainian:dorian
+- And many more. Write the tonic, a colon, then the scale words joined by
+  colons.
 
 For exotic scales, n() with scale degrees is easier than note() with note names:
 n("0 2 4 6 7").scale("C4:hirajoshi")   // much easier than spelling out C D# E G G#
+
+If a pattern with .scale() plays nothing at all, the scale name is wrong —
+@strudel/tonal throws "Invalid scale name" and the whole layer is dropped.
 
 ## Chord Voicings
 voicing("Cmaj7")              auto voice-led chord
 voicing("<Cmaj7 Dm7 G7 Cmaj7>")  chord progression with voice leading
 
-Config: .anchor("c4") .mode("below") .dict("ipianoroll")`,
+Config: .anchor("c4") .mode("below") .dict("lefthand")
+
+Voicing dictionaries: "ireal" (default), "ireal-ext", "lefthand", "triads",
+"guidetones", "legacy". Add your own with addVoicings(name, { ... }).`,
 };
