@@ -21,6 +21,7 @@ import {
   type AbcToStrudelArgs,
   type ParseOnlyFn,
 } from "./abc-to-strudel.js";
+import { EDITOR_THEMES, VISUAL_PRESETS } from "./visual-presets.js";
 
 // -----------------------------------------------------------------------------
 // Resource URIs
@@ -224,6 +225,9 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "(or .punchcard()/.scope()/.spectrum() — one draw method per pattern). " +
   "For a custom animated background, start the code with `await initHydra()` and write " +
   "Hydra shader code (H(pattern) syncs it to the music) — see get-strudel-guide topic 'visuals'. " +
+  "If you'd rather not hand-write one, set `visuals` to a ready-made preset " +
+  "(pianoroll/punchcard/scope/spectrum, or hydra-kaleid/pulse/wash/feed) and `theme` to a " +
+  "code-editor colour scheme that matches the mood. " +
   "Use get-strudel-guide for genre templates, sound references, and advanced features " +
   "like arrangement and sample loading.";
 
@@ -258,6 +262,22 @@ export const playLiveInputSchema = z.object({
     .describe(
       "Start playing immediately (default: true). May require user click due to browser autoplay policy.",
     ),
+  visuals: z
+    .enum(VISUAL_PRESETS)
+    .optional()
+    .describe(
+      "Ready-made visual, for when the code has none of its own. " +
+        "pianoroll/punchcard/scope/spectrum draw onto the 2D canvas behind the code; " +
+        "hydra-kaleid (rotating kaleidoscope), hydra-pulse (shape driven by a rhythm), " +
+        "hydra-wash (slow ambient noise) and hydra-feed (the piano roll mirrored and trailed) " +
+        "are WebGL shader backgrounds. Ignored if the code already visualises itself — " +
+        "writing your own .pianoroll() or initHydra() shader is still the better result " +
+        "(see get-strudel-guide topic 'visuals').",
+    ),
+  theme: z
+    .enum(EDITOR_THEMES)
+    .optional()
+    .describe("Editor colour theme — pick to match the mood (e.g. 'nord', 'sonicPink', 'githubLight')."),
 });
 
 /**
