@@ -1,3 +1,5 @@
+import { bytesToBase64 } from "./bytes-to-base64";
+
 /**
  * Encode an AudioBuffer as a base64 WAV string (16-bit PCM).
  */
@@ -43,14 +45,7 @@ export function audioBufferToWavBase64(buffer: AudioBuffer): string {
     }
   }
 
-  // Base64 encode in chunks to avoid stack overflow
-  const bytes = new Uint8Array(arrayBuf);
-  let binary = "";
-  const chunk = 8192;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
+  return bytesToBase64(new Uint8Array(arrayBuf));
 }
 
 function writeStr(view: DataView, offset: number, str: string): void {

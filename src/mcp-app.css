@@ -157,6 +157,15 @@ body {
   line-height: 1;
 }
 
+/* Text-label buttons (MIDI) sit next to the single-glyph ones without
+   towering over them. */
+.toolbar-btn.toolbar-btn-text {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 6px 10px;
+}
+
 .toolbar-btn:hover {
   background: var(--color-border);
 }

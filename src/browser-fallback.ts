@@ -135,7 +135,7 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
   <meta name="color-scheme" content="dark">
   <title>${escapeHtml(meta.title)} — Music Studio</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♪</text></svg>">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/abcjs@6.6.2/abcjs-audio.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/abcjs@6.7.0/abcjs-audio.css">
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     :root{
@@ -340,7 +340,7 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
     </details>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/abcjs@6.6.2/dist/abcjs-basic-min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/abcjs@6.7.0/dist/abcjs-basic-min.js"></script>
   <script>
     var INIT = ${initData};
     var STYLE_PRESETS = ${presetsJson};

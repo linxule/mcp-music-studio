@@ -33,7 +33,9 @@ Write sheet music → see it rendered → hear it played with multi-instrument a
 - **30 instruments** — piano, strings, brass, woodwinds, synths — selectable by name
 - **Visual sheet music** — notes highlight as they play
 - **Streaming render** — sheet music appears as the AI types
+- **Selectable sound banks** — FluidR3 (default), MusyngKite (fuller), or a lightweight dry bank, switched live from the toolbar
 - **WAV download** — export audio as WAV files directly from the UI
+- **MIDI download** — export a standard MIDI file, with the style preset's drums, bass and chords on separate tracks; no playback needed first
 - **`get-music-guide`** — 7 reference topics (instruments, drums, ABC syntax, arrangements, genres, styles, MIDI directives)
 
 ### Live Performance (Strudel)
