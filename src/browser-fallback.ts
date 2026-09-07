@@ -106,7 +106,11 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
 
   // Build select options
   const styleOptionsHtml = [
-    '<option value="">None (melody only)</option>',
+    // Not "melody only": with `chordsOff` unset (deliberately — the chord
+    // symbols are the composer's, this selector only chooses the widget's
+    // preset), abcjs still synthesises bass and chords from any "C"/"Am7" in
+    // the ABC. Matches the ext-apps widget's wording.
+    '<option value="">No preset accompaniment</option>',
     ...STYLE_NAMES.map(
       (name) =>
         `<option value="${name}"${name === style ? " selected" : ""}>${STYLE_DISPLAY[name] ?? name}</option>`,
@@ -341,7 +345,7 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
       <summary>Edit notation</summary>
       <textarea id="abc-editor">${escapeHtml(abc)}</textarea>
       <div class="editor-actions">
-        <button class="btn-render" onclick="renderFromEditor()">Render &amp; Play</button>
+        <button class="btn-render" onclick="renderFromEditor()" title="Render the edited notation and start playing">Render &amp; Play</button>
       </div>
     </details>
   </div>
@@ -387,7 +391,15 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
       return directives + '\\n' + abc;
     }
 
-    async function render() {
+    // The startPlaying argument exists because this used to be a lie: the "Render & Play"
+    // button awaited setTune(..., false, ...) and never called play(), so it
+    // rendered and primed but nothing ever sounded. setTune's false argument only
+    // means "not a user action"; play() then primes via runWhenReady() anyway,
+    // because render() builds a FRESH SynthController every time and abcjs's
+    // isLoaded starts false on a new one. Called from the button's own click
+    // handler, so sticky user activation carries through the awaits and the
+    // AudioContext is allowed to resume.
+    async function render(startPlaying) {
       var style = document.getElementById('style-select').value;
       var program = parseInt(document.getElementById('instrument-select').value);
       var sheetEl = document.getElementById('sheet-music');
@@ -413,6 +425,16 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
       if (INIT.swing) opts.swing = INIT.swing;
       if (INIT.drumIntro) opts.drumIntro = INIT.drumIntro;
       await synthControl.setTune(visualObj[0], false, opts);
+
+      if (startPlaying) {
+        try {
+          await synthControl.play();
+        } catch (e) {
+          // Autoplay policy or a failed sample load — the transport's own ▶
+          // still works, so say nothing louder than the console.
+          console.debug('Playback did not start:', e);
+        }
+      }
     }
 
     function renderFromEditor() {
@@ -424,13 +446,16 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
         document.querySelector('.piece-title').textContent = m[1].trim();
         document.title = m[1].trim() + ' \\u2014 Music Studio';
       }
-      render();
+      render(true);
     }
 
-    document.getElementById('style-select').addEventListener('change', render);
-    document.getElementById('instrument-select').addEventListener('change', render);
+    // Re-priming on a settings change should not also start playback — that is
+    // the widget's behaviour too, and a select's change event is a poor moment
+    // to begin making noise.
+    document.getElementById('style-select').addEventListener('change', function () { render(false); });
+    document.getElementById('instrument-select').addEventListener('change', function () { render(false); });
 
-    render();
+    render(false);
   </script>
 </body>
 </html>`;

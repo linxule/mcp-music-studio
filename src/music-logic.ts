@@ -195,6 +195,33 @@ export const STYLE_NAMES = [
 
 export type StyleName = (typeof STYLE_NAMES)[number];
 
+/**
+ * Accompaniment presets — `%%MIDI` directives injected after the K: line.
+ *
+ * ## The `%%MIDI drum` argument-count rule (this silently ate four presets)
+ *
+ * abcjs's `normalizeDrumDefinition` (node_modules/abcjs/src/synth/abc_midi_flattener.js)
+ * is deliberately all-or-nothing: *any* imperfection and it returns
+ * `{ on: false }` — no error, no warning, just no drums. The rule it enforces:
+ *
+ *     params.pattern.length !== totalPlay * 2 + 1  ->  drums off
+ *
+ * where `totalPlay` counts only the **`d` (hit)** characters in the pattern
+ * string. `z` rests take NO arguments. So the argument list is
+ *
+ *     <pattern> <pitch × numberOfD> <velocity × numberOfD>
+ *
+ * Until 2026-09 four presets padded the list with 0-placeholders for their `z`
+ * rests (`dzz 36 0 0 90 0 0`), which made the count wrong and turned the drums
+ * off. Measured percussion-note events over a two-bar 4/4 probe, before →
+ * after: jazz 0 → 8, waltz 0 → 2, reggae 0 → 4, folk 0 → 2. (rock 8, bossa 16
+ * and march 8 were always correct; classical is intentionally drumless.)
+ *
+ * `tests/style-presets-sequence.test.ts` runs every preset through the real
+ * abcjs flattener (`tune.setUpAudio()`, the same call `CreateSynth` makes) and
+ * asserts non-zero percussion, chord and bass events. `parseOnly()` cannot
+ * catch this — the parser happily accepts a pattern the sequencer rejects.
+ */
 export const STYLE_PRESETS: Record<StyleName, string> = {
   rock: [
     "%%MIDI drumon",
@@ -207,7 +234,7 @@ export const STYLE_PRESETS: Record<StyleName, string> = {
   ].join("\n"),
   jazz: [
     "%%MIDI drumon",
-    "%%MIDI drum dzddzd 51 0 51 51 0 42 80 0 60 80 0 50",
+    "%%MIDI drum dzddzd 51 51 51 42 80 60 80 50",
     "%%MIDI gchord fzcz",
     "%%MIDI chordprog 0",
     "%%MIDI bassprog 32",
@@ -225,7 +252,7 @@ export const STYLE_PRESETS: Record<StyleName, string> = {
   ].join("\n"),
   waltz: [
     "%%MIDI drumon",
-    "%%MIDI drum dzz 36 0 0 90 0 0",
+    "%%MIDI drum dzz 36 90",
     "%%MIDI gchord fcc",
     "%%MIDI chordprog 0",
     "%%MIDI bassprog 32",
@@ -243,7 +270,7 @@ export const STYLE_PRESETS: Record<StyleName, string> = {
   ].join("\n"),
   reggae: [
     "%%MIDI drumon",
-    "%%MIDI drum zdzd 0 42 0 38 0 60 0 90",
+    "%%MIDI drum zdzd 42 38 60 90",
     "%%MIDI gchord zcfz",
     "%%MIDI chordprog 27",
     "%%MIDI bassprog 33",
@@ -252,7 +279,7 @@ export const STYLE_PRESETS: Record<StyleName, string> = {
   ].join("\n"),
   folk: [
     "%%MIDI drumon",
-    "%%MIDI drum dzzz 36 0 0 0 50 0 0 0",
+    "%%MIDI drum dzzz 36 50",
     "%%MIDI gchord fzcz",
     "%%MIDI chordprog 25",
     "%%MIDI bassprog 32",
