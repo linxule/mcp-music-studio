@@ -18,20 +18,20 @@ import {
   type ParseOnlyFn,
 } from "./src/server-logic.js";
 import type { ParseOnlyFn as AbcParseOnlyFn } from "./src/shared/abc-to-strudel.js";
-import {
-  openPlayerInBrowser,
-  generatePlayerHtml,
-} from "./src/browser-fallback.js";
+import { generatePlayerHtml } from "./src/browser-fallback.js";
 import {
   STRUDEL_GUIDE_TOPICS,
   STRUDEL_GUIDES,
   type StrudelGuideTopic,
 } from "./src/strudel-guide.js";
 import { ABC_GUIDE_TOPICS, ABC_GUIDES } from "./src/abc-guide.js";
+import { generateStrudelPlayerHtml } from "./src/strudel-browser-fallback.js";
+// The disk-writing/browser-launching half now lives in its own module so the
+// two generators above stay node-free (the Worker imports them for /play, /score).
 import {
-  generateStrudelPlayerHtml,
+  openPlayerInBrowser,
   openStrudelInBrowser,
-} from "./src/strudel-browser-fallback.js";
+} from "./src/open-in-browser.js";
 import { VERSION } from "./src/version.js";
 import {
   SHEET_RESOURCE_URI,
