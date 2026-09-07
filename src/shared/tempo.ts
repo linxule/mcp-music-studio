@@ -15,33 +15,52 @@
  *
  * `play-live-pattern` takes an optional `bpm`. Strudel's own unit is cycles per
  * second (`setcps`) or cycles per minute (`setcpm`), so a bpm has to be
- * converted and then either *written into* the pattern's existing tempo call or
- * *prepended* as a new one. The old implementation did that with
+ * converted and then either *written into* the pattern's existing tempo call,
+ * *prepended* as a new one, or *left alone* when touching the source would be
+ * unsafe. The old implementation did that with
  * `code.replace(/setcps\s*\([^)]*\)/, ...)`, which corrupts nested parens
  * (`setcps(120 / (60 * 4))` → `setcps(0.5))`, a syntax error that silently
  * kills the pattern) and also matches inside comments and strings.
  *
  * The policy implemented here, in order:
  *
- * 1. **`"replaced"`** — the code contains exactly ONE top-level tempo setter
- *    (`setcps` / `setcpm` at statement position, paren/brace/bracket depth 0,
- *    not a member access) and no other `setcps`/`setcpm` identifier anywhere
- *    outside comments and strings, AND its single argument is a pure numeric
- *    expression. The argument text is replaced in place; everything else in the
- *    source is preserved byte for byte.
- * 2. **`"inserted"`** — no `setcps`/`setcpm` identifier occurs anywhere outside
- *    comments and strings. `setcps(<cps>)\n` is prepended (after a `#!` line or
- *    a `"use …"` directive prologue, if present).
- * 3. **`"inserted-ambiguous"`** — anything else: multiple setters, a setter
- *    nested in a function/call/template expression, a shadowing
- *    `const setcps = …`, an alias `const t = setcps`, a member `.setcps(`, or a
- *    non-numeric/effectful argument such as `setcps(getTempo())`. Nothing is
- *    rewritten in place; `setcps(<cps>)\n` is prepended so the requested tempo
- *    still applies unless the pattern's own later call overrides it at runtime.
+ * | policy | when | what happens to `code` |
+ * | --- | --- | --- |
+ * | `"replaced"` | exactly ONE tempo setter, at a *real* top-level statement position (see below), not a member access, depth 0 everywhere, and its single argument is a pure numeric expression | the argument text is replaced in place; every other byte is preserved |
+ * | `"inserted"` | no `setcps`/`setcpm` identifier anywhere outside comments, strings and regex literals | `setcps(<cps>);\n` is prepended (after a `#!` line or a `"use …"` directive prologue) |
+ * | `"unchanged-ambiguous"` | the name is locally **bound** (`const/let/var/function/class setcps`) or **aliased** / referenced without a call (`const t = setcps`) | **nothing** — `code` is returned byte for byte. Prepending here is not safe: a `const setcps` binding puts the prepended call in that binding's temporal dead zone (`ReferenceError`), and a bare reference means the pattern is doing something with the setter we cannot model. The caller applies `cps` at runtime instead (`editor.repl.setCps(cps)`). |
+ * | `"inserted-ambiguous"` | anything else: multiple setters, a setter nested in a function/call/bracket/template expression, a conditional setter (`if (x)\n setcps(…)`), a labelled or assigned setter, a member `.setcps(`, or a non-numeric/effectful argument such as `setcps(getTempo())` | nothing is rewritten in place; `setcps(<cps>);\n` is prepended so the requested tempo still applies unless the pattern's own later call overrides it at runtime |
  *
- * Rationale for (3): never silently discard a pattern's intentional tempo
- * changes, and never emit a syntax error. A prepended line is always safe — at
- * worst it is overridden by code that runs after it.
+ * Rationale: never silently discard a pattern's intentional tempo changes, and
+ * never emit a program that fails to parse or throw. A prepended line is safe
+ * *except* against a local binding of the same name, which is exactly what
+ * `"unchanged-ambiguous"` carves out.
+ *
+ * ### Why the inserted line ends in `;`
+ *
+ * `setcps(0.5)` with no terminator does not reliably start a new statement:
+ * automatic semicolon insertion will not separate it from a following IIFE or
+ * array literal, so `setcps(0.5)\n(() => note(60))()` parses as a *call on the
+ * result of `setcps`*. Every emitted setter line therefore ends with an
+ * explicit `;` — the `setcps` form here, and the `setcpm` form the same way if
+ * a future branch ever emits one.
+ *
+ * ### What counts as a top-level statement position
+ *
+ * A newline alone is not enough — `if (false)\n  setcps(0.25);` sits on its own
+ * line but never executes, so rewriting its argument silently does nothing. A
+ * setter is treated as top-level only when the previous significant token
+ * (whitespace and comments ignored) is one of:
+ *
+ * - start of file,
+ * - `;`,
+ * - `}`, or
+ * - a line end whose preceding token cannot continue a statement — i.e. NOT
+ *   `=` `,` `(` `[` `{` `?` `:` `.` or a binary/unary operator, NOT `=>`, NOT a
+ *   keyword like `else` / `do` / `return` / `new` / `await`, and NOT the `)`
+ *   that closes an `if` / `for` / `while` / `switch` / `catch` / `with` header.
+ *
+ * Anything in doubt degrades to `"inserted-ambiguous"`, never to a rewrite.
  *
  * A "pure numeric argument" is digits, `.`, whitespace and `+ - * / % ( )`
  * only, containing at least one digit and no comment marker. Anything else is
@@ -51,16 +70,29 @@
  * prepend path (`"inserted-ambiguous"`).
  *
  * Callers gate on `if (bpm)`. If `bpm` is not a finite number greater than
- * zero, the code is returned untouched (policy `"inserted-ambiguous"`, meaning
- * "no confident rewrite happened").
+ * zero, the code is returned untouched (policy `"unchanged-ambiguous"`, meaning
+ * "no rewrite happened"). `cps` is always returned so a caller can apply the
+ * tempo through Strudel's runtime API regardless of which branch was taken.
  */
 
+/** Which branch of the policy table above produced a `TempoResult`. */
+export type TempoPolicy =
+  | "inserted"
+  | "replaced"
+  | "inserted-ambiguous"
+  | "unchanged-ambiguous";
+
 export interface TempoResult {
-  /** The rewritten pattern source. */
+  /** The pattern source after the policy was applied (byte-identical to the input for `"unchanged-ambiguous"`). */
   code: string;
   /** Which branch of the policy above produced `code`. */
-  policy: "inserted" | "replaced" | "inserted-ambiguous";
-  /** Cycles per second the requested bpm maps to, rounded to 4 decimals. */
+  policy: TempoPolicy;
+  /**
+   * Cycles per second the requested bpm maps to, rounded to 4 decimals.
+   * Always returned — for `"unchanged-ambiguous"` it is the ONLY way the tempo
+   * reaches the pattern, so the caller must apply it at runtime
+   * (`editor.repl.setCps(cps)`).
+   */
   cps: number;
 }
 
@@ -98,6 +130,12 @@ interface Occurrence {
   statementStart: boolean;
   /** Identifier is a property access (`x.setcps`). */
   member: boolean;
+  /**
+   * Identifier is the *bound name* of a local declaration —
+   * `const/let/var/function/class setcps`. Prepending a call would then land in
+   * that binding's temporal dead zone (or call the user's own function).
+   */
+  binding: boolean;
 }
 
 const IDENT_START = /[A-Za-z_$]/;
@@ -123,6 +161,57 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
   "yield",
   "await",
 ]);
+
+/**
+ * Punctuation that cannot end a statement. If one of these is the last
+ * significant token before a line break, the next line CONTINUES the same
+ * construct, so an identifier there is not at a statement position.
+ * (`>` also covers the tail of `=>`, since the scanner reads punctuation one
+ * character at a time.)
+ */
+const CONTINUATION_PUNCT = new Set([
+  "=", "+", "-", "*", "/", "%", "<", ">", "&", "|", "^", "~", "!",
+  "?", ":", ",", "(", "[", "{", ".",
+]);
+
+/** Keywords that cannot end a statement either. */
+const CONTINUATION_KEYWORDS = new Set([
+  "else",
+  "do",
+  "try",
+  "finally",
+  "return",
+  "case",
+  "default",
+  "new",
+  "typeof",
+  "void",
+  "delete",
+  "yield",
+  "await",
+  "throw",
+  "in",
+  "of",
+  "instanceof",
+  "extends",
+]);
+
+/**
+ * Keywords whose `(` opens a *header*, not a call. The `)` that closes one is
+ * followed by the controlled statement — `if (false)\n setcps(0.25);` — so that
+ * `)` must NOT read as "the previous statement ended".
+ */
+const CONTROL_HEADER_KEYWORDS = new Set([
+  "if",
+  "for",
+  "while",
+  "switch",
+  "catch",
+  "with",
+]);
+
+/** Keywords that introduce a binding whose name is the following identifier. */
+const DECLARATION_KEYWORDS = new Set(["const", "let", "var", "function", "class"]);
 
 function skipStringLiteral(code: string, start: number, quote: string): number {
   let i = start + 1;
@@ -202,6 +291,11 @@ function findOccurrences(code: string): Occurrence[] {
   let prevKind: "none" | "value" | "keyword" | "punct" = "none";
   let prevText = "";
   let sawNewline = true; // start of file is a statement position
+  // Whether the `(` at each open paren depth started an `if`/`for`/`while`/…
+  // header rather than a call or a grouping.
+  const parenIsControlHeader: boolean[] = [];
+  // Only meaningful while `prevText === ")"`: did that `)` close such a header?
+  let closedControlHeader = false;
   const templateBraces: number[] = [];
   let mode: "code" | "template" = "code";
 
@@ -218,6 +312,7 @@ function findOccurrences(code: string): Occurrence[] {
         prevKind = "value";
         prevText = "`";
         sawNewline = false;
+        closedControlHeader = false;
         i++;
         continue;
       }
@@ -228,6 +323,7 @@ function findOccurrences(code: string): Occurrence[] {
         prevKind = "punct";
         prevText = "{";
         sawNewline = false;
+        closedControlHeader = false;
         i += 2;
         continue;
       }
@@ -260,6 +356,7 @@ function findOccurrences(code: string): Occurrence[] {
       prevKind = "value";
       prevText = "/";
       sawNewline = false;
+      closedControlHeader = false;
       continue;
     }
     if (c === '"' || c === "'") {
@@ -267,6 +364,7 @@ function findOccurrences(code: string): Occurrence[] {
       prevKind = "value";
       prevText = c;
       sawNewline = false;
+      closedControlHeader = false;
       continue;
     }
     if (c === "`") {
@@ -286,14 +384,20 @@ function findOccurrences(code: string): Occurrence[] {
           parenDepth: paren,
           braceDepth: brace,
           bracketDepth: bracket,
-          statementStart:
-            prevKind === "none" || prevText === ";" || prevText === "}" || sawNewline,
+          statementStart: atStatementPosition(
+            prevKind,
+            prevText,
+            sawNewline,
+            closedControlHeader,
+          ),
           member: prevText === ".",
+          binding: DECLARATION_KEYWORDS.has(prevText),
         });
       }
       prevKind = REGEX_PRECEDING_KEYWORDS.has(word) ? "keyword" : "value";
       prevText = word;
       sawNewline = false;
+      closedControlHeader = false;
       i = j;
       continue;
     }
@@ -303,13 +407,19 @@ function findOccurrences(code: string): Occurrence[] {
       prevKind = "value";
       prevText = "0";
       sawNewline = false;
+      closedControlHeader = false;
       i = j;
       continue;
     }
 
-    if (c === "(") paren++;
-    else if (c === ")") paren = Math.max(0, paren - 1);
-    else if (c === "[") bracket++;
+    closedControlHeader = false;
+    if (c === "(") {
+      parenIsControlHeader.push(CONTROL_HEADER_KEYWORDS.has(prevText));
+      paren++;
+    } else if (c === ")") {
+      closedControlHeader = parenIsControlHeader.pop() ?? false;
+      paren = Math.max(0, paren - 1);
+    } else if (c === "[") bracket++;
     else if (c === "]") bracket = Math.max(0, bracket - 1);
     else if (c === "{") brace++;
     else if (c === "}") {
@@ -329,6 +439,30 @@ function findOccurrences(code: string): Occurrence[] {
   }
 
   return found;
+}
+
+/**
+ * Is an identifier at this point a *statement*, rather than a fragment of the
+ * construct on the line above? See "What counts as a top-level statement
+ * position" in the policy block. A newline on its own is not enough: an `if`
+ * header, an `else`, an `=>`, an assignment or any dangling operator all carry
+ * the statement across the break, and a setter in that position never runs
+ * unconditionally, so its argument must not be rewritten.
+ */
+function atStatementPosition(
+  prevKind: "none" | "value" | "keyword" | "punct",
+  prevText: string,
+  sawNewline: boolean,
+  closedControlHeader: boolean,
+): boolean {
+  if (prevKind === "none") return true; // start of file (comments already skipped)
+  if (prevText === ";" || prevText === "}") return true;
+  if (!sawNewline) return false;
+  if (prevKind === "punct" && CONTINUATION_PUNCT.has(prevText)) return false;
+  if (CONTINUATION_KEYWORDS.has(prevText)) return false;
+  // `if (…)` / `for (…)` / `while (…)` headers govern the next statement.
+  if (prevText === ")" && closedControlHeader) return false;
+  return true;
 }
 
 function regexAllowed(
@@ -392,8 +526,19 @@ function insertionIndex(code: string): number {
   }
 }
 
+/**
+ * The one place a tempo setter line is emitted. The trailing `;` is load
+ * bearing: without it ASI does not separate the call from a following IIFE or
+ * array literal (`setcps(0.5)\n(() => note(60))()` parses as a call on
+ * `setcps`'s return value). Kept as a helper so any future `setcpm` emission
+ * inherits the same terminator.
+ */
+function setterLine(name: "setcps" | "setcpm", value: number): string {
+  return `${name}(${value});\n`;
+}
+
 function prepend(code: string, cps: number): string {
-  const line = `setcps(${cps})\n`;
+  const line = setterLine("setcps", cps);
   let at = insertionIndex(code);
   if (at === 0) return line + code;
   // Land on a line boundary so the inserted call always gets its own line and
@@ -421,7 +566,7 @@ export function injectTempo(
   const cps = bpmToCps(bpm, qpc);
 
   if (typeof code !== "string" || !Number.isFinite(bpm) || bpm <= 0) {
-    return { code, policy: "inserted-ambiguous", cps };
+    return { code, policy: "unchanged-ambiguous", cps };
   }
   if (code.length > MAX_SCAN_LENGTH) {
     return { code: prepend(code, cps), policy: "inserted-ambiguous", cps };
@@ -430,6 +575,20 @@ export function injectTempo(
   const occurrences = findOccurrences(code);
   if (occurrences.length === 0) {
     return { code: prepend(code, cps), policy: "inserted", cps };
+  }
+
+  // A local binding of the name (`const setcps = ...`) would put a prepended
+  // call in that binding's temporal dead zone; a bare non-call reference
+  // (`const t = setcps`, `const { setcps } = ...`, a parameter named `setcps`)
+  // means the pattern is doing something with the setter we cannot model.
+  // Either way the source is left alone, and the caller applies `cps` through
+  // the runtime API.
+  const shadowedOrAliased = occurrences.some(
+    (occurrence) =>
+      occurrence.binding || (occurrence.callParenIndex === -1 && !occurrence.member),
+  );
+  if (shadowedOrAliased) {
+    return { code, policy: "unchanged-ambiguous", cps };
   }
 
   const only = occurrences.length === 1 ? occurrences[0] : null;
