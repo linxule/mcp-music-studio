@@ -73,4 +73,22 @@ describe("generateStrudelPlayerHtml (Strudel browser fallback)", () => {
     const html = generateStrudelPlayerHtml({ code: CODE, bpm: 120 });
     expect(html).toContain("setcps(");
   });
+
+  it("leaves the code alone when no bpm is supplied", () => {
+    const html = generateStrudelPlayerHtml({ code: CODE });
+    expect(html).not.toContain("setcps(");
+  });
+
+  it("rewrites a nested-paren setcps argument without corrupting parens", () => {
+    // The old regex turned `setcps(120 / (60 * 4))` into `setcps(0.5))`,
+    // a syntax error that silently killed the pattern. See src/shared/tempo.ts.
+    const html = generateStrudelPlayerHtml({
+      code: 'setcps(120 / (60 * 4))\nsound("bd hh")',
+      bpm: 120,
+    });
+    expect(html).toContain("setcps(0.5)");
+    expect(html).not.toContain("setcps(0.5))");
+    // The tempo is replaced in place, not prepended alongside the original.
+    expect(html).not.toContain("120 / (60 * 4)");
+  });
 });
