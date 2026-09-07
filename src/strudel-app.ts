@@ -94,7 +94,6 @@ let lastRenderArgs: Record<string, unknown> | null = null;
 
 // Recording state
 let mediaRecorder: MediaRecorder | null = null;
-let recordedChunks: Blob[] = [];
 let isRecording = false;
 let recordingStream: MediaStream | null = null;
 // The master-output node the tap is connected to, and the tap destination,
@@ -1436,7 +1435,54 @@ function installStateListener(element: HTMLElement): void {
 
 // =============================================================================
 // Recording — tap Strudel's audio graph via MediaRecorder
+//
+// Container negotiation: WebM/Opus is what Chromium gives us, but Safari and
+// WKWebView (which is what an ext-apps host is on macOS/iOS) record MP4/AAC and
+// support NO webm at all — the old code tried two webm types and gave up, so
+// "Record" was simply dead there. Walk a candidate list through
+// MediaRecorder.isTypeSupported() instead, and keep whichever type was actually
+// negotiated so decodeAudioData() is handed a blob whose type is true.
+//
+// A recording also owns its own chunk array. The chunks used to live in a
+// module-level `recordedChunks` that startRecording() reset, so a late
+// `ondataavailable` from the PREVIOUS recorder appended into the new
+// recording's buffer and the WAV came out spliced.
 // =============================================================================
+
+/** Tried in order; the first supported one wins. "" = let the UA choose. */
+const RECORDING_MIME_CANDIDATES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/ogg;codecs=opus",
+  "audio/mp4;codecs=mp4a.40.2", // Safari / WKWebView
+  "audio/mp4",
+  "",
+];
+
+/** Bounds. A recording is decoded whole into memory, so it cannot be open-ended. */
+const MAX_RECORDING_MINUTES = 5;
+const MAX_RECORDING_MS = MAX_RECORDING_MINUTES * 60_000;
+const MAX_RECORDING_BYTES = 50 * 1024 * 1024;
+
+interface Recording {
+  chunks: Blob[];
+  mimeType: string;
+  bytes: number;
+}
+
+/** The recorder currently filling, and the finished one the ↓ button exports. */
+let activeRecording: Recording | null = null;
+let lastRecording: Recording | null = null;
+let recordingLimitTimer: ReturnType<typeof setTimeout> | null = null;
+
+function pickRecordingMime(): string {
+  const canCheck = typeof MediaRecorder?.isTypeSupported === "function";
+  for (const mime of RECORDING_MIME_CANDIDATES) {
+    if (mime === "") break;
+    if (!canCheck || MediaRecorder.isTypeSupported(mime)) return mime;
+  }
+  return ""; // no named type claimed support — let the UA pick its default
+}
 
 function setupRecordingTap(): MediaStream | null {
   try {
@@ -1469,40 +1515,80 @@ function startRecording(): void {
     return;
   }
 
-  recordedChunks = [];
+  const mime = pickRecordingMime();
   try {
-    mediaRecorder = new MediaRecorder(recordingStream, {
-      mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm",
-    });
+    mediaRecorder = mime
+      ? new MediaRecorder(recordingStream, { mimeType: mime })
+      : new MediaRecorder(recordingStream);
   } catch {
-    setStatus("Recording not supported", "error");
+    setStatus("Recording not supported on this browser", "error");
     return;
   }
 
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) recordedChunks.push(e.data);
+  // Closed over, so a late callback from a PREVIOUS recorder fills its own
+  // buffer and can never splice itself into this recording.
+  const recorder = mediaRecorder;
+  const recording: Recording = {
+    chunks: [],
+    mimeType: recorder.mimeType || mime || "audio/webm",
+    bytes: 0,
+  };
+  activeRecording = recording;
+
+  recorder.ondataavailable = (e) => {
+    if (e.data.size === 0) return;
+    recording.chunks.push(e.data);
+    recording.bytes += e.data.size;
+    if (recording.bytes >= MAX_RECORDING_BYTES && activeRecording === recording) {
+      stopRecording("size");
+    }
   };
 
-  mediaRecorder.onstop = () => {
-    downloadBtn.disabled = recordedChunks.length === 0;
+  recorder.onstop = () => {
+    // The negotiated type is only reliably readable once recording has begun.
+    recording.mimeType = recorder.mimeType || recording.mimeType;
+    if (recording.chunks.length > 0) lastRecording = recording;
+    downloadBtn.disabled = !lastRecording;
   };
 
-  mediaRecorder.start(100);
+  recorder.start(100);
   isRecording = true;
   recordBtn.classList.add("recording");
   recordBtn.textContent = "Stop Rec";
   setStatus("Recording...", "playing");
+
+  if (recordingLimitTimer !== null) clearTimeout(recordingLimitTimer);
+  recordingLimitTimer = setTimeout(() => {
+    recordingLimitTimer = null;
+    if (activeRecording === recording) stopRecording("time");
+  }, MAX_RECORDING_MS);
 }
 
-function stopRecording(): void {
+/** `reason` is set when a bound tripped, so the status can say why it ended. */
+function stopRecording(reason?: "time" | "size"): void {
+  if (recordingLimitTimer !== null) {
+    clearTimeout(recordingLimitTimer);
+    recordingLimitTimer = null;
+  }
   if (mediaRecorder?.state === "recording") {
     mediaRecorder.stop();
   }
+  if (!isRecording) return;
   isRecording = false;
+  activeRecording = null;
   recordBtn.classList.remove("recording");
   recordBtn.textContent = "Record";
+  if (reason === "time") {
+    setStatus(
+      `Recording stopped at the ${MAX_RECORDING_MINUTES}-minute limit — ready to download`,
+      "normal",
+    );
+    return;
+  }
+  if (reason === "size") {
+    setStatus("Recording stopped at the size limit — ready to download", "normal");
+    return;
+  }
   if (isPlaying) {
     setStatus("Playing...", "playing");
   } else {
@@ -1511,7 +1597,8 @@ function stopRecording(): void {
 }
 
 async function handleDownload(): Promise<void> {
-  if (recordedChunks.length === 0) return;
+  const recording = lastRecording;
+  if (!recording || recording.chunks.length === 0) return;
   if (!canDownload) {
     setStatus("Download not supported on this host", "error");
     return;
@@ -1520,8 +1607,9 @@ async function handleDownload(): Promise<void> {
   downloadBtn.disabled = true;
   downloadBtn.textContent = "...";
   try {
-    // Decode recorded WebM → AudioBuffer → WAV for consistent format
-    const blob = new Blob(recordedChunks, { type: "audio/webm" });
+    // Decode the recording (WebM/Opus, MP4/AAC, whatever was negotiated) →
+    // AudioBuffer → WAV, so the exported format is the same everywhere.
+    const blob = new Blob(recording.chunks, { type: recording.mimeType });
     const arrayBuf = await blob.arrayBuffer();
     const audioCtx: AudioContext | undefined = (window as any).getAudioContext?.();
     if (!audioCtx) throw new Error("No audio context");
@@ -1544,7 +1632,7 @@ async function handleDownload(): Promise<void> {
     setStatus(`Download failed: ${(err as Error).message}`, "error");
   } finally {
     downloadBtn.textContent = "↓";
-    downloadBtn.disabled = recordedChunks.length === 0;
+    downloadBtn.disabled = !lastRecording;
   }
 }
 
@@ -1798,10 +1886,46 @@ sendBtn.addEventListener("click", async () => {
   }
 });
 
-// Fullscreen toggle
+// Fullscreen toggle.
+//
+// The call was fire-and-forget, so a host that declines (or doesn't implement
+// the method at all — it answers -32601) produced an unhandled rejection and no
+// feedback: the button looked broken. Await it, report what the host actually
+// granted, and leave the inline layout working either way — fullscreen is an
+// enhancement to the stage, never a requirement for it.
 fullscreenBtn.addEventListener("click", () => {
-  app.requestDisplayMode({ mode: "fullscreen" });
+  void toggleDisplayMode();
 });
+
+/** The mode the host says we are in; drives the toggle and the button state. */
+let displayMode: "inline" | "fullscreen" | "pip" = "inline";
+let availableDisplayModes: readonly string[] | null = null;
+
+function syncFullscreenButton(): void {
+  const isFullscreen = displayMode === "fullscreen";
+  fullscreenBtn.classList.toggle("active", isFullscreen);
+  fullscreenBtn.setAttribute("aria-pressed", String(isFullscreen));
+  fullscreenBtn.title = isFullscreen ? "Leave fullscreen" : "Toggle fullscreen";
+}
+
+async function toggleDisplayMode(): Promise<void> {
+  const wanted = displayMode === "fullscreen" ? "inline" : "fullscreen";
+  if (availableDisplayModes && !availableDisplayModes.includes(wanted)) {
+    setStatus(`This host doesn't offer ${wanted} mode — using the inline layout`, "normal");
+    return;
+  }
+  try {
+    const result = await app.requestDisplayMode({ mode: wanted });
+    // Trust what was GRANTED, not what was asked for.
+    if (result?.mode) displayMode = result.mode;
+    syncFullscreenButton();
+    // Fullscreen changes the frame, so the backdrop needs a new backing store.
+    requestAnimationFrame(syncVizCanvasSize);
+  } catch {
+    setStatus("Fullscreen isn't available here — using the inline layout", "normal");
+    syncFullscreenButton();
+  }
+}
 
 // Visuals toggle — once clicked, the user's choice sticks across re-renders.
 // Guard the reveal: visuals only PAINT when the pattern has a viz method, so
@@ -1898,6 +2022,11 @@ app.onteardown = () => {
     if (isRecording) stopRecording();
     if (mediaRecorder?.state === "recording") mediaRecorder.stop();
     mediaRecorder = null;
+    activeRecording = null;
+    if (recordingLimitTimer !== null) {
+      clearTimeout(recordingLimitTimer);
+      recordingLimitTimer = null;
+    }
     const editor = getEditor();
     editor?.stop?.();
     updatePlayState(false);
@@ -1945,6 +2074,15 @@ app.onerror = console.error;
 function handleHostContextChanged(ctx: McpUiHostContext) {
   if (ctx.theme) {
     applyDocumentTheme(ctx.theme);
+  }
+  if (ctx.displayMode) {
+    displayMode = ctx.displayMode;
+    syncFullscreenButton();
+    // The frame just changed size; the backdrop's backing store must follow.
+    requestAnimationFrame(syncVizCanvasSize);
+  }
+  if (ctx.availableDisplayModes) {
+    availableDisplayModes = ctx.availableDisplayModes;
   }
   if (ctx.styles?.variables) {
     applyHostStyleVariables(ctx.styles.variables);
