@@ -20,6 +20,8 @@
 //     `el.chord[].name`; a bar line is `el_type === "bar"`.
 // =============================================================================
 
+import { asciiChordSymbol, irealChordSymbol, isChordSymbol } from "./harmony.js";
+
 // -----------------------------------------------------------------------------
 // Structural types for the subset of the abcjs parse tree we read
 // -----------------------------------------------------------------------------
@@ -40,7 +42,11 @@ export interface AbcVoiceElement {
   duration?: number;
   pitches?: AbcPitchElement[];
   rest?: { type?: string };
-  chord?: { name?: string }[];
+  /**
+   * Text attached above/below the note. `position: "default"` marks a real chord
+   * symbol; anything else is a positioned annotation (`"^rit."`, `"_text"`).
+   */
+  chord?: { name?: string; position?: string }[];
   gracenotes?: unknown[];
   decoration?: string[];
   lyric?: unknown[];
@@ -50,12 +56,19 @@ export interface AbcVoiceElement {
   startEnding?: string;
   value?: { num?: string | number; den?: string | number }[];
   accidentals?: { acc?: string; note?: string }[];
+  /** `el_type: "midi"` — `%%MIDI <cmd> <params…>` inside a voice. */
+  cmd?: string;
+  params?: (number | string)[];
+  /** `el_type: "tempo"` — an inline Q: change. */
+  bpm?: number;
 }
 
 export interface AbcStaffElement {
   voices?: AbcVoiceElement[][];
   key?: { accidentals?: { acc?: string; note?: string }[] };
   meter?: { type?: string; value?: { num?: string | number; den?: string | number }[] };
+  /** `"treble"`, `"bass"`, `"treble-8"` — the ±8 suffix is a real octave shift. */
+  clef?: { type?: string };
 }
 
 export interface AbcLineElement {
@@ -66,6 +79,11 @@ export interface AbcTune {
   lines?: AbcLineElement[];
   warnings?: string[];
   metaText?: { title?: string; tempo?: { bpm?: number; duration?: number[] } };
+  /**
+   * abcjs files `%%MIDI` directives that aren't inside an explicit V: here
+   * (a single-voice tune's `%%MIDI program 73` lands in `midi.program`).
+   */
+  formatting?: { midi?: Record<string, (number | string)[]> };
 }
 
 export type ParseOnlyFn = (abcNotation: string) => AbcTune[];
@@ -88,7 +106,12 @@ export interface AbcToStrudelSuccess {
   code: string;
   /** One mini-notation group per bar, e.g. `[c4@2 d4 e4]`. */
   bars: string[];
-  /** Chord symbol per bar (carried forward when a bar has none). */
+  /**
+   * Chord symbols per bar in ABC/lead-sheet spelling, carried forward when a bar
+   * has none. A bar that changes chord partway through holds a weighted
+   * sub-pattern, e.g. `[Dm7 G7]`. The emitted `code` uses the same shape but
+   * respelled for Strudel's voicing dictionary (`Cmaj7` there is `C^7`).
+   */
   chords: string[];
   /** Features that could not survive the conversion. */
   dropped: string[];
@@ -108,6 +131,95 @@ export type AbcToStrudelResult = AbcToStrudelSuccess | AbcToStrudelFailure;
 export const DEFAULT_STRUDEL_SOUND = "gm_piano";
 /** Sound used for the chord-symbol companion line. */
 export const CHORD_STRUDEL_SOUND = "gm_epiano1";
+
+// -----------------------------------------------------------------------------
+// Sound names
+// -----------------------------------------------------------------------------
+
+/**
+ * GM program number → Strudel soundfont name, indexed by program (0–127).
+ *
+ * ABC's `%%MIDI program 73` and Strudel's `gm_flute` name the same instrument;
+ * without this table a flute part converted to a piano with nothing said about
+ * it. The names are Strudel's own spellings — several differ from the GM
+ * caption (program 0 is `gm_piano`, not `gm_acoustic_grand_piano`; 4 is
+ * `gm_epiano1`; 23 is `gm_bandoneon`) — and a test checks every one of them
+ * against the pinned REPL bundle's sound list.
+ */
+export const GM_PROGRAM_SOUNDS: readonly string[] = [
+  // 0–7 piano
+  "gm_piano", "gm_bright_acoustic_piano", "gm_electric_grand_piano", "gm_honky_tonk_piano",
+  "gm_epiano1", "gm_epiano2", "gm_harpsichord", "gm_clavinet",
+  // 8–15 chromatic percussion
+  "gm_celesta", "gm_glockenspiel", "gm_music_box", "gm_vibraphone",
+  "gm_marimba", "gm_xylophone", "gm_tubular_bells", "gm_dulcimer",
+  // 16–23 organ
+  "gm_drawbar_organ", "gm_percussive_organ", "gm_rock_organ", "gm_church_organ",
+  "gm_reed_organ", "gm_accordion", "gm_harmonica", "gm_bandoneon",
+  // 24–31 guitar
+  "gm_acoustic_guitar_nylon", "gm_acoustic_guitar_steel", "gm_electric_guitar_jazz",
+  "gm_electric_guitar_clean", "gm_electric_guitar_muted", "gm_overdriven_guitar",
+  "gm_distortion_guitar", "gm_guitar_harmonics",
+  // 32–39 bass
+  "gm_acoustic_bass", "gm_electric_bass_finger", "gm_electric_bass_pick", "gm_fretless_bass",
+  "gm_slap_bass_1", "gm_slap_bass_2", "gm_synth_bass_1", "gm_synth_bass_2",
+  // 40–47 strings
+  "gm_violin", "gm_viola", "gm_cello", "gm_contrabass",
+  "gm_tremolo_strings", "gm_pizzicato_strings", "gm_orchestral_harp", "gm_timpani",
+  // 48–55 ensemble
+  "gm_string_ensemble_1", "gm_string_ensemble_2", "gm_synth_strings_1", "gm_synth_strings_2",
+  "gm_choir_aahs", "gm_voice_oohs", "gm_synth_choir", "gm_orchestra_hit",
+  // 56–63 brass
+  "gm_trumpet", "gm_trombone", "gm_tuba", "gm_muted_trumpet",
+  "gm_french_horn", "gm_brass_section", "gm_synth_brass_1", "gm_synth_brass_2",
+  // 64–71 reed
+  "gm_soprano_sax", "gm_alto_sax", "gm_tenor_sax", "gm_baritone_sax",
+  "gm_oboe", "gm_english_horn", "gm_bassoon", "gm_clarinet",
+  // 72–79 pipe
+  "gm_piccolo", "gm_flute", "gm_recorder", "gm_pan_flute",
+  "gm_blown_bottle", "gm_shakuhachi", "gm_whistle", "gm_ocarina",
+  // 80–87 synth lead
+  "gm_lead_1_square", "gm_lead_2_sawtooth", "gm_lead_3_calliope", "gm_lead_4_chiff",
+  "gm_lead_5_charang", "gm_lead_6_voice", "gm_lead_7_fifths", "gm_lead_8_bass_lead",
+  // 88–95 synth pad
+  "gm_pad_new_age", "gm_pad_warm", "gm_pad_poly", "gm_pad_choir",
+  "gm_pad_bowed", "gm_pad_metallic", "gm_pad_halo", "gm_pad_sweep",
+  // 96–103 synth effects
+  "gm_fx_rain", "gm_fx_soundtrack", "gm_fx_crystal", "gm_fx_atmosphere",
+  "gm_fx_brightness", "gm_fx_goblins", "gm_fx_echoes", "gm_fx_sci_fi",
+  // 104–111 ethnic
+  "gm_sitar", "gm_banjo", "gm_shamisen", "gm_koto",
+  "gm_kalimba", "gm_bagpipe", "gm_fiddle", "gm_shanai",
+  // 112–119 percussive
+  "gm_tinkle_bell", "gm_agogo", "gm_steel_drums", "gm_woodblock",
+  "gm_taiko_drum", "gm_melodic_tom", "gm_synth_drum", "gm_reverse_cymbal",
+  // 120–127 sound effects
+  "gm_guitar_fret_noise", "gm_breath_noise", "gm_seashore", "gm_bird_tweet",
+  "gm_telephone", "gm_helicopter", "gm_applause", "gm_gunshot",
+];
+
+/** Strudel soundfont name for a GM program number, or null if out of range. */
+export function soundForProgram(program: number): string | null {
+  if (!Number.isFinite(program)) return null;
+  const index = Math.round(program);
+  return GM_PROGRAM_SOUNDS[index] ?? null;
+}
+
+/**
+ * A double-quoted string is MINI-NOTATION in Strudel, not a plain string, so a
+ * sound name has to be a bare token — anything with a space, bracket, comma or
+ * angle would be parsed as a pattern (or fail to parse at all).
+ */
+const SAFE_SOUND = /^[A-Za-z0-9_:-]+$/;
+
+/**
+ * Quote a value as a JavaScript string literal. Everything user-supplied that
+ * reaches the emitted code goes through this, so a stray quote or newline can
+ * never produce source that won't parse.
+ */
+function jsString(value: string): string {
+  return JSON.stringify(value);
+}
 
 // -----------------------------------------------------------------------------
 // Small numeric helpers (durations are floats: 0.125, 0.0833…)
@@ -153,13 +265,21 @@ interface PitchContext {
   /** Accidentals in force for the rest of the current bar, keyed letter+octave. */
   measure: Map<string, string>;
   microtonal: boolean;
+  /**
+   * Octaves to add to every emitted note: `clef=treble-8` sounds an octave below
+   * where it is written, and `%%MIDI transpose 12` moves the whole part up one.
+   */
+  octaveShift: number;
 }
 
 export function pitchToStrudel(pitch: AbcPitchElement, ctx: PitchContext): string {
   const step = pitch.pitch ?? 0;
   const letter = LETTERS[((step % 7) + 7) % 7]!;
-  const octave = 4 + Math.floor(step / 7);
-  const slot = `${letter}${octave}`;
+  const written = 4 + Math.floor(step / 7);
+  const octave = written + ctx.octaveShift;
+  // The bar's running accidentals are keyed by written position, so a shift
+  // can't make two different notes share a slot.
+  const slot = `${letter}${written}`;
 
   let accidental: string;
   if (pitch.accidental) {
@@ -251,6 +371,44 @@ interface Meter {
 }
 
 const DEFAULT_METER: Meter = { num: 4, den: 4 };
+
+// -----------------------------------------------------------------------------
+// Chord symbols, in time
+// -----------------------------------------------------------------------------
+//
+// A bar can carry more than one chord ("Cmaj7 … G7 …"), and keeping only the
+// first turned a ii-V into a static vamp. Each symbol is stamped with where in
+// the bar it starts, so the bar renders as a weighted sub-pattern — the same
+// `@` weighting the melody uses — instead of a single symbol.
+
+interface ChordEvent {
+  /** Offset into the bar, as a fraction of a whole note. */
+  at: number;
+  /** Lead-sheet / ABC spelling, e.g. "Cmaj7". */
+  abc: string;
+  /** Spelling Strudel's ireal voicing dictionary accepts, e.g. "C^7". */
+  ireal: string | null;
+}
+
+interface BarChords {
+  events: ChordEvent[];
+  /** Total sounding length of the bar. */
+  total: number;
+}
+
+/** Render one bar's chord events as mini-notation, in the requested spelling. */
+function renderChordBar(events: readonly ChordEvent[], total: number, ireal: boolean): string {
+  const slots: Slot[] = [];
+  for (let i = 0; i < events.length; i += 1) {
+    const dur = (events[i + 1]?.at ?? total) - events[i]!.at;
+    if (!(dur > EPS)) continue;
+    const event = events[i]!;
+    slots.push({ dur, text: (ireal ? event.ireal : event.abc) ?? "~" });
+  }
+  if (slots.length === 0) return "~";
+  if (slots.length === 1) return slots[0]!.text;
+  return `[${renderSlots(slots)}]`;
+}
 
 function readMeter(
   meter: { value?: { num?: string | number; den?: string | number }[] } | undefined,
@@ -363,16 +521,33 @@ function stripHtml(text: string): string {
 /**
  * abcjs pretty-prints chord symbols with typographic accidentals ("Bb7" comes
  * back as "B♭7"). Strudel's chord parser wants ASCII, so put them back.
+ * (One implementation, shared with analyze-harmony.)
  */
 export function normalizeChordSymbol(name: string): string {
-  return name
-    .replace(/♭/g, "b")
-    .replace(/♯/g, "#")
-    .replace(/♮/g, "")
-    .replace(/\u{1D12A}/gu, "##")
-    .replace(/\u{1D12B}/gu, "bb")
-    .replace(/[Δ△]/g, "maj7")
-    .replace(/\s+/g, "");
+  return asciiChordSymbol(name);
+}
+
+/**
+ * A chord symbol carried by a note, or null when the attached text isn't one.
+ *
+ * abcjs puts positioned annotations (`"^rit."`, `"_soft"`, `"<"`, `">"`, `"@"`)
+ * in the SAME `chord` array as real chord symbols, distinguished only by
+ * `position` — everything but `"default"` is an annotation. That alone let
+ * `"^rit."` through as a chord symbol, so the token is validated against tonal
+ * as well: anything tonal can't read is reported, not guessed at.
+ */
+function readChordToken(
+  entry: { name?: string; position?: string } | undefined,
+): { ok: true; symbol: string } | { ok: false; text: string } | null {
+  if (!entry) return null;
+  const position = entry.position ?? "default";
+  if (position !== "default") return null;
+  // Defensive: if a build ever leaves the marker in the name, it's an annotation.
+  const raw = String(entry.name ?? "").trim();
+  if (!raw || /^[\^_<>@]/.test(raw)) return null;
+  const symbol = normalizeChordSymbol(raw);
+  if (!symbol) return null;
+  return isChordSymbol(symbol) ? { ok: true, symbol } : { ok: false, text: raw };
 }
 
 /** Same fatal/non-fatal split as play-sheet-music, so the two tools agree. */
@@ -409,7 +584,6 @@ export function convertAbcToStrudel(
   }
 
   const voiceIndex = Math.max(1, Math.floor(args.voice ?? 1)) - 1;
-  const sound = args.sound?.trim() || DEFAULT_STRUDEL_SOUND;
 
   // How many voices exist (max across lines — later lines can omit voices).
   let voiceCount = 0;
@@ -430,18 +604,65 @@ export function convertAbcToStrudel(
 
   const dropped = new Set<string>();
   const bars: string[] = [];
-  const barChords: (string | null)[] = [];
+  const barChords: (BarChords | null)[] = [];
   const barDurations: number[] = [];
 
   let meter: Meter = DEFAULT_METER;
   let firstMeter: Meter = DEFAULT_METER;
   let sawMeter = false;
-  const ctx: PitchContext = { key: new Map(), measure: new Map(), microtonal: false };
+  const ctx: PitchContext = {
+    key: new Map(),
+    measure: new Map(),
+    microtonal: false,
+    octaveShift: 0,
+  };
 
   let slots: Slot[] = [];
-  let barChord: string | null = null;
+  let chordEvents: ChordEvent[] = [];
   let tripletSlots: Slot[] | null = null;
   let tripletMultiplier = 1;
+
+  // --- sound + octave, gathered from %%MIDI and the clef ----------------------
+  let clefOctave = 0;
+  let transposeOctave = 0;
+  let midiProgram: number | null = null;
+  const unconvertedMidi = new Set<string>();
+
+  const applyMidi = (cmd: string, params: readonly (number | string)[]) => {
+    if (cmd === "program") {
+      // `%%MIDI program [channel] program` — the program is the last number.
+      const program = Number(params[params.length - 1]);
+      if (soundForProgram(program) !== null) midiProgram = program;
+      else dropped.add(`%%MIDI program ${params.join(" ")} (not a GM program)`);
+      return;
+    }
+    if (cmd === "transpose") {
+      const semitones = Number(params[params.length - 1]);
+      if (Number.isFinite(semitones) && semitones % 12 === 0) {
+        transposeOctave = semitones / 12;
+      } else {
+        dropped.add(
+          `%%MIDI transpose ${params.join(" ")} (only whole octaves are carried over)`,
+        );
+      }
+      return;
+    }
+    if (cmd) unconvertedMidi.add(cmd);
+  };
+
+  for (const [cmd, params] of Object.entries(tune.formatting?.midi ?? {})) {
+    applyMidi(cmd, Array.isArray(params) ? params : [params]);
+  }
+
+  const syncOctave = () => {
+    ctx.octaveShift = clefOctave + transposeOctave;
+  };
+  syncOctave();
+
+  /** How far into the current bar we are (triplet in progress included). */
+  const barElapsed = () =>
+    slots.reduce((sum, s) => sum + s.dur, 0) +
+    (tripletSlots?.reduce((sum, s) => sum + s.dur, 0) ?? 0);
 
   const closeTriplet = () => {
     if (!tripletSlots) return;
@@ -458,12 +679,13 @@ export function convertAbcToStrudel(
   const closeBar = () => {
     closeTriplet();
     if (slots.length > 0) {
+      const total = slots.reduce((sum, s) => sum + s.dur, 0);
       bars.push(renderBar(slots, meter));
-      barChords.push(barChord);
-      barDurations.push(slots.reduce((sum, s) => sum + s.dur, 0));
+      barChords.push(chordEvents.length > 0 ? { events: chordEvents, total } : null);
+      barDurations.push(total);
     }
     slots = [];
-    barChord = null;
+    chordEvents = [];
     ctx.measure.clear();
   };
 
@@ -515,6 +737,12 @@ export function convertAbcToStrudel(
     if (chosen?.staff.key?.accidentals) {
       ctx.key = keyAccidentalMap(chosen.staff.key.accidentals);
     }
+    // `clef=treble-8` / `bass+8` sounds an octave away from where it is written.
+    const clefType = chosen?.staff.clef?.type ?? "";
+    if (clefType.endsWith("-8")) clefOctave = -1;
+    else if (clefType.endsWith("+8")) clefOctave = 1;
+    else if (chosen) clefOctave = 0;
+    syncOctave();
 
     if (!chosen) {
       // This system has no music for our voice. Silence is not the same as
@@ -566,15 +794,43 @@ export function convertAbcToStrudel(
         continue;
       }
 
-      if (type !== "note") {
-        if (type === "midi") dropped.add("%%MIDI directives (instruments, gchord, drums)");
+      if (type === "midi") {
+        applyMidi(String(el.cmd ?? ""), el.params ?? []);
+        syncOctave();
         continue;
       }
 
+      if (type === "tempo") {
+        // setcps is set once, from the tune's opening Q:.
+        dropped.add("tempo changes inside the tune (setcps uses the first tempo)");
+        continue;
+      }
+
+      if (type !== "note") continue;
+
       // --- a note, chord, or rest ------------------------------------------
-      if (el.chord && el.chord.length > 0) {
-        const name = el.chord[0]?.name;
-        if (name && !barChord) barChord = normalizeChordSymbol(name);
+      for (const entry of el.chord ?? []) {
+        const token = readChordToken(entry);
+        if (!token) continue;
+        if (!token.ok) {
+          dropped.add(`chord symbol "${token.text}" (not a chord tonal can read)`);
+          continue;
+        }
+        const ireal = irealChordSymbol(token.symbol);
+        if (!ireal) {
+          dropped.add(
+            `chord symbol "${token.symbol}" has no Strudel voicing (that cycle is silent)`,
+          );
+        }
+        const at = barElapsed();
+        const previous = chordEvents[chordEvents.length - 1];
+        if (previous?.abc === token.symbol) continue;
+        if (previous && Math.abs(previous.at - at) < EPS) {
+          // Two symbols on the same beat — the later one wins.
+          chordEvents[chordEvents.length - 1] = { at, abc: token.symbol, ireal };
+        } else {
+          chordEvents.push({ at, abc: token.symbol, ireal });
+        }
       }
       if (el.gracenotes?.length) dropped.add("grace notes");
       if (el.decoration?.length) dropped.add("dynamics and ornaments");
@@ -635,6 +891,12 @@ export function convertAbcToStrudel(
       `voice ${voiceIndex + 1} is silent in ${absentSystems} system${absentSystems === 1 ? "" : "s"} (filled with rests)`,
     );
   }
+  if (unconvertedMidi.size > 0) {
+    dropped.add(
+      `%%MIDI ${[...unconvertedMidi].join(", ")} ` +
+        "(ABC's own accompaniment — write it as extra Strudel layers instead)",
+    );
+  }
   if (ctx.microtonal) dropped.add("microtonal accidentals (rounded to the nearest semitone)");
   if (voiceCount > 1) {
     dropped.add(
@@ -642,22 +904,37 @@ export function convertAbcToStrudel(
     );
   }
 
-  // A short pickup bar becomes a whole cycle like any other — say so out loud.
+  // A bar shorter than the meter becomes a whole cycle like any other, whether
+  // it opens the tune or closes it — say so out loud in both cases.
   const barWhole = firstMeter.num / firstMeter.den;
   if (bars.length > 1 && barDurations[0]! < barWhole - EPS) {
     dropped.add("pickup bar is stretched to a full cycle");
   }
+  if (bars.length > 1 && barDurations[bars.length - 1]! < barWhole - EPS) {
+    dropped.add("final bar is a pickup — Strudel will stretch it to a full cycle");
+  }
 
   // --- chords -----------------------------------------------------------------
+  // A bar with no symbol of its own inherits the last one, and a bar that starts
+  // partway through a chord inherits it for the opening slot.
   const chords: string[] = [];
-  let lastChord: string | null = null;
+  const voicingChords: string[] = [];
+  let lastChord: ChordEvent | null = null;
   let anyChord = false;
-  for (const chord of barChords) {
-    if (chord) {
-      lastChord = chord;
-      anyChord = true;
+  for (const bar of barChords) {
+    if (!bar) {
+      chords.push(lastChord?.abc ?? "~");
+      voicingChords.push(lastChord?.ireal ?? "~");
+      continue;
     }
-    chords.push(lastChord ?? "~");
+    anyChord = true;
+    const events: ChordEvent[] =
+      bar.events[0]!.at > EPS && lastChord
+        ? [{ ...lastChord, at: 0 }, ...bar.events]
+        : bar.events;
+    chords.push(renderChordBar(events, bar.total, false));
+    voicingChords.push(renderChordBar(events, bar.total, true));
+    lastChord = events[events.length - 1]!;
   }
 
   // --- tempo ------------------------------------------------------------------
@@ -673,17 +950,42 @@ export function convertAbcToStrudel(
     setCps = true;
   }
 
-  lines.push(`note("<${bars.join(" ")}>").s("${sound}")`);
-  if (anyChord) {
-    lines.push(`chord("<${chords.join(" ")}>").voicing().s("${CHORD_STRUDEL_SOUND}")`);
+  // --- sound ------------------------------------------------------------------
+  // Priority: an explicit `sound` argument, then the tune's own %%MIDI program,
+  // then the default. A caller-supplied name has to be a bare token: a
+  // double-quoted string is mini-notation to Strudel, so `.s("my sound")` would
+  // be read as a two-step pattern rather than one instrument.
+  const requestedSound = args.sound?.trim() ?? "";
+  let sound = DEFAULT_STRUDEL_SOUND;
+  if (requestedSound) {
+    if (SAFE_SOUND.test(requestedSound)) sound = requestedSound;
+    else {
+      dropped.add(
+        `sound ${jsString(requestedSound)} is not a usable Strudel sound name ` +
+          `(letters, digits, _ : - only) — using ${DEFAULT_STRUDEL_SOUND}`,
+      );
+    }
+  } else if (midiProgram !== null) {
+    sound = soundForProgram(midiProgram) ?? DEFAULT_STRUDEL_SOUND;
   }
+
+  // Strudel's transpiler makes only the LAST expression statement the pattern it
+  // plays; a melody line followed by a bare chord line would have silently
+  // dropped the melody. One `stack(...)` is the whole piece.
+  const layers = [`note("<${bars.join(" ")}>").s(${jsString(sound)})`];
+  if (anyChord) {
+    layers.push(
+      `chord("<${voicingChords.join(" ")}>").voicing().s(${jsString(CHORD_STRUDEL_SOUND)})`,
+    );
+  }
+  lines.push(layers.length === 1 ? layers[0]! : `stack(\n  ${layers.join(",\n  ")}\n)`);
 
   const code = lines.join("\n");
   const droppedList = [...dropped];
   const title = tune.metaText?.title;
 
   const header =
-    `${title ? `"${title}" — ` : ""}voice ${voiceIndex + 1} of ${voiceCount}, ` +
+    `${title ? `${jsString(title)} — ` : ""}voice ${voiceIndex + 1} of ${voiceCount}, ` +
     `${bars.length} bar${bars.length === 1 ? "" : "s"} in ${firstMeter.num}/${firstMeter.den}. ` +
     "Each bar is one Strudel cycle. Play it with play-live-pattern.";
 
