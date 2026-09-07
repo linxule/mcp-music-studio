@@ -151,15 +151,13 @@ let soundfontWarning = false;
  *
  * So the editor owns the single prebake and we observe its promise for the
  * soundfont warning (watchPrebake below).
- */
-/**
- * Single-flight: ONE shared promise, not a "loaded" boolean.
  *
- * The boolean was only set in the script's onload, so two overlapping callers
- * (a streaming boot and a tool input, or two tool inputs in a row) each saw
- * `false`, each appended a <script src=…> for the 1.7MB bundle and each raced
- * to define the same custom element. Everyone now awaits the same promise; a
- * rejection clears it so the CDN-retry affordance can genuinely retry.
+ * SINGLE-FLIGHT: one shared promise, not a "loaded" boolean. The boolean was
+ * only set in the script's onload, so two overlapping callers (a streaming boot
+ * and a tool input, or two tool inputs in a row) each saw `false`, each appended
+ * a <script src=…> for the 1.7MB bundle and each raced to define the same custom
+ * element. Everyone now awaits the same promise; a rejection clears it so the
+ * CDN-retry affordance can genuinely retry.
  */
 let cdnLoad: Promise<void> | null = null;
 
@@ -1279,6 +1277,61 @@ function reportToModel(text: string): void {
     .catch(() => { /* context updates are best-effort */ });
 }
 
+// -----------------------------------------------------------------------------
+// Playback-state reports
+//
+// Evaluation reports itself (reportEvaluation below). What used to go
+// unreported is everything that stops playback WITHOUT an evaluation: the user
+// pressing Stop, a pattern calling hush(), the scheduler falling over. Those
+// only flipped the Play button, so the model's last known state stayed
+// "playing" — and it would answer questions about a silent widget as if the
+// music were still running.
+//
+// One bounded message per real transition: coalesced by a 500ms debounce (the
+// `update` event can arrive in bursts), and suppressed entirely when the state
+// is the one already reported. Never per frame.
+// -----------------------------------------------------------------------------
+
+const MODEL_STATE_DEBOUNCE_MS = 500;
+
+let modelStateTimer: ReturnType<typeof setTimeout> | null = null;
+/** Playing-state the model has been told about, so we only send transitions. */
+let lastReportedPlaying: boolean | null = null;
+/** Error text from the last failed evaluation, carried into stop reports. */
+let lastEvalErrorText: string | null = null;
+
+function cancelStateReport(): void {
+  if (modelStateTimer !== null) {
+    clearTimeout(modelStateTimer);
+    modelStateTimer = null;
+  }
+}
+
+/** Note a state we have just reported ourselves, so the debounce won't repeat it. */
+function markReportedPlaying(playing: boolean, errorText: string | null): void {
+  cancelStateReport();
+  lastReportedPlaying = playing;
+  lastEvalErrorText = errorText;
+}
+
+/** Report a stop/start that no evaluation announced. Debounced, deduplicated. */
+function scheduleStateReport(): void {
+  if (!canUpdateModelContext) return;
+  cancelStateReport();
+  modelStateTimer = setTimeout(() => {
+    modelStateTimer = null;
+    const playing = isSchedulerStarted();
+    if (playing === lastReportedPlaying) return;
+    lastReportedPlaying = playing;
+    const errorNote = lastEvalErrorText ? ` (last error: ${lastEvalErrorText})` : "";
+    reportToModel(
+      playing
+        ? `Strudel widget: playing again${errorNote}`
+        : `Strudel widget: playback stopped — nothing is sounding now${errorNote}`,
+    );
+  }, MODEL_STATE_DEBOUNCE_MS);
+}
+
 /** Status line + model context for one finished evaluation. */
 function reportEvaluation(code: string, thrown: Error | null): void {
   const err = thrown ?? readEvalError();
@@ -1295,11 +1348,16 @@ function reportEvaluation(code: string, thrown: Error | null): void {
     isPlaying = playing;
     playBtn.classList.toggle("playing", playing);
     playBtn.textContent = playing ? "Playing" : "Play";
-    reportToModel(`Strudel widget: pattern failed to evaluate — ${msg}`);
+    markReportedPlaying(playing, msg);
+    reportToModel(
+      `Strudel widget: pattern failed to evaluate — ${msg}` +
+        (playing ? " (the previous pattern is still playing)" : " (nothing is playing)"),
+    );
     return;
   }
 
   updatePlayState(isSchedulerStarted());
+  markReportedPlaying(isPlaying, null);
   if (soundfontWarning && isPlaying) {
     setStatus(`Playing...${soundfontNote}`, "playing");
   }
@@ -1357,9 +1415,11 @@ function installEvaluateHook(editor: any): void {
 /**
  * <strudel-editor> dispatches an `update` CustomEvent carrying the whole repl
  * state whenever it changes. We report outcomes from the evaluate wrapper (one
- * message per evaluation), so this listener only keeps the Play button honest
- * for state changes we did not initiate — a pattern calling hush(), say. It
- * deliberately leaves the status text alone so it can't overwrite an error.
+ * message per evaluation), so this listener handles the state changes we did
+ * NOT initiate — a pattern calling hush(), the scheduler stopping — keeping the
+ * Play button honest and telling the model the music has stopped (debounced, and
+ * skipped when the evaluate report already said so). It deliberately leaves the
+ * status text alone so it can't overwrite an error.
  */
 function installStateListener(element: HTMLElement): void {
   if ((element as any).__musicStudioStateHooked) return;
@@ -1370,6 +1430,7 @@ function installStateListener(element: HTMLElement): void {
     isPlaying = started;
     playBtn.classList.toggle("playing", started);
     playBtn.textContent = started ? "Playing" : "Play";
+    scheduleStateReport();
   });
 }
 
@@ -1689,6 +1750,8 @@ playBtn.addEventListener("click", async () => {
       if (isRecording) stopRecording();
       editor.stop();
       updatePlayState(false);
+      // The model was last told "playing"; say the music has stopped.
+      scheduleStateReport();
     } else {
       // evaluate() always runs the LIVE buffer (editor.code), so a pattern the
       // user edited in the REPL is what plays. The hook stages its visuals and
@@ -1860,6 +1923,8 @@ app.onteardown = () => {
       clearTimeout(missingSoundTimer);
       missingSoundTimer = null;
     }
+    // A pending state report would fire into a host that has already let go.
+    cancelStateReport();
     removeConsoleWatch();
     // Stop Hydra's WebGL render loop too — it runs independently of the
     // Strudel scheduler and would otherwise keep the GPU busy after teardown.
