@@ -814,10 +814,12 @@ export const CONVERT_ABC_ANNOTATIONS = {
 export const CONVERT_ABC_DESCRIPTION =
   "Turn an ABC melody into Strudel mini-notation so a scored piece can be remixed live. " +
   "Returns runnable code — setcps() from the Q: tempo, one [...] bar group per bar inside " +
-  "note(\"<...>\"), plus a chord(\"<...>\").voicing() line when the ABC has chord symbols — " +
+  "note(\"<...>\"), with a chord(\"<...>\").voicing() layer stacked alongside it when the ABC " +
+  "has chord symbols (one stack(), because Strudel plays only the last expression) — " +
   "then pass it to play-live-pattern. Durations become @ weights, rests become ~, " +
-  "triplets nest, and the key signature is folded into the note names. " +
-  "Lists what was lost (grace notes, dynamics, repeats, lyrics, other voices). " +
+  "triplets nest, the key signature is folded into the note names, and %%MIDI program " +
+  "picks the sound. Lists what was lost (grace notes, dynamics, repeats, lyrics, other " +
+  "voices, inline tempo changes, a short final bar, ABC's own gchord/drum accompaniment). " +
   "Pick a single voice with `voice`; re-run per voice and stack() them for a full arrangement.";
 
 export const convertAbcInputSchema = z.object({
@@ -838,7 +840,7 @@ export const convertAbcInputSchema = z.object({
     .string()
     .optional()
     .describe(
-      `Strudel sound for the melody (default "${DEFAULT_STRUDEL_SOUND}"). ` +
+      `Strudel sound for the melody (defaults to the tune's %%MIDI program, else "${DEFAULT_STRUDEL_SOUND}"). ` +
         "Use a GM soundfont name like gm_flute or gm_epiano1 — see get-strudel-guide topic 'sounds'.",
     ),
 });

@@ -689,9 +689,10 @@ describe("the GM program table matches the pinned Strudel bundle", () => {
     ).gm,
   );
 
-  it("covers all 128 GM programs, with no duplicates", () => {
+  it("covers all 128 GM programs (programs 1-3 share gm_piano: the bundle ships no bright/electric-grand/honky-tonk piano)", () => {
     expect(GM_PROGRAM_SOUNDS).toHaveLength(128);
-    expect(new Set(GM_PROGRAM_SOUNDS).size).toBe(128);
+    expect(new Set(GM_PROGRAM_SOUNDS).size).toBe(125);
+    expect(GM_PROGRAM_SOUNDS.slice(0, 4)).toEqual(["gm_piano", "gm_piano", "gm_piano", "gm_piano"]);
   });
 
   it("every name is a sound the REPL can actually load", () => {

@@ -148,7 +148,7 @@ export const CHORD_STRUDEL_SOUND = "gm_epiano1";
  */
 export const GM_PROGRAM_SOUNDS: readonly string[] = [
   // 0–7 piano
-  "gm_piano", "gm_bright_acoustic_piano", "gm_electric_grand_piano", "gm_honky_tonk_piano",
+  "gm_piano", "gm_piano" /* gm_bright_acoustic_piano is not in the REPL bundle */, "gm_piano" /* gm_electric_grand_piano is not in the REPL bundle */, "gm_piano" /* gm_honky_tonk_piano is not in the REPL bundle */,
   "gm_epiano1", "gm_epiano2", "gm_harpsichord", "gm_clavinet",
   // 8–15 chromatic percussion
   "gm_celesta", "gm_glockenspiel", "gm_music_box", "gm_vibraphone",
