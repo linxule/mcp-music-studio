@@ -742,17 +742,18 @@ rather than trying to "update" the previous one.
 8. Keep gain reasonable (0-1)
    WRONG:  .gain(5)     // clipping / distortion
    RIGHT:  .gain(0.8)   // clean
-   Layer volumes should sum to ~1: kick 0.9, hh 0.3, bass 0.5, melody 0.3
+   Give the mix headroom: kick 0.8, hh 0.3, bass 0.5, melody 0.3 — the kick
+   is loudest, everything else sits under it. Gain sums alone don't guarantee
+   no clipping (peaks add); if it distorts, pull the loudest layer down first.
 
 9. Balanced brackets and parentheses
    WRONG:  s("[bd [sd hh]")    // missing closing ]
    RIGHT:  s("[bd [sd hh]]")
 
-10. Every pattern needs a sound source
-    WRONG:  note("c3 e3 g3")              // no sound!
-    RIGHT:  note("c3 e3 g3").s("sawtooth")
-    WRONG:  stack(note("c3"), note("e3"))  // both need .s()
-    RIGHT:  stack(note("c3").s("sine"), note("e3").s("sine"))
+10. Choose a timbre with .s() — bare note() plays the default triangle synth
+    OK:     note("c3 e3 g3")              // plays, but a plain triangle wave
+    BETTER: note("c3 e3 g3").s("sawtooth")
+    Each layer picks its own: stack(note("c3").s("sine"), note("e3").s("gm_piano"))
 
 11. Plain strings use SINGLE quotes — double quotes mean mini-notation
     Strudel's transpiler rewrites every "..." into a pattern, so an ordinary
@@ -821,7 +822,7 @@ Shuffle:  s("[bd ~] [~ bd] [~ sd] [bd ~]")
 Funk:     s("[bd ~ bd ~] [~ sd ~ sd]")
 Latin:    s("[bd ~ ~ bd] [~ ~ bd ~]")
 Halftime: s("bd ~ ~ ~ [~ sd] ~ ~ ~")
-Fills:    .every(8, s("bd sd [sd sd] [sd sd sd sd]"))`,
+Fills:    .lastOf(8, () => s("bd sd [sd sd] [sd sd sd sd]"))   // a FUNCTION — every/lastOf take x => ...`,
 
   visuals: `# Strudel Visuals (draw methods + Hydra shaders)
 
@@ -914,8 +915,9 @@ AVOID ~ RESTS IN AN H() PATTERN. H is
   o => () => reify(o).queryArc(getTime(), getTime())[0].value
 — a zero-width query lands on a rest, returns [], and [0].value throws inside
 Hydra's per-frame uniform evaluation. Use a low number where you would have
-used a rest ("1 0 0.6 0" rather than "1 ~ 0.6 ~"), or wrap it:
-() => (H(p)() ?? 0).
+used a rest ("1 0 0.6 0" rather than "1 ~ 0.6 ~"). The widget also guards
+H() so a rest yields 0 instead of throwing; on strudel.cc itself you would
+need a try/catch around the call (a "?? 0" does NOT catch a throw).
 
 await initHydra()
 const seq = "<3 4 5 [6 7]>*2"
@@ -957,7 +959,7 @@ src(s0)
   .blend(o0, 0.65)   // feedback = trails
   .out(o0)
 
-note("<[c3 e3 g3 b3] [a2 c3 e3 g3]>*2").s("sawtooth").lpf(1400).pianoroll({ cycles: 2 })
+note("<[c3,e3,g3,b3] [a2,c3,e3,g3]>*2").s("sawtooth").lpf(1400).pianoroll({ cycles: 2 })
 
 ### Recipe: slow ambient wash
 await initHydra()
