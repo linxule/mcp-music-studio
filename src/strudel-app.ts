@@ -211,10 +211,44 @@ function updatePlayState(playing: boolean) {
   }
 }
 
-// Tempo injection is shared with the browser fallback (src/shared/tempo.ts):
-// one documented policy, no regex that corrupts nested parens.
-function injectBpm(code: string, bpm: number): string {
-  return injectTempo(code, bpm).code;
+// =============================================================================
+// Tempo  (`bpm` tool parameter)
+//
+// Injection is shared with the browser fallback (src/shared/tempo.ts): one
+// documented policy, no regex that corrupts nested parens. Three of its four
+// branches put the tempo INTO the source (replaced / inserted /
+// inserted-ambiguous). The fourth, "unchanged-ambiguous", deliberately returns
+// the code byte for byte — the pattern binds or aliases `setcps` itself, so a
+// prepended call would land in a temporal dead zone (ReferenceError) or call
+// the pattern's own function.
+//
+// For that branch the requested tempo can only reach the pattern through
+// Strudel's runtime API, so we apply it after each evaluation settles via
+// `editor.repl.setCps(cps)` (a method on @strudel/core's repl) and say so, in
+// the status line and to the model — a tempo silently not applied is worse than
+// one applied late.
+// =============================================================================
+
+/** cps to force after each evaluation, or null when the source carries it. */
+let runtimeCps: number | null = null;
+
+function applyRuntimeTempo(): boolean {
+  if (runtimeCps === null) return false;
+  const cps = runtimeCps;
+  try {
+    const repl = getEditor()?.repl;
+    if (typeof repl?.setCps === "function") {
+      repl.setCps(cps);
+      return true;
+    }
+    // Older/newer REPL shapes: the eval-scope global does the same thing.
+    const setcps = (window as any).setcps;
+    if (typeof setcps === "function") {
+      setcps(cps);
+      return true;
+    }
+  } catch { /* the pattern still plays, just at its own tempo */ }
+  return false;
 }
 
 function waitForEditor(timeout = 8000): Promise<any> {
@@ -1332,10 +1366,17 @@ function scheduleStateReport(): void {
 }
 
 /** Status line + model context for one finished evaluation. */
-function reportEvaluation(code: string, thrown: Error | null): void {
+function reportEvaluation(
+  code: string,
+  thrown: Error | null,
+  tempoAtRuntime = false,
+): void {
   const err = thrown ?? readEvalError();
   const soundfontNote = soundfontWarning
     ? " (soundfonts unavailable — audio may be silent)"
+    : "";
+  const tempoNote = tempoAtRuntime
+    ? " — tempo applied at runtime: the pattern defines its own setcps"
     : "";
 
   if (err) {
@@ -1357,8 +1398,8 @@ function reportEvaluation(code: string, thrown: Error | null): void {
 
   updatePlayState(isSchedulerStarted());
   markReportedPlaying(isPlaying, null);
-  if (soundfontWarning && isPlaying) {
-    setStatus(`Playing...${soundfontNote}`, "playing");
+  if ((soundfontWarning || tempoAtRuntime) && isPlaying) {
+    setStatus(`Playing...${soundfontNote}${tempoNote}`, "playing");
   }
   const intent = detectViz(code);
   const layers = [
@@ -1367,7 +1408,7 @@ function reportEvaluation(code: string, thrown: Error | null): void {
   ].filter(Boolean);
   reportToModel(
     `Strudel widget: ${isPlaying ? "playing" : "loaded, not playing"}` +
-      ` (visuals: ${layers.length ? layers.join(" + ") : "none"})${soundfontNote}`,
+      ` (visuals: ${layers.length ? layers.join(" + ") : "none"})${soundfontNote}${tempoNote}`,
   );
 }
 
@@ -1407,7 +1448,10 @@ function installEvaluateHook(editor: any): void {
     // Strudel's). A widget whose FIRST pattern uses Hydra therefore has no
     // Strudel value to put back — nothing observable depends on it.
     snapshotStrudelGlobals();
-    reportEvaluation(code, null);
+    // The pattern owns the `setcps` name, so the requested bpm could not be
+    // written into the source — apply it now that the scheduler is up.
+    const tempoAtRuntime = applyRuntimeTempo();
+    reportEvaluation(code, null, tempoAtRuntime);
   };
 }
 
@@ -1777,8 +1821,15 @@ async function renderPattern(args: Record<string, unknown>) {
     if (superseded()) return;
 
     let finalCode = code;
+    runtimeCps = null;
     if (bpm) {
-      finalCode = injectBpm(finalCode, bpm);
+      const tempo = injectTempo(finalCode, bpm);
+      finalCode = tempo.code;
+      // String compare, so this still builds against a tempo.ts whose policy
+      // union predates the branch.
+      if ((tempo.policy as string) === "unchanged-ambiguous") {
+        runtimeCps = tempo.cps;
+      }
     }
     // Fold in the `visuals` preset AFTER the tempo injection, so a Hydra recipe
     // keeps `await initHydra()` on the first line where the engine expects it.

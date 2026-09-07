@@ -246,7 +246,10 @@ describe("generateStrudelPlayerHtml (Strudel browser fallback)", () => {
 
   it("leaves the code alone when no bpm is supplied", () => {
     const html = generateStrudelPlayerHtml({ code: CODE });
-    expect(html).not.toContain("setcps(");
+    const init = readInit(html);
+    expect(init.code).toBe(CODE);
+    expect(init.cps).toBeNull();
+    expect(init.tempoPolicy).toBeNull();
   });
 
   it("rewrites a nested-paren setcps argument without corrupting parens", () => {
@@ -260,5 +263,92 @@ describe("generateStrudelPlayerHtml (Strudel browser fallback)", () => {
     expect(html).not.toContain("setcps(0.5))");
     // The tempo is replaced in place, not prepended alongside the original.
     expect(html).not.toContain("120 / (60 * 4)");
+  });
+
+  // ---------------------------------------------------------------------------
+  // "unchanged-ambiguous": the pattern owns the setcps name
+  // ---------------------------------------------------------------------------
+
+  it("carries cps into INIT (code untouched) when the pattern binds setcps", () => {
+    // A `const setcps = …` binding puts a prepended call in its temporal dead
+    // zone, so tempo.ts returns the source byte for byte. The only route left
+    // for the requested tempo is the runtime API, via INIT.cps.
+    const code = 'const setcps = (x) => x\nsound("bd hh")';
+    const html = generateStrudelPlayerHtml({ code, bpm: 120 });
+    const init = readInit(html);
+
+    expect(init.code).toBe(code);
+    expect(init.tempoPolicy).toBe("unchanged-ambiguous");
+    expect(init.cps).toBeCloseTo(0.5, 4);
+    // …and the page knows to apply it after evaluation.
+    expect(html).toContain("ed.repl.setCps(INIT.cps)");
+    expect(html).toContain("INIT.tempoPolicy !== 'unchanged-ambiguous'");
+  });
+
+  it("does not apply a runtime tempo for the policies that bake it in", () => {
+    for (const code of ['sound("bd hh")', 'setcps(0.7)\nsound("bd")']) {
+      const init = readInit(generateStrudelPlayerHtml({ code, bpm: 120 }));
+      expect(init.tempoPolicy).not.toBe("unchanged-ambiguous");
+      expect(init.code).toContain("setcps(0.5)");
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Load failure + evaluation outcome (S7)
+  // ---------------------------------------------------------------------------
+
+  it("bounds the editor wait and offers a retry instead of polling forever", () => {
+    const html = generateStrudelPlayerHtml({ code: CODE });
+    expect(html).toContain("EDITOR_TIMEOUT_MS");
+    expect(html).toContain("waitForEditor(EDITOR_TIMEOUT_MS)");
+    expect(html).toContain("Strudel editor did not initialize");
+    expect(html).toContain("Couldn't load the Strudel player");
+    expect(html).toContain('id="retry-btn"');
+    expect(html).toContain("location.reload()");
+  });
+
+  it("reads the evaluation outcome out of repl.state instead of assuming success", () => {
+    // StrudelMirror.evaluate() never rejects — repl.evaluate() catches
+    // everything and parks it on repl.state.evalError — so a try/catch alone
+    // left a broken pattern reading "Playing..." forever.
+    const html = generateStrudelPlayerHtml({ code: CODE });
+    expect(html).toContain("await ed.evaluate(true)");
+    expect(html).toContain("state.evalError");
+    expect(html).toContain("state.schedulerError");
+    expect(html).toContain("state.started");
+    expect(html).toContain("'Error: '");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Title (T9)
+  // ---------------------------------------------------------------------------
+
+  it("defaults the page title when none is given", () => {
+    const html = generateStrudelPlayerHtml({ code: CODE });
+    expect(html).toContain("<title>Strudel Live Pattern — MCP Music Studio</title>");
+    expect(html).toContain("<h1>Strudel Live Pattern</h1>");
+  });
+
+  it("renders a supplied title in both the <title> and the <h1>", () => {
+    const html = generateStrudelPlayerHtml({ code: CODE, title: "Kick Pulse" });
+    expect(html).toContain("<title>Kick Pulse — MCP Music Studio</title>");
+    expect(html).toContain("<h1>Kick Pulse</h1>");
+    expect(html).not.toContain("<h1>Strudel Live Pattern</h1>");
+  });
+
+  it("HTML-escapes the title so it can't break out of the markup", () => {
+    const html = generateStrudelPlayerHtml({
+      code: CODE,
+      title: '</h1><script>alert(1)</script> & "x"',
+    });
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;/h1&gt;&lt;script&gt;");
+    expect(html).toContain("&amp;");
+    expect(html).toContain("&quot;x&quot;");
+  });
+
+  it("falls back to the default when the title is blank", () => {
+    const html = generateStrudelPlayerHtml({ code: CODE, title: "   " });
+    expect(html).toContain("<h1>Strudel Live Pattern</h1>");
   });
 });
