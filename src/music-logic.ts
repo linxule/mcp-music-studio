@@ -1,37 +1,185 @@
 export const DEFAULT_INSTRUMENT = "Acoustic Grand Piano";
 export const DEFAULT_STYLE = "";
 
+// =============================================================================
+// General MIDI instruments
+// =============================================================================
+//
+// All 128 GM melodic programs. This used to be a 30-name shortlist while the
+// tool description called it "the full list" and get-music-guide's 'instruments'
+// topic printed the whole GM table — so `instrument: "Banjo"` matched nothing
+// and silently played a grand piano. The `%%MIDI program N` escape hatch always
+// covered every program; only the friendly-name lookup was short.
+//
+// Names are the GM spellings, EXCEPT where an older key here or the guide
+// already spells one differently (`Electric Piano` for 4, `String Ensemble` for
+// 48, `Drawbar Organ` for 16 which the guide calls "Hammond Organ"). Those older
+// spellings stay canonical so existing tool calls and the widget's saved
+// selection keep working; the GM spelling is reachable through INSTRUMENT_ALIASES.
+// The Lead/Pad families use the descriptor-first spelling the guide uses
+// ("Square Lead", not "Lead 1 (square)").
 export const INSTRUMENTS: Record<string, number> = {
+  // Piano (0-7)
   "Acoustic Grand Piano": 0,
   "Bright Acoustic Piano": 1,
+  "Electric Grand Piano": 2,
+  "Honky-tonk Piano": 3,
   "Electric Piano": 4,
+  "Electric Piano 2": 5,
   "Harpsichord": 6,
+  "Clavinet": 7,
+  // Chromatic percussion (8-15)
   "Celesta": 8,
+  "Glockenspiel": 9,
   "Music Box": 10,
   "Vibraphone": 11,
   "Marimba": 12,
   "Xylophone": 13,
+  "Tubular Bells": 14,
+  "Dulcimer": 15,
+  // Organ (16-23)
+  "Drawbar Organ": 16,
+  "Percussive Organ": 17,
+  "Rock Organ": 18,
   "Church Organ": 19,
+  "Reed Organ": 20,
   "Accordion": 21,
   "Harmonica": 22,
+  "Tango Accordion": 23,
+  // Guitar (24-31)
   "Acoustic Guitar (Nylon)": 24,
   "Acoustic Guitar (Steel)": 25,
+  "Electric Guitar (Jazz)": 26,
   "Electric Guitar (Clean)": 27,
+  "Electric Guitar (Muted)": 28,
+  "Overdriven Guitar": 29,
+  "Distortion Guitar": 30,
+  "Guitar Harmonics": 31,
+  // Bass (32-39)
   "Acoustic Bass": 32,
+  "Electric Bass (Finger)": 33,
+  "Electric Bass (Pick)": 34,
+  "Fretless Bass": 35,
+  "Slap Bass 1": 36,
+  "Slap Bass 2": 37,
+  "Synth Bass 1": 38,
+  "Synth Bass 2": 39,
+  // Strings (40-47)
   "Violin": 40,
   "Viola": 41,
   "Cello": 42,
+  "Contrabass": 43,
+  "Tremolo Strings": 44,
+  "Pizzicato Strings": 45,
+  "Orchestral Harp": 46,
+  "Timpani": 47,
+  // Ensemble (48-55)
   "String Ensemble": 48,
+  "String Ensemble 2": 49,
+  "Synth Strings 1": 50,
+  "Synth Strings 2": 51,
+  "Choir Aahs": 52,
+  "Voice Oohs": 53,
+  "Synth Choir": 54,
+  "Orchestra Hit": 55,
+  // Brass (56-63)
   "Trumpet": 56,
   "Trombone": 57,
+  "Tuba": 58,
+  "Muted Trumpet": 59,
   "French Horn": 60,
+  "Brass Section": 61,
+  "Synth Brass 1": 62,
+  "Synth Brass 2": 63,
+  // Reed (64-71)
+  "Soprano Sax": 64,
   "Alto Sax": 65,
   "Tenor Sax": 66,
+  "Baritone Sax": 67,
   "Oboe": 68,
+  "English Horn": 69,
+  "Bassoon": 70,
   "Clarinet": 71,
+  // Pipe (72-79)
+  "Piccolo": 72,
   "Flute": 73,
+  "Recorder": 74,
   "Pan Flute": 75,
+  "Blown Bottle": 76,
+  "Shakuhachi": 77,
+  "Whistle": 78,
+  "Ocarina": 79,
+  // Synth lead (80-87)
+  "Square Lead": 80,
+  "Sawtooth Lead": 81,
+  "Calliope Lead": 82,
+  "Chiff Lead": 83,
+  "Charang Lead": 84,
+  "Voice Lead": 85,
+  "Fifths Lead": 86,
+  "Bass + Lead": 87,
+  // Synth pad (88-95)
+  "New Age Pad": 88,
+  "Warm Pad": 89,
+  "Polysynth Pad": 90,
+  "Choir Pad": 91,
+  "Bowed Pad": 92,
+  "Metallic Pad": 93,
+  "Halo Pad": 94,
+  "Sweep Pad": 95,
+  // Synth effects (96-103)
+  "Rain (FX)": 96,
+  "Soundtrack (FX)": 97,
+  "Crystal (FX)": 98,
+  "Atmosphere (FX)": 99,
+  "Brightness (FX)": 100,
+  "Goblins (FX)": 101,
+  "Echoes (FX)": 102,
+  "Sci-Fi (FX)": 103,
+  // Ethnic (104-111)
+  "Sitar": 104,
+  "Banjo": 105,
+  "Shamisen": 106,
+  "Koto": 107,
+  "Kalimba": 108,
+  "Bagpipe": 109,
+  "Fiddle": 110,
+  "Shanai": 111,
+  // Percussive (112-119)
+  "Tinkle Bell": 112,
+  "Agogo": 113,
   "Steel Drums": 114,
+  "Woodblock": 115,
+  "Taiko Drum": 116,
+  "Melodic Tom": 117,
+  "Synth Drum": 118,
+  "Reverse Cymbal": 119,
+  // Sound effects (120-127)
+  "Guitar Fret Noise": 120,
+  "Breath Noise": 121,
+  "Seashore": 122,
+  "Bird Tweet": 123,
+  "Telephone Ring": 124,
+  "Helicopter": 125,
+  "Applause": 126,
+  "Gunshot": 127,
+};
+
+/**
+ * Alternate spellings that resolve to a canonical INSTRUMENTS key.
+ *
+ * These are names the GM spec or get-music-guide's 'instruments' topic uses for
+ * a program whose key here is spelled differently — an agent reading the guide
+ * must not get a silent piano.
+ */
+export const INSTRUMENT_ALIASES: Record<string, string> = {
+  "electric piano 1": "Electric Piano",
+  "string ensemble 1": "String Ensemble",
+  "hammond organ": "Drawbar Organ",
+  "honky tonk piano": "Honky-tonk Piano",
+  "steel drum": "Steel Drums",
+  "slap bass": "Slap Bass 1",
+  "guitar harmonic": "Guitar Harmonics",
 };
 
 export const STYLE_NAMES = [
@@ -270,8 +418,13 @@ export function soundFontSynthOptions(name: string | undefined): {
 }
 
 export interface InvocationSettings {
+  /** Canonical INSTRUMENTS key actually used. */
   instrument: string;
   style: string;
+  /** What the caller asked for, when they asked for anything. */
+  requestedInstrument?: string;
+  /** Set when the resolved instrument is not what was requested. */
+  warning?: string;
 }
 
 export interface PreparedToolInput extends InvocationSettings {
@@ -290,26 +443,76 @@ export function isStyleName(style: string): style is StyleName {
   return style in STYLE_PRESETS;
 }
 
+/**
+ * Resolve a caller-supplied instrument name to a canonical INSTRUMENTS key.
+ *
+ * Three passes, each preferring the LOWEST GM program number among its hits so
+ * the answer is deterministic and explainable ("the first GM program that
+ * matches"):
+ *
+ *   1. exact, case-insensitive — including INSTRUMENT_ALIASES.
+ *   2. whole word or prefix — "sax" → Soprano Sax (64, the first of the four),
+ *      "slap bass" → Slap Bass 1 (36), "piano" → Acoustic Grand Piano (0).
+ *   3. plain substring — the last resort, e.g. "harp" → Harpsichord (6).
+ *
+ * Returns `undefined` when nothing matches, so callers can say so out loud
+ * rather than playing a grand piano and pretending it was asked for.
+ */
 export function findInstrument(name: string): string | undefined {
+  const query = name.trim().toLowerCase();
+  if (query.length === 0) return undefined;
+
   if (name in INSTRUMENTS) return name;
-  const lower = name.toLowerCase();
-  return Object.keys(INSTRUMENTS).find(
-    (instrument) =>
-      instrument.toLowerCase() === lower ||
-      instrument.toLowerCase().includes(lower),
+
+  const byProgram = (a: string, b: string) => INSTRUMENTS[a]! - INSTRUMENTS[b]!;
+  const keys = Object.keys(INSTRUMENTS);
+
+  const exact = keys.filter((k) => k.toLowerCase() === query).sort(byProgram);
+  if (exact.length > 0) return exact[0];
+
+  const alias = INSTRUMENT_ALIASES[query];
+  if (alias) return alias;
+
+  // Whole word or prefix: "sax" matches "Alto Sax" but not "Saxophonist"-style
+  // mid-word noise, and "flute" matches "Pan Flute".
+  const wordBoundary = new RegExp(
+    `(^|[^a-z0-9])${query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`,
   );
+  const worded = keys
+    .filter((k) => {
+      const lower = k.toLowerCase();
+      return lower.startsWith(query) || wordBoundary.test(lower);
+    })
+    .sort(byProgram);
+  if (worded.length > 0) return worded[0];
+
+  const loose = keys.filter((k) => k.toLowerCase().includes(query)).sort(byProgram);
+  return loose[0];
 }
 
 export function resolveInvocationSettings(
   input: Pick<MusicToolInput, "instrument" | "style">,
 ): InvocationSettings {
-  const matchedInstrument = input.instrument
-    ? findInstrument(input.instrument)
-    : undefined;
+  const requested = input.instrument?.trim();
+  const matchedInstrument = requested ? findInstrument(requested) : undefined;
+  const instrument = matchedInstrument ?? DEFAULT_INSTRUMENT;
+
+  // Only speak up when the caller asked for something we did not give them.
+  // An exact hit (case aside) is silent; a fuzzy hit and a miss are both worth
+  // saying, because both used to look identical from outside.
+  const warning =
+    requested && requested.toLowerCase() !== instrument.toLowerCase()
+      ? matchedInstrument
+        ? `Instrument "${requested}" matched "${instrument}" (GM program ${INSTRUMENTS[instrument]}).`
+        : `Unknown instrument "${requested}" — using ${DEFAULT_INSTRUMENT}. ` +
+          `Use get-music-guide with topic "instruments" for the GM list, or %%MIDI program N in the ABC.`
+      : undefined;
 
   return {
-    instrument: matchedInstrument ?? DEFAULT_INSTRUMENT,
+    instrument,
     style: input.style && isStyleName(input.style) ? input.style : DEFAULT_STYLE,
+    ...(requested ? { requestedInstrument: requested } : {}),
+    ...(warning ? { warning } : {}),
   };
 }
 

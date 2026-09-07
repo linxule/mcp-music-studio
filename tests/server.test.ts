@@ -121,4 +121,45 @@ describe("play-sheet-music handler", () => {
     // ...and never asserts it played.
     expect(text).not.toMatch(/playing!|successfully played|now playing/i);
   });
+
+  // An unmatched instrument name used to fall back to a grand piano in silence:
+  // the agent asked for a banjo, got a piano, and was told the piece played.
+  describe("instrument resolution is spoken out loud", () => {
+    const parseOnly: ParseOnlyFn = () => [{}];
+    const play = (instrument?: string) =>
+      handlePlaySheetMusic({ abcNotation: "X:1\nK:C\nCDEF|", instrument }, parseOnly);
+
+    it("stays quiet when the instrument matched exactly", async () => {
+      const text = (await play("Banjo")).content[0]?.text ?? "";
+      expect(text).not.toContain("Instrument:");
+    });
+
+    it("stays quiet when no instrument was asked for", async () => {
+      const text = (await play()).content[0]?.text ?? "";
+      expect(text).not.toContain("Instrument:");
+    });
+
+    it("names the fallback when the instrument is unknown", async () => {
+      const text = (await play("kazoo")).content[0]?.text ?? "";
+      expect(text).toContain('Instrument: Acoustic Grand Piano (requested "kazoo")');
+      expect(text).toContain("Unknown instrument");
+    });
+
+    it("names the resolved instrument when the match was fuzzy", async () => {
+      const text = (await play("sax")).content[0]?.text ?? "";
+      expect(text).toContain('Instrument: Soprano Sax (requested "sax")');
+      expect(text).toContain("GM program 64");
+    });
+
+    it("reports the instrument alongside non-fatal parse warnings too", async () => {
+      const warn: ParseOnlyFn = () => [{ warnings: ["Measure overflow warning"] }];
+      const result = await handlePlaySheetMusic(
+        { abcNotation: "X:1\nK:C\nC |", instrument: "kazoo" },
+        warn,
+      );
+      const text = result.content[0]?.text ?? "";
+      expect(text).toContain("Parsed with warnings");
+      expect(text).toContain('Instrument: Acoustic Grand Piano (requested "kazoo")');
+    });
+  });
 });

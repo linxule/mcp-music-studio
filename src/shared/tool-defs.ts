@@ -216,8 +216,12 @@ export const playSheetInputSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Default instrument (e.g. 'Flute', 'Cello', 'Acoustic Grand Piano', 'Alto Sax'). " +
-        "Use get-music-guide with topic 'instruments' for the full list.",
+      "Default instrument for the main voice — any of the 128 General MIDI names " +
+        "(e.g. 'Flute', 'Cello', 'Banjo', 'Alto Sax'). Matching is fuzzy and picks the " +
+        "lowest GM program among the hits, so 'sax' gives Soprano Sax; the result text " +
+        "names what you actually got whenever it isn't what you asked for. " +
+        "Use get-music-guide with topic 'instruments' for the full list, or %%MIDI program N " +
+        "in the ABC to set a program per voice.",
     ),
   style: z
     .enum(STYLE_NAMES)

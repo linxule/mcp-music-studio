@@ -82,10 +82,12 @@ const DIST_DIR = import.meta.filename.endsWith(".ts")
 // =============================================================================
 
 export async function handlePlaySheetMusic(
-  { abcNotation }: { abcNotation: string },
+  args: { abcNotation: string; instrument?: string },
   parseOnly?: ParseOnlyFn,
 ): Promise<CallToolResult> {
-  return createPlaySheetMusicResult(abcNotation, parseOnly);
+  // `instrument` rides along so the result text can say which GM program the
+  // requested name actually resolved to (or that it didn't).
+  return createPlaySheetMusicResult(args, parseOnly);
 }
 
 export async function handleGetMusicGuide({
