@@ -177,10 +177,12 @@ export function createServer(options?: ServerOptions): McpServer {
 
     const playerOpts = {
       abcNotation: args.abcNotation,
+      title: args.title,
       style: args.style,
       instrument: args.instrument,
       tempo: args.tempo,
       swing: args.swing,
+      drumIntro: args.drumIntro,
       transpose: args.transpose,
     };
 

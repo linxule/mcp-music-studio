@@ -72,6 +72,16 @@ body {
   gap: 6px;
 }
 
+/* Piece title — the tool's `title` argument, else the ABC's T: header.
+   Hidden (via the `hidden` attribute) when the piece has neither. */
+.piece-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
 #audio-controls:empty {
   display: none;
 }
