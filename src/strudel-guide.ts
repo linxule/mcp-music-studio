@@ -103,7 +103,7 @@ Use with s() or sound():
 - "sawtooth"    sawtooth wave, buzzy      (alias "saw")
 - "square"      square wave, hollow       (alias "sqr")
 - "triangle"    triangle wave, soft       (alias "tri")
-- "supersaw"    detuned saw stack (use .detune() / .spread())
+- "supersaw"    detuned saw stack (use .unison(), .detune(), .spread())
 - "pulse"       pulse wave (use .pw() for pulse width)
 - "sbd"         synthesized bass drum (use .decay(), .penv())
 - "bytebeat"    algorithmic bit-math oscillator
@@ -208,8 +208,8 @@ bd=kick, sd=snare, hh=closed hi-hat, oh=open hi-hat
 rim=rimshot, cp=clap, cr=crash, rd=ride
 ht=high tom, mt=mid tom, lt=low tom
 sh=shaker, cb=cowbell, tb=tambourine, brk=break, misc=miscellaneous
-perc and fx exist in the drum-machine banks but NOT in the default kit — reach
-for them only after a .bank() — on the bare default kit they are silent.
+perc and fx exist in the drum-machine banks but NOT in the default kit, so
+they only sound after a .bank(); on the bare default kit they are silent.
 
 ## General MIDI Soundfonts (128 instruments)
 Use with .s("gm_instrument_name"):
