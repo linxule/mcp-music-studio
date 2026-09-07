@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import worker, { WIDGET_BUILD } from "../worker/src/index";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import worker, { WIDGET_BUILD, createMusicServer } from "../worker/src/index";
 import { VERSION } from "../src/version";
 import { encodeShareParam } from "../src/shared/share-url";
 
@@ -452,6 +454,68 @@ describe("POST /share", () => {
       body: JSON.stringify({ kind: "play", args: { code: "x".repeat(4000) } }),
     });
     expect(res.status).toBe(503);
+  });
+});
+
+describe("play tools → share link", () => {
+  // The routes above are only half the feature: the tool handlers have to pick
+  // between the two URL shapes, and fall back gracefully when KV isn't there.
+
+  async function callPlayLive(code: string, env: unknown) {
+    const client = new Client({ name: "share-test", version: "0.0.0" });
+    const [c, s] = InMemoryTransport.createLinkedPair();
+    await Promise.all([
+      client.connect(c),
+      createMusicServer(env as never, ORIGIN).connect(s),
+    ]);
+    const res = await client.callTool({
+      name: "play-live-pattern",
+      arguments: { code },
+    });
+    return res.content as { type: string; text?: string; uri?: string }[];
+  }
+
+  it("uses the stateless query URL for a short pattern", async () => {
+    const kv = fakeKv();
+    const content = await callPlayLive('s("bd sd")', { DOCS_CACHE: kv.binding });
+    const link = content.find((c) => c.type === "resource_link");
+    expect(link?.uri).toContain(`${ORIGIN}/play?c=`);
+    expect(kv.puts).toHaveLength(0);
+  });
+
+  it("falls back to KV for a pattern too long for a URL, and that link renders", async () => {
+    const kv = fakeKv();
+    const code = `s("bd") // ${"x".repeat(4000)}`;
+    const content = await callPlayLive(code, { DOCS_CACHE: kv.binding });
+
+    const link = content.find((c) => c.type === "resource_link");
+    expect(link?.uri).toMatch(new RegExp(`^${ORIGIN}/p/[0-9a-f]{32}$`));
+    expect(kv.puts).toHaveLength(1);
+
+    const page = await get(new URL(link!.uri!).pathname, undefined, {
+      DOCS_CACHE: kv.binding,
+    });
+    expect(strudelInit(await page.text()).code).toBe(code);
+  });
+
+  it("omits the link (and keeps the honest wording) when KV is unavailable", async () => {
+    const content = await callPlayLive(`s("bd") // ${"x".repeat(4000)}`, {});
+    expect(content.some((c) => c.type === "resource_link")).toBe(false);
+    expect(content[0]!.text).toContain("nothing has played yet");
+  });
+
+  it("survives a KV write failure without failing the tool call", async () => {
+    const content = await callPlayLive(`s("bd") // ${"x".repeat(4000)}`, {
+      DOCS_CACHE: {
+        get: async () => null,
+        put: async () => {
+          throw new Error("KV is having a day");
+        },
+      },
+    });
+    // No link, but a perfectly good tool result.
+    expect(content.some((c) => c.type === "resource_link")).toBe(false);
+    expect(content[0]!.text).toContain("Strudel pattern ready");
   });
 });
 
