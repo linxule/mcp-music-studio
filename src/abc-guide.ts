@@ -124,7 +124,9 @@ Also set: %%MIDI drumon (enable) and optionally %%MIDI drumoff (disable)
 ## Tips
 - Use %%MIDI drumoff to stop drums at a specific point
 - %%MIDI drumbars 1 means the pattern repeats every bar
-- %%MIDI drumintro 2 adds 2 bars of drums before the melody starts
+- There is NO %%MIDI drumintro directive — abcjs does not parse one. To get
+  count-in bars before the melody, use the tool's drumIntro parameter instead
+  (abcjs takes it as a synth option, not as notation).
 - Pattern can be any length — ABCJS automatically scales it to fit the bar
 - Longer patterns allow more rhythmic detail (e.g., 8 chars for 4/4 = eighth-note resolution)`,
 
@@ -257,8 +259,9 @@ V:3
 %%MIDI channel 3
 
 ## Panning (stereo positioning)
-Panning is set via the synth options (pan parameter), not in ABC notation.
-The play-sheet-music tool applies panning automatically for multi-voice pieces.`,
+abcjs pans through synth options, not ABC notation, and play-sheet-music does
+NOT set any panning — every voice comes out centred. Separate voices by
+register, instrument, and volume rather than by stereo position.`,
 
   genres: `# Genre Templates
 
@@ -364,8 +367,10 @@ K:F
 
 Set the style parameter to automatically add drums, bass, and chord accompaniment.
 Your ABC notation needs guitar chord symbols ("C", "Am7", etc.) above the melody for
-accompaniment to work. The style adds MIDI directives BEFORE your notation — your own
-%%MIDI directives override the style defaults.
+accompaniment to work. The style's MIDI directives are inserted immediately
+AFTER the K: line, so ordering works like this: a %%MIDI directive you write
+BEFORE K: is overridden by the style, and only the ones you write AFTER K:
+override the style defaults. Put your overrides after K:.
 
 ## Available Styles
 
@@ -456,7 +461,8 @@ Common gchord patterns:
 %%MIDI drumoff                  Disable drums
 %%MIDI drum <pattern> <notes...> <velocities...>
 %%MIDI drumbars <n>             Pattern length in bars (default 1)
-%%MIDI drumintro <n>            Bars of drums before melody
+(There is no %%MIDI drumintro. Count-in bars are the drumIntro tool
+ parameter — abcjs reads it from the synth options, never from the tune.)
 
 ## Transpose
 %%MIDI transpose <n>            Transpose MIDI output by n semitones
