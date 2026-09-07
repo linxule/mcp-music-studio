@@ -26,6 +26,11 @@ import {
   type SoundFontName,
 } from "./music-logic";
 import { transposeAbc } from "./abc-transpose";
+import {
+  cleanAbcWarnings,
+  editContextText,
+  hasFatalAbcWarning,
+} from "./abc-edit";
 import { audioBufferToWavBase64 } from "./wav-encoder";
 import { bytesToBase64, sanitizeFileStem } from "./bytes-to-base64";
 import { VERSION } from "./version";
@@ -88,6 +93,9 @@ const instrumentSelectorEl = document.getElementById("instrument-selector")!;
 const styleSelectorEl = document.getElementById("style-selector")!;
 const soundFontSelectorEl = document.getElementById("soundfont-selector")!;
 const toolbarEl = document.getElementById("toolbar")!;
+const editorPaneEl = document.getElementById("editor-pane")!;
+const editorEl = document.getElementById("abc-editor") as HTMLTextAreaElement;
+const editorMessageEl = document.getElementById("editor-message")!;
 
 // =============================================================================
 // Audio Session
@@ -101,10 +109,19 @@ if ("audioSession" in navigator) {
 // Cursor Control (note highlighting during playback)
 // =============================================================================
 
+/**
+ * Drop every note highlight. Also the mandatory first step of any re-render:
+ * the highlighted nodes belong to the OLD SVG, and holding references to
+ * detached elements would leak and mis-clear later.
+ */
+function clearHighlights(): void {
+  state.highlightedEls.forEach((el) => el.classList.remove("note-playing"));
+  state.highlightedEls = [];
+}
+
 const cursorControl: CursorControl = {
   onEvent(ev: NoteTimingEvent) {
-    state.highlightedEls.forEach((el) => el.classList.remove("note-playing"));
-    state.highlightedEls = [];
+    clearHighlights();
 
     if (!ev.elements) return;
 
@@ -124,8 +141,7 @@ const cursorControl: CursorControl = {
   },
 
   onFinished() {
-    state.highlightedEls.forEach((el) => el.classList.remove("note-playing"));
-    state.highlightedEls = [];
+    clearHighlights();
   },
 };
 
@@ -242,6 +258,213 @@ soundFontLabel.htmlFor = "soundfont-select";
 soundFontLabel.textContent = "Sound";
 soundFontSelectorEl.appendChild(soundFontLabel);
 soundFontSelectorEl.appendChild(soundFontSelect);
+
+// =============================================================================
+// ABC Source Editor
+// =============================================================================
+//
+// The asymmetry this closes: the Strudel widget hands you a live REPL, while
+// the ABC widget used to be read-only — changing one note meant a chat
+// round-trip. The pane below edits `state.currentAbc`, which is the RAW user
+// notation (style presets are layered on at render time by `applyStyleToAbc`
+// and never written back), so what you see in the box is what the model wrote,
+// modulo the tool's `transpose` — which rewrites the notation itself and so is
+// genuinely part of the score you are editing.
+//
+// Behaviour decisions, all deliberate:
+//  * Debounced 300 ms on `input`; ⌘/Ctrl+Enter forces a render and plays.
+//  * Validation happens BEFORE any DOM mutation, so a half-typed bar never
+//    tears down the last good score. Fatal = the server's own rule
+//    (`Expected` / `Unknown` / `Error`); anything else renders with a note.
+//  * The textarea is never rewritten by a render, so text is never lost.
+//  * On a successful edit the tune restarts cleanly at bar 1 — `setTune()`
+//    pauses, resets progress and rewinds, and abcjs offers no way to carry a
+//    playhead across a re-timed tune. If it was playing, it keeps playing
+//    (from the top); if it was paused, it stays paused.
+//  * `setTune(..., userAction: true, ...)` on purpose: abcjs never clears its
+//    `isLoaded` flag, so with `false` a later ▶ would replay the PREVIOUS
+//    tune's audio buffer. `true` re-primes the buffer for the edited tune.
+
+const EDIT_DEBOUNCE_MS = 300;
+
+let editTimer: ReturnType<typeof setTimeout> | null = null;
+/** Last text actually pushed through a render — cheap no-op guard. */
+let lastEditRendered = "";
+/** Last text reported to the model, so one render reports at most once. */
+let lastEditReported = "";
+/** Whether the host accepts `ui/update-model-context` (set after connect). */
+let contextUpdateSupported = false;
+
+const editBtn = document.createElement("button");
+editBtn.className = "toolbar-btn toolbar-btn-text";
+editBtn.textContent = "Edit";
+editBtn.title = "Edit the ABC notation";
+editBtn.setAttribute("aria-label", "Edit the ABC notation");
+editBtn.setAttribute("aria-pressed", "false");
+editBtn.setAttribute("aria-expanded", "false");
+editBtn.setAttribute("aria-controls", "editor-pane");
+toolbarEl.appendChild(editBtn);
+
+/** Keep the textarea in step with externally supplied ABC (tool input). */
+function syncEditor(abc: string): void {
+  // Assigning an identical value still collapses the selection in most
+  // browsers, so only write when it actually differs.
+  if (editorEl.value !== abc) editorEl.value = abc;
+}
+
+function setEditorMessage(text: string | null, kind: "error" | "warn"): void {
+  if (!text) {
+    editorMessageEl.hidden = true;
+    editorMessageEl.textContent = "";
+    return;
+  }
+  editorMessageEl.textContent = text;
+  editorMessageEl.classList.toggle("warn", kind === "warn");
+  editorMessageEl.hidden = false;
+}
+
+function setEditorOpen(open: boolean): void {
+  editorPaneEl.hidden = !open;
+  editBtn.setAttribute("aria-pressed", String(open));
+  editBtn.setAttribute("aria-expanded", String(open));
+  if (open) {
+    // The textarea already tracks tool input; only fill a genuinely empty box.
+    if (editorEl.value.length === 0 && state.currentAbc) {
+      editorEl.value = state.currentAbc;
+    }
+    editorEl.focus();
+  }
+}
+
+editBtn.addEventListener("click", () => {
+  setEditorOpen(editorPaneEl.hidden);
+});
+
+function cancelEditRender(): void {
+  if (editTimer) {
+    clearTimeout(editTimer);
+    editTimer = null;
+  }
+}
+
+function scheduleEditRender(): void {
+  cancelEditRender();
+  editTimer = setTimeout(() => {
+    editTimer = null;
+    void applyEditorAbc(false);
+  }, EDIT_DEBOUNCE_MS);
+}
+
+/** Tell the model the score on screen is no longer the one it wrote. */
+function reportEditToModel(abc: string): void {
+  if (!contextUpdateSupported || abc === lastEditReported) return;
+  lastEditReported = abc;
+  void app
+    .updateModelContext({ content: [{ type: "text", text: editContextText(abc) }] })
+    .catch(() => {
+      /* context updates are best-effort */
+    });
+}
+
+/**
+ * Render whatever is in the textarea, reusing the live `synthControl` so the
+ * transport doesn't flicker and the note-follow cursor keeps working.
+ *
+ * @param forcePlay - ⌘/Ctrl+Enter: render even if unchanged, then play.
+ */
+async function applyEditorAbc(forcePlay: boolean): Promise<void> {
+  const abc = editorEl.value;
+
+  if (abc.trim().length === 0) {
+    setEditorMessage("Nothing to render — the editor is empty.", "error");
+    return;
+  }
+  if (!forcePlay && abc === lastEditRendered) return;
+
+  const effective = applyStyleToAbc(abc, state.currentStyle);
+
+  // Validate first: nothing on screen is touched until we know it parses.
+  let messages: string[] = [];
+  try {
+    messages = cleanAbcWarnings(ABCJS.parseOnly(effective)[0]?.warnings);
+  } catch (err) {
+    messages = [(err as Error).message];
+  }
+  if (hasFatalAbcWarning(messages)) {
+    setEditorMessage(messages.join("\n"), "error");
+    setStatus("ABC has errors — showing the last good score", true);
+    return;
+  }
+
+  // No live synth yet (nothing rendered, or the first render failed):
+  // fall back to the full build-from-scratch path.
+  if (!state.synthControl) {
+    lastEditRendered = abc;
+    setEditorMessage(messages.length > 0 ? messages.join("\n") : null, "warn");
+    await renderAbc(abc);
+    reportEditToModel(abc);
+    return;
+  }
+
+  const wasPlaying = Boolean(
+    (state.synthControl as unknown as { isStarted?: boolean }).isStarted,
+  );
+
+  try {
+    clearHighlights();
+    const visualObj = ABCJS.renderAbc(sheetMusicEl, effective, {
+      responsive: "resize",
+      add_classes: true,
+    });
+    // abcjs types the return as a 1-tuple, but unparseable input really does
+    // come back empty at runtime — hence the widened length check.
+    if (!visualObj || (visualObj as unknown as unknown[]).length === 0) {
+      throw new Error("Failed to parse music notation");
+    }
+
+    // The edit is now the source of truth for the title, both download stems
+    // and send-to-chat.
+    state.visualObj = visualObj;
+    state.currentAbc = abc;
+    lastEditRendered = abc;
+    renderTitle();
+    setEditorMessage(messages.length > 0 ? messages.join("\n") : null, "warn");
+
+    await state.synthControl.setTune(
+      visualObj[0],
+      true,
+      currentSynthOptions() as SynthOptions,
+    );
+
+    downloadBtn.disabled = !downloadSupported;
+    midiBtn.disabled = !downloadSupported;
+    sendBtn.disabled = !messageSupported;
+
+    if (wasPlaying || forcePlay) {
+      await (state.synthControl.play() as unknown as
+        | Promise<unknown>
+        | undefined);
+      setStatus("Playing...");
+    } else {
+      setStatus("Edit applied — click ▶ to play");
+    }
+    reportEditToModel(abc);
+  } catch (error) {
+    console.error("Edit render error:", error);
+    setEditorMessage(`Edit not applied: ${(error as Error).message}`, "error");
+    setStatus(`Edit not applied: ${(error as Error).message}`, true);
+  }
+}
+
+editorEl.addEventListener("input", scheduleEditRender);
+
+editorEl.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    cancelEditRender();
+    void applyEditorAbc(true);
+  }
+});
 
 // =============================================================================
 // Fullscreen Button
@@ -493,7 +716,9 @@ async function renderAbc(
     }
 
     state.currentAbc = abcNotation;
+    syncEditor(abcNotation);
     renderTitle();
+    clearHighlights();
     sheetMusicEl.innerHTML = "";
     audioControlsEl.innerHTML = "";
 
@@ -577,6 +802,12 @@ app.ontoolinput = (params) => {
     // stream, and do it once here so later style/instrument re-renders reuse
     // the already-transposed ABC rather than shifting it again.
     const abc = transposeAbc(preparedInput.abcNotation, preparedInput.transpose);
+    // A fresh tool call supersedes anything in the editor, and resets the
+    // edit bookkeeping so the next user edit is reported to the model.
+    cancelEditRender();
+    lastEditRendered = abc;
+    lastEditReported = abc;
+    setEditorMessage(null, "error");
     renderAbc(abc, preparedInput.synthOptions).catch(console.error);
   } else {
     setStatus("No ABC notation provided", true);
@@ -592,8 +823,13 @@ app.ontoolinputpartial = (params) => {
   const abcNotation = params.arguments?.abcNotation as string | undefined;
   if (!abcNotation) return;
 
-  // Keep state current during streaming so UI controls work
+  // Keep state current during streaming so UI controls work. The editor pane
+  // follows along too, so opening it mid-compose shows the notation so far
+  // rather than a stale tune.
   state.currentAbc = abcNotation;
+  syncEditor(abcNotation);
+  lastEditRendered = abcNotation;
+  lastEditReported = abcNotation;
 
   // Name the piece as soon as either source of a title arrives, so the header
   // fills in while the score is still streaming rather than snapping in at the
@@ -654,8 +890,7 @@ function stopPlayback(): void {
   } catch {
     // synthControl may not be loaded yet — ignore
   }
-  state.highlightedEls.forEach((el) => el.classList.remove("note-playing"));
-  state.highlightedEls = [];
+  clearHighlights();
 }
 
 // Cancel any pending debounced partial render so a stale timer can't fire
@@ -681,6 +916,8 @@ app.ontoolcancelled = (params) => {
 app.onteardown = () => {
   stopPlayback();
   cancelPartialRender();
+  // A pending edit render must not fire into a discarded widget.
+  cancelEditRender();
   return {};
 };
 
@@ -719,6 +956,11 @@ app.connect().then(() => {
 
   // Gate the Send-to-chat button on the host's message capability so it can't
   // throw -32601 on hosts that don't advertise ui/message. Reveal only when supported.
+  // Runtime feedback to the model when the user edits the score in the widget.
+  contextUpdateSupported = Boolean(
+    app.getHostCapabilities()?.updateModelContext,
+  );
+
   messageSupported = Boolean(app.getHostCapabilities()?.message);
   if (messageSupported) {
     sendBtn.hidden = false;
