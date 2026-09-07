@@ -48,6 +48,8 @@ Write code → hear it play → edit in a live REPL.
 - **`get-strudel-guide`** — 7 reference topics (mini-notation, sounds, effects, patterns, genres, tips, advanced)
 
 ### Shared
+- **`analyze-harmony`** — chord detection, key detection, progressions, chord scales; answers in both ABC chord symbols and Strudel `chord()`/`note()` form
+- **`convert-abc-to-strudel`** — take a scored melody into the live REPL: bars become mini-notation groups, durations become `@` weights, chord symbols become a `chord().voicing()` line
 - **`search-music-docs`** — semantic search over strudel.cc and ABCJS documentation
 
 ---
@@ -197,6 +199,8 @@ Clients that support ext-apps render the interactive UI inline automatically (`a
 | `get-music-guide` | ABC reference (7 topics: instruments, drums, syntax, genres...) |
 | `get-strudel-guide` | Strudel reference (7 topics: sounds, effects, patterns, genres...) |
 | `search-music-docs` | Semantic search over strudel.cc and ABCJS docs |
+| `analyze-harmony` | Name a chord, guess the key, get a progression or chord scale — in ABC and Strudel spellings |
+| `convert-abc-to-strudel` | Turn a scored ABC melody into a Strudel mini-notation pattern |
 
 ## Prompts
 
