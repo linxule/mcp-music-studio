@@ -90,6 +90,13 @@ body {
   display: none;
 }
 
+/* …but never swallow an error. Once the transport is loaded this rule used to
+   hide every failure message (a rejected download, an edit that wouldn't
+   parse) behind the play controls. */
+#audio-controls:not(:empty) ~ #status.error {
+  display: block;
+}
+
 .audio-controls {
   width: 100%;
 
@@ -228,10 +235,14 @@ body {
   font-size: 0.8125rem;
   line-height: 1.5;
   tab-size: 2;
-  /* ABC is line-oriented: never soft-wrap a bar, scroll instead. */
-  white-space: pre;
-  overflow-wrap: normal;
-  overflow-x: auto;
+  /* Soft-wrap rather than scroll horizontally. ABC is line-oriented and
+     `white-space: pre` would read better, but the widget iframe is often only
+     ~400px wide: a long tune line then runs off to the right with no visible
+     affordance, and the box looks empty. Wrapping keeps every character
+     reachable; newlines and leading spaces still survive verbatim. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
 }
 
 .abc-editor:focus {
