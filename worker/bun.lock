@@ -6,7 +6,7 @@
       "name": "mcp-music-studio-worker",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.24.0",
-        "abcjs": "~6.6.2",
+        "abcjs": "~6.7.0",
         "agents": "^0.4.1",
         "tonal": "^6.4.3",
         "zod": "^4.1.13",
@@ -247,7 +247,7 @@
 
     "@vercel/oidc": ["@vercel/oidc@3.1.0", "", {}, "sha512-Fw28YZpRnA3cAHHDlkt7xQHiJ0fcL+NRcIqsocZQUSmbzeIKRpwttJjik5ZGanXP+vlA4SbTg+AbA3bP363l+w=="],
 
-    "abcjs": ["abcjs@6.6.2", "", {}, "sha512-YLbp5lYUq0uOywWZx9EuTdm0TcflKZi7hOzz366A/LFl3qoAXSYIjznJQmr/VeHg8NcLxZYoN8dLi7PqCpxKEA=="],
+    "abcjs": ["abcjs@6.7.0", "", {}, "sha512-dSj1Iho8IvGZEbfRTcGS4uGt+DMrrXTqXXpfNXYMuUNfDMRadTqA1DlVvs3u0uUDJIej8UOAeDauEPnZ6RThmg=="],
 
     "accepts": ["accepts@2.0.0", "", { "dependencies": { "mime-types": "^3.0.0", "negotiator": "^1.0.0" } }, "sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng=="],
 
