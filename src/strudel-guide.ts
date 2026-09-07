@@ -693,6 +693,15 @@ rather than trying to "update" the previous one.
     WRONG:  stack(note("c3"), note("e3"))  // both need .s()
     RIGHT:  stack(note("c3").s("sine"), note("e3").s("sine"))
 
+11. Plain strings use SINGLE quotes — double quotes mean mini-notation
+    Strudel's transpiler rewrites every "..." into a pattern, so an ordinary
+    JS string written with " fails at eval with \`[mini] parse error\`.
+    WRONG:  await initHydra({ src: "https://unpkg.com/hydra-synth@1.4.0" })
+    RIGHT:  await initHydra({ src: 'https://unpkg.com/hydra-synth@1.4.0' })
+    WRONG:  samples("github:tidalcycles/dirt-samples")
+    RIGHT:  samples('github:tidalcycles/dirt-samples')
+    Keep " for real patterns: s("bd sd"), note("c3 e3"), H("1 0 0.6 0").
+
 ## Pattern Building Strategy
 
 Start simple, layer up:
@@ -755,16 +764,23 @@ Fills:    .every(8, s("bd sd [sd sd] [sd sd sd sd]"))`,
 
   visuals: `# Strudel Visuals (draw methods + Hydra shaders)
 
-Two independent visual layers render BEHIND the code in the widget (native
-strudel.cc look). Both appear automatically when your pattern uses them — the
-user can also toggle them with the "Visuals" button. Encourage visuals: they
-make the pattern legible and the widget feel alive.
+Two visual layers render BEHIND the code in the widget (native strudel.cc
+look), plus one audio-reactive input that can drive either. The layers appear
+automatically when your pattern uses them — the user can also toggle them with
+the "Visuals" button, and hide the code entirely with "Stage". Encourage
+visuals: they make the pattern legible and the widget feel alive.
 
   Layer 1 — Strudel draw methods (2D canvas): .pianoroll(), .scope(), ...
   Layer 2 — Hydra (WebGL shaders): await initHydra() then hydra code.
+  Input   — \`a\`, the live level of Strudel's OWN audio (never the microphone),
+            for making a shader move with the music.
 
 Use them together: Hydra paints a moving background, the pianoroll draws the
 notes on top of it.
+
+No hand-written visual? Set the \`visuals\` parameter to a preset instead — and
+\`theme\` to a colour scheme that fits the mood. Both are documented at the
+bottom of this topic.
 
 ## Layer 1: Strudel draw methods
 Add ONE draw method to a pattern (all of them share the same 2D canvas, so two
@@ -815,8 +831,12 @@ Rules:
 - Exactly one output chain ending in .out(o0) is enough. No render() needed.
 - Keep it darkish / mid-contrast: the code is drawn over it with a scrim.
 - Hydra code is plain JavaScript — no mini-notation quotes around numbers.
-- Prefer H() (below) over detectAudio for sync — detectAudio listens to the
-  MICROPHONE (asks permission), not to Strudel's output.
+- Two ways to move with the music: H() (a pattern's current value, below) and
+  \`a\` (the live audio level, "Audio-reactive" below). Do NOT pass
+  detectAudio: true — that is hydra's own microphone capture, and it prompts.
+- Quote plain strings with ' not " (see "Single quotes" below).
+- The hydra-synth version is pinned for you, so a bare await initHydra() is
+  reproducible; pass \`src\` only to override it.
 - Hydra + one Strudel draw method is fine; the roll draws on top of the shader.
 
 ### Recipe: minimal moving background
@@ -888,6 +908,103 @@ noise(2, 0.08)
 
 note("<c3 e3 g3 b3>").s("gm_pad_warm").room(0.9).size(0.9).slow(2)
 
+## Audio-reactive: \`a\` (Strudel's output, never the microphone)
+The widget publishes hydra's audio object \`a\`, wired to the same master bus
+the speakers get. No getUserMedia, no permission prompt — it reacts to the
+pattern that is playing. It is live once Hydra is up; before that the bands
+simply read 0, so a shader never crashes on it.
+
+  a.fft[0..3]      band levels, low → high. fft[0] is the kick band.
+                   ~0 in silence, ~1 on a loud hit (can go past 1).
+  a.bins           the smoothed band values fft is derived from
+  a.vol            mean of bins — overall loudness
+  a0(scale, off)   … a3(scale, off): shorthand for
+                   () => a.fft[i] * scale + off  (already a function)
+  a.setSmooth(x)   frame-to-frame inertia, 0–1     (default 0.4)
+  a.setCutoff(x)   noise floor subtracted first    (default 2)
+  a.setScale(x)    divisor applied after cutoff    (default 10)
+  a.setBins(n)     how many bands                  (default 4)
+  a.show()/a.hide()  small debug meter of the live band levels
+
+  fft[i] = max(0, (bins[i] - cutoff) / scale)
+
+Same formula and defaults as hydra-synth, so hydra tutorials that read a.fft[0]
+or a0() work here verbatim. Barely moving? Lower setCutoff or setScale.
+Twitchy? Raise setSmooth toward 0.8.
+
+PASS IT AS A FUNCTION. \`osc(10, 0, a.fft[0])\` reads the value once, at
+evaluation time, and freezes; \`osc(10, 0, () => a.fft[0])\` is re-read every
+frame. (a0(4) already returns such a function — no extra arrow needed.)
+
+### Recipe: kick-driven kaleidoscope
+await initHydra()
+osc(10, 0, () => a.fft[0] * 4)
+  .kaleid(3)
+  .color(1, 0.45, 0.85)
+  .out(o0)
+
+stack(
+  s("bd*4").bank("RolandTR808").gain(0.9),
+  s("~ cp ~ cp").bank("RolandTR808"),
+  s("hh*8").bank("RolandTR808").gain(0.35)
+)
+
+Variation — let a higher band warp the geometry instead of the colour (swap in
+this chain; a.fft[1] is the low-mid band, so the shape breathes with the bass):
+
+osc(10, 0, () => a.fft[0] * 4)
+  .kaleid(3)
+  .modulateScale(osc(2), () => a.fft[1])
+  .out(o0)
+
+## Single quotes: plain strings in code, double quotes only for patterns
+Strudel's transpiler rewrites DOUBLE-quoted strings into mini-notation, so an
+ordinary JS string written with " dies at eval with \`[mini] parse error\`.
+Use ' for URLs, option strings, and labels:
+
+  WRONG:  await initHydra({ src: "https://unpkg.com/hydra-synth@1.4.0" })
+  RIGHT:  await initHydra({ src: 'https://unpkg.com/hydra-synth@1.4.0' })
+
+Keep " for actual patterns: s("bd sd"), note("c3 e3"), H("1 0 0.6 0").
+
+## The \`visuals\` parameter (a floor, not a ceiling)
+Ready-made visual for code that has none of its own:
+  none | pianoroll | punchcard | scope | spectrum — appends
+  all(p => p.<method>()) after your code, drawing every running pattern.
+  hydra-kaleid | hydra-pulse | hydra-wash | hydra-feed — prepends a pinned
+  await initHydra() shader before it (hydra-feed also adds a piano roll for
+  the shader to mirror, when your code has no draw method).
+Skipped when the code already has a draw method or calls initHydra(), and the
+hydra presets are skipped entirely under prefers-reduced-motion. Writing your
+own visual, as above, is still the better result.
+
+## The \`theme\` parameter (editor colour scheme)
+Sets the CodeMirror theme, and the widget derives the visuals stage and scrim
+from it — so the theme also decides whether the animation sits on a dark or a
+light ground. One of:
+
+  strudelTheme algoboy archBtw androidstudio atomone aura bbedit blackscreen
+  bluescreen bluescreenlight CutiePi darcula dracula duotoneDark eclipse
+  fruitDaw githubDark githubLight greenText gruvboxDark gruvboxLight sonicPink
+  materialDark materialLight monokai noctisLilac nord redText solarizedDark
+  solarizedLight sublime teletext tokyoNight tokyoNightDay tokyoNightStorm
+  vscodeDark vscodeLight whitescreen xcodeLight
+
+Mood pairings that work:
+  teletext            chiptune / 8-bit / breakcore
+  sonicPink           synthwave / vaporwave / italo
+  nord, tokyoNight    ambient / downtempo / drone
+  gruvboxDark         lofi / jazz-hop / dusty boom-bap
+The light themes (githubLight, solarizedLight, xcodeLight, tokyoNightDay) suit
+a bright room, but a light ground flattens a shader — the scrim compensates by
+going heavier, which mutes the visual further. Prefer a dark theme when the
+visual is the point.
+
+## Stage mode
+The user can press "Stage" to hide the code completely and ⛶ to go fullscreen,
+leaving only the animation — so make the visual worth watching on its own, not
+just as a backdrop for text.
+
 ### Hydra cheat-sheet (the parts that matter here)
 Sources:  osc(freq, sync, offset) noise(scale, speed) voronoi(scale, speed)
           shape(sides, radius, smoothing) gradient(speed) solid(r, g, b) src(s0|o0)
@@ -898,7 +1015,7 @@ Combine:  .add(src, amt) .blend(src, amt) .mult(src) .diff(src) .mask(src)
 Modulate: .modulate(src, amt) .modulateRotate(src, amt) .modulateScale(src, amt)
           .modulateKaleid(src, n) .modulateScrollX(src, amt)
 Live:     any number can be a function: () => time, () => Math.sin(time),
-          H("<0 1 2>") (pattern value), a.fft[0] (mic, detectAudio only)
+          H("<0 1 2>") (pattern value), () => a.fft[0] (live audio level)
 Output:   .out(o0)
 
 ### Troubleshooting
