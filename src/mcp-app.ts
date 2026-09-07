@@ -595,6 +595,15 @@ app.ontoolinputpartial = (params) => {
   // Keep state current during streaming so UI controls work
   state.currentAbc = abcNotation;
 
+  // Name the piece as soon as either source of a title arrives, so the header
+  // fills in while the score is still streaming rather than snapping in at the
+  // end. Cheap: renderTitle only touches one text node.
+  const partialTitle = params.arguments?.title;
+  if (typeof partialTitle === "string" && partialTitle.trim().length > 0) {
+    state.toolTitle = partialTitle.trim();
+  }
+  renderTitle();
+
   // Apply style from partial input if provided
   const style = params.arguments?.style as string | undefined;
   if (style && isStyleName(style) && state.currentStyle !== style) {
