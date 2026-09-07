@@ -8,20 +8,13 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { safeJsonForScript } from "./shared/safe-json.js";
 
 export interface StrudelPlayerOptions {
   code: string;
   bpm?: number;
   autoplay?: boolean;
   show_code?: boolean;
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string {
@@ -36,6 +29,13 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
       finalCode = `setcps(${cps})\n${finalCode}`;
     }
   }
+
+  // The pattern travels as JSON in a <script type="application/json"> block, not
+  // as HTML-escaped text inside <strudel-editor>. `<strudel-editor>` reads its
+  // own innerHTML verbatim and never entity-decodes it, so an HTML-escaped
+  // `sound(&quot;bd&quot;)` reached the evaluator literally and threw a
+  // SyntaxError — every pattern containing a quote was dead on arrival.
+  const initData = safeJsonForScript({ code: finalCode, autoplay });
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -97,16 +97,17 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   </div>
 </header>
 <main>
-  <strudel-editor id="editor"><!--
-${escapeHtml(finalCode)}
---></strudel-editor>
+  <strudel-editor id="editor"></strudel-editor>
 </main>
+<script type="application/json" id="init-data">${initData}</script>
 <script src="https://unpkg.com/@strudel/repl@1.3.0"></script>
 <script>
+  const INIT = JSON.parse(document.getElementById('init-data').textContent);
   const editorEl = document.getElementById('editor');
   const playBtn = document.getElementById('play-btn');
   const statusEl = document.getElementById('status');
   let playing = false;
+  let ready = false;
 
   function getEditor() { return editorEl?.editor || null; }
 
@@ -128,10 +129,12 @@ ${escapeHtml(finalCode)}
 
   async function startPattern() {
     const ed = getEditor();
-    if (!ed) { statusEl.textContent = 'Initializing...'; return; }
+    if (!ed || !ready) { statusEl.textContent = 'Initializing...'; return; }
     try {
-      const code = ed.code || editorEl.textContent;
-      ed.evaluate(code, true);
+      // StrudelMirror.evaluate() takes ONE boolean (shouldPlay) and always
+      // evaluates its own buffer — passing the code as the first argument
+      // silently made the boolean the second, ignored, parameter.
+      ed.evaluate(true);
       playing = true;
       playBtn.textContent = 'Playing';
       playBtn.classList.add('active');
@@ -157,15 +160,28 @@ ${escapeHtml(finalCode)}
     }
   }
 
-  waitForEditor().then(() => {
+  waitForEditor().then((ed) => {
+    ed.setCode(INIT.code);
+    ready = true;
     statusEl.textContent = 'Click Play to start';
   });
 
-  ${autoplay ? `
-  document.addEventListener('click', function autoStart() {
+  ${
+    autoplay
+      ? `
+  // Browsers keep the AudioContext suspended until a user gesture, so autoplay
+  // means "start on the first click anywhere". The Play button's own click also
+  // bubbles to document — without these guards it evaluated the pattern twice.
+  function autoStart(ev) {
+    if (playing) { document.removeEventListener('click', autoStart); return; }
+    if (ev.target && ev.target.closest && ev.target.closest('.controls')) return;
     startPattern();
-  }, { once: true });
-  ` : ''}
+    if (playing) document.removeEventListener('click', autoStart);
+  }
+  document.addEventListener('click', autoStart);
+  `
+      : ""
+  }
 </script>
 </body>
 </html>`;
