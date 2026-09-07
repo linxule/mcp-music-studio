@@ -28,6 +28,29 @@ describe("viz-detect", () => {
     expect(detectViz(withUrl).strudelViz).toBe(true);
   });
 
+  it("detects the all(pianoroll) form the guide documents", () => {
+    const code = 'note("c3 e3").s("piano")\ns("bd*4")\nall(pianoroll)';
+    expect(detectViz(code)).toEqual({ strudelViz: true, hydra: false, any: true });
+    expect(detectViz("all(punchcard)").strudelViz).toBe(true);
+    expect(detectViz("all( scope )").strudelViz).toBe(true);
+    // a call merely named all() with something else in it is not a visual
+    expect(detectViz('all(x => x.fast(2))\ns("bd")').strudelViz).toBe(false);
+  });
+
+  it("classifies every Hydra recipe shape from the guide's visuals topic", () => {
+    // The widget stages the WebGL layer off `hydra`, and reveals the backdrop
+    // off `any`, so these three shapes must not regress.
+    const minimal = "await initHydra()\nosc(8, 0.05, 0.9).rotate(0.3).kaleid(5).out(o0)\n\ns(\"bd*2\")";
+    expect(detectViz(minimal)).toEqual({ strudelViz: false, hydra: true, any: true });
+
+    const feed =
+      'await initHydra({ feedStrudel: true })\nsrc(s0).kaleid(4).out(o0)\n\nnote("c3").pianoroll({ cycles: 2 })';
+    expect(detectViz(feed)).toEqual({ strudelViz: true, hydra: true, any: true });
+
+    const pulse = 'await initHydra()\nshape(6, () => 0.15 + 0.35 * H("1 0")(), 0.3).out(o0)\n\ns("bd*2")';
+    expect(detectViz(pulse)).toEqual({ strudelViz: false, hydra: true, any: true });
+  });
+
   it("does not false-positive on plain patterns", () => {
     expect(detectViz('stack(s("bd*2"), note("c3 e3").s("piano"))')).toEqual({
       strudelViz: false,

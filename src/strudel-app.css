@@ -240,10 +240,13 @@ html, body {
    Fix: hide the blank canvas, ensure the editor sibling is visible
    ========================================================================== */
 
-/* Hide a STRAY full-viewport visualization canvas, but never our pre-created
-   #test-canvas (which lives in .repl-section, not as a body child — the :not()
-   is belt-and-suspenders in case a fallback ever creates one). */
-body > canvas[style*="position"]:not(#test-canvas):not(#hydra-canvas) {
+/* Hide a STRAY full-viewport visualization canvas. #test-canvas is pre-created
+   inside .repl-section and is never a body child (the :not() is
+   belt-and-suspenders in case a fallback ever creates one). #hydra-canvas IS
+   born as a position:fixed body child — adoptHydraCanvas() moves it into
+   .repl-section within a microtask, and this rule keeps it from covering the
+   whole widget in the window where adoption hasn't happened. */
+body > canvas[style*="position"]:not(#test-canvas) {
   display: none !important;
 }
 

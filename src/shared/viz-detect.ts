@@ -6,12 +6,21 @@
 // whether to stage the Hydra (WebGL) layer based on these predicates.
 // =============================================================================
 
+const DRAW_METHODS =
+  "pianoroll|punchcard|wordfall|spiral|pitchwheel|tscope|scope|fscope|spectrum";
+
 /**
  * Strudel draw methods that paint onto `#test-canvas` (all resolve through
  * @strudel/draw's getDrawContext()). Matches `.pianoroll(` etc.
  */
-export const VIZ_METHOD_RE =
-  /\.(pianoroll|punchcard|wordfall|spiral|pitchwheel|tscope|scope|fscope|spectrum)\s*\(/;
+export const VIZ_METHOD_RE = new RegExp(`\\.(${DRAW_METHODS})\\s*\\(`);
+
+/**
+ * The other documented form: `all(pianoroll)` on its own line draws every
+ * running pattern into one roll. The draw method is passed as a bare reference
+ * here, so VIZ_METHOD_RE (which needs a leading dot) never sees it.
+ */
+export const VIZ_ALL_RE = new RegExp(`\\ball\\s*\\(\\s*(${DRAW_METHODS})\\b`);
 
 /**
  * Hydra activation. `initHydra()` is exported into the REPL's eval scope by
@@ -43,7 +52,7 @@ export interface VizIntent {
 /** Inspect pattern code (comments ignored) for visual intent. */
 export function detectViz(code: string): VizIntent {
   const scan = stripLineComments(code);
-  const strudelViz = VIZ_METHOD_RE.test(scan);
+  const strudelViz = VIZ_METHOD_RE.test(scan) || VIZ_ALL_RE.test(scan);
   const hydra = HYDRA_INIT_RE.test(scan);
   return { strudelViz, hydra, any: strudelViz || hydra };
 }
