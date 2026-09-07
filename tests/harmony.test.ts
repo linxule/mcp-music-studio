@@ -1,12 +1,16 @@
+import { readFileSync } from "node:fs";
+import { Scale } from "tonal";
 import { describe, expect, it } from "vitest";
 import {
   analyzeHarmony,
+  CHORD_SCALE_NAMES,
   friendlyChordSymbol,
   HARMONY_TASKS,
   keyMaterial,
   normalizeRomanNumeral,
   parseKeyName,
   scoreKeys,
+  strudelScaleName,
 } from "../src/shared/harmony";
 import { handleAnalyzeHarmony } from "../server";
 
@@ -254,6 +258,82 @@ describe("analyzeHarmony — scale-for-chord", () => {
 
   it("needs chords", () => {
     expect(analyzeHarmony({ task: "scale-for-chord" })).toContain("needs chords");
+  });
+
+  // Regression: the Strudel line used to be built with `scaleName.replace(/ .*/, "")`,
+  // which truncated "whole tone" → "whole" (no such scale) and the printed notes
+  // came from names tonal never knew ("diminished (whole-half)").
+  it("prints real notes and a colon-spelled Strudel scale for the exotic qualities", () => {
+    const text = analyzeHarmony({
+      task: "scale-for-chord",
+      chords: ["Caug", "Cdim7", "Calt7"],
+    });
+    expect(text).toContain("C whole tone: C D E F# G# A#");
+    expect(text).toContain('scale("C:whole:tone")');
+    expect(text).toContain("C whole-half diminished: C D Eb F Gb Ab A B");
+    expect(text).toContain('scale("C:whole-half:diminished")');
+    expect(text).toContain("C altered:");
+    expect(text).toContain('scale("C:altered")');
+    expect(text).not.toContain("whole)");
+    expect(text).not.toContain('scale("C:whole")');
+  });
+});
+
+describe("scale names are real in BOTH tonals", () => {
+  // Strudel's `.scale("C:whole:tone")` does `name.replaceAll(":", " ")` and hands
+  // the result to the tonal copy bundled in @strudel/repl — an OLDER tonal than
+  // ours (it spells a few scales differently, e.g. `neopolitan`). A name we emit
+  // has to resolve in our tonal AND appear in the pinned bundle's list.
+  const strudelNames: Set<string> = new Set(
+    (
+      JSON.parse(
+        readFileSync(new URL("./fixtures/strudel-scale-names.json", import.meta.url), "utf-8"),
+      ) as { names: string[] }
+    ).names,
+  );
+
+  it.each(CHORD_SCALE_NAMES)("%s resolves in tonal and exists in the Strudel bundle", (name) => {
+    expect(Scale.get(`C ${name}`).empty).toBe(false);
+    expect(strudelNames.has(name)).toBe(true);
+    // Round-trip through the colon spelling Strudel actually receives.
+    expect(Scale.get(`C ${strudelScaleName(name).replaceAll(":", " ")}`).empty).toBe(false);
+  });
+
+  it("every scale name analyze-harmony can print survives both", () => {
+    // Sweep the whole surface: one chord per CHORD_SCALE_BY_TYPE branch plus the
+    // chord-scale column of key-chords, then scrape the emitted names back out.
+    const texts = [
+      analyzeHarmony({
+        task: "scale-for-chord",
+        chords: [
+          "Cm7b5",
+          "Cdim7",
+          "Cdim",
+          "Caug",
+          "C7b9",
+          "Calt7",
+          "C7",
+          "Cmaj7",
+          "C6",
+          "Cm7",
+          "Cm6",
+          "Csus4",
+          "Cm",
+          "C",
+        ],
+      }),
+      analyzeHarmony({ task: "key-chords", key: "C" }),
+      analyzeHarmony({ task: "key-chords", key: "A minor" }),
+      analyzeHarmony({ task: "detect-key", chords: ["Dm7", "G7", "Cmaj7"] }),
+    ].join("\n");
+
+    const emitted = [...texts.matchAll(/scale\("[A-G][b#]?:([^"]+)"\)/g)].map((m) => m[1]!);
+    expect(emitted.length).toBeGreaterThan(5);
+    for (const colonName of new Set(emitted)) {
+      const spaced = colonName.replaceAll(":", " ");
+      expect(Scale.get(`C ${spaced}`).empty, `tonal: ${spaced}`).toBe(false);
+      expect(strudelNames.has(spaced), `strudel bundle: ${spaced}`).toBe(true);
+    }
   });
 });
 

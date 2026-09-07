@@ -319,20 +319,63 @@ const CANNED_PROGRESSIONS: { label: string; major: string[]; minor: string[] }[]
   { label: "12-bar blues (first 4)", major: ["I7", "IV7", "I7", "I7"], minor: ["im7", "ivm7", "im7", "im7"] },
 ];
 
+// -----------------------------------------------------------------------------
+// Chord scales
+// -----------------------------------------------------------------------------
+//
+// Every scale name this module prints has to survive TWO round trips:
+//
+//   1. tonal — `Scale.get("C " + name)` must return notes, or the printed scale
+//      degrades silently to the chord tones.
+//   2. Strudel — `.scale("C:whole:tone")` is `name.replaceAll(":", " ")` handed
+//      to Strudel's own (older) tonal copy, so the colon form must resolve there
+//      too. `tests/harmony.test.ts` checks both against the pinned REPL bundle's
+//      scale list (`tests/fixtures/strudel-scale-names.json`).
+//
+// So the names below are CANONICAL tonal names, never prose. The old table
+// carried display labels ("diminished (whole-half)", "altered (super locrian)")
+// and Strudel got them via `.replace(/ .*/, "")` — which truncated "whole tone"
+// to "whole" (not a scale in any tonal version) and printed no notes at all for
+// the two parenthesised names.
+
+/** Canonical tonal scale names this module is allowed to emit. */
+export const CHORD_SCALE_NAMES = [
+  "locrian",
+  "whole-half diminished",
+  "whole tone",
+  "altered",
+  "mixolydian",
+  "major",
+  "minor",
+  "dorian",
+] as const;
+
+export type ChordScaleName = (typeof CHORD_SCALE_NAMES)[number];
+
+/**
+ * Strudel spells a multi-word scale with colons: `.scale("C:whole:tone")`, which
+ * its `scale()` turns back into `"C whole tone"` for tonal.
+ */
+export function strudelScaleName(scale: string): string {
+  return scale.trim().replace(/\s+/g, ":");
+}
+
 /** Chord-scale suggestions keyed by tonal's chord `type`, longest match first. */
-const CHORD_SCALE_BY_TYPE: [RegExp, string][] = [
+const CHORD_SCALE_BY_TYPE: [RegExp, ChordScaleName][] = [
   [/half.?diminished|minor seventh flat five/, "locrian"],
-  [/diminished seventh/, "diminished (whole-half)"],
+  // tonal's "whole-half diminished" is the symmetric scale for a dim7 chord.
+  [/diminished seventh/, "whole-half diminished"],
   [/diminished/, "locrian"],
   [/augmented/, "whole tone"],
-  [/dominant seventh flat nine|seventh b9|altered/, "altered (super locrian)"],
+  // tonal calls this one "altered"; "super locrian" is its alias.
+  [/dominant seventh flat nine|seventh b9|altered/, "altered"],
   [/dominant|seventh(?! flat five)$|^7/, "mixolydian"],
   [/major seventh|major ninth|major sixth|^major$|^sixth$/, "major"],
   [/minor seventh|minor ninth|minor sixth|^minor$/, "dorian"],
   [/suspended/, "mixolydian"],
 ];
 
-function chordScaleFor(chordName: string): string {
+function chordScaleFor(chordName: string): ChordScaleName {
   const chord = Chord.get(chordName);
   const type = `${chord.type} ${chord.quality}`.toLowerCase();
   for (const [re, scale] of CHORD_SCALE_BY_TYPE) if (re.test(type)) return scale;
@@ -560,7 +603,7 @@ function scaleForChord(args: AnalyzeHarmonyArgs): string {
       `${friendlyChordSymbol(symbol)} (${chord.notes.join(" ")}) → ${chord.tonic} ${scaleName}: ${notes.join(" ")}`,
     );
     lines.push(
-      `  Strudel: n("0 1 2 3 4 5 6").scale("${chord.tonic}:${scaleName.replace(/ .*/, "")}")`,
+      `  Strudel: n("0 1 2 3 4 5 6").scale("${chord.tonic}:${strudelScaleName(scaleName)}")`,
     );
   }
 

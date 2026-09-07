@@ -57,7 +57,7 @@ export const SERVER_INSTRUCTIONS =
   "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'). Use search-music-docs only " +
   "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
   '("C", "Am7") above the notes and set a style. ' +
-  "Call analyze-harmony before writing chord symbols for a style preset; " +
+  "If unsure about chord spelling or the key, call analyze-harmony; " +
   "convert-abc-to-strudel turns a scored melody into a live pattern.";
 
 // -----------------------------------------------------------------------------
@@ -217,8 +217,12 @@ export const playSheetInputSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Default instrument (e.g. 'Flute', 'Cello', 'Acoustic Grand Piano', 'Alto Sax'). " +
-        "Use get-music-guide with topic 'instruments' for the full list.",
+      "Default instrument for the main voice — any of the 128 General MIDI names " +
+        "(e.g. 'Flute', 'Cello', 'Banjo', 'Alto Sax'). Matching is fuzzy and picks the " +
+        "lowest GM program among the hits, so 'sax' gives Soprano Sax; the result text " +
+        "names what you actually got whenever it isn't what you asked for. " +
+        "Use get-music-guide with topic 'instruments' for the full list, or %%MIDI program N " +
+        "in the ABC to set a program per voice.",
     ),
   style: z
     .enum(STYLE_NAMES)
@@ -721,7 +725,8 @@ export const MUSIC_PROMPTS: PromptDef[] = [
       userText(
         `Compose a ${args.mood ? `${args.mood} ` : ""}${args.genre ?? "lofi"} pattern and play it with the play-live-pattern tool. ` +
           `First call get-strudel-guide with topic "genres" for a working ${args.genre ?? "lofi"} template, then adapt it — ` +
-          `use stack() to layer drums, bass, and melody, and set a fitting tempo with setcps().`,
+          `use stack() to layer drums, bass, and melody, and set a fitting tempo with setcps(). ` +
+          `For a living widget, add a visual — see get-strudel-guide topic "visuals".`,
       ),
   },
   {

@@ -3,6 +3,7 @@ import {
   DEFAULT_INSTRUMENT,
   DEFAULT_STYLE,
   DRUM_INTRO_MAX,
+  INSTRUMENTS,
   SWING_MAX,
   SWING_STRAIGHT,
   applyStyleToAbc,
@@ -12,7 +13,9 @@ import {
   normalizeDrumIntro,
   normalizeSwing,
   prepareToolInput,
+  resolveInvocationSettings,
 } from "../src/music-logic";
+import { ABC_GUIDES } from "../src/abc-guide";
 
 const BASE_ABC = `X:1
 T:Test Tune
@@ -91,6 +94,111 @@ C D E F |`;
 
   it("supports fuzzy instrument matching for extracted helper tests", () => {
     expect(findInstrument("alto sax")).toBe("Alto Sax");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// General MIDI instrument table
+// -----------------------------------------------------------------------------
+//
+// The table used to hold 30 names while the tool description called it "the full
+// list" and the guide printed all 128 — so "Banjo" silently played a piano.
+
+describe("INSTRUMENTS covers General MIDI", () => {
+  it("maps every GM program 0-127 exactly once", () => {
+    const programs = Object.values(INSTRUMENTS);
+    expect(programs.length).toBe(128);
+    expect([...programs].sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 128 }, (_, i) => i),
+    );
+  });
+
+  it("keeps the historical names (saved widget selections must not break)", () => {
+    for (const [name, program] of Object.entries({
+      "Acoustic Grand Piano": 0,
+      "Electric Piano": 4,
+      "Church Organ": 19,
+      "Acoustic Guitar (Nylon)": 24,
+      "Electric Guitar (Clean)": 27,
+      "String Ensemble": 48,
+      "Alto Sax": 65,
+      "Flute": 73,
+      "Pan Flute": 75,
+      "Steel Drums": 114,
+    })) {
+      expect(INSTRUMENTS[name]).toBe(program);
+    }
+  });
+
+  it("resolves every name the instruments guide advertises", () => {
+    // The guide topic lists "NN Name | NN Name" rows. An agent that reads the
+    // guide and passes one of those names back must get that exact program.
+    const rows = [...ABC_GUIDES.instruments.matchAll(/(?:^|\| )(\d{1,3}) ([^|\n]+)/gm)];
+    expect(rows.length).toBeGreaterThan(50);
+    for (const [, program, rawName] of rows) {
+      const name = rawName!.trim();
+      const resolved = findInstrument(name);
+      expect(resolved, `guide name "${name}"`).toBeDefined();
+      expect(INSTRUMENTS[resolved!], `guide name "${name}"`).toBe(Number(program));
+    }
+  });
+});
+
+describe("findInstrument", () => {
+  it.each([
+    ["banjo", "Banjo", 105],
+    ["Banjo", "Banjo", 105],
+    ["Sitar", "Sitar", 104],
+    ["xylophone", "Xylophone", 13],
+    ["kalimba", "Kalimba", 108],
+    ["harpsichord", "Harpsichord", 6],
+    // Fuzzy, but deterministic: the LOWEST GM program among the matches.
+    ["sax", "Soprano Sax", 64],
+    ["piano", "Acoustic Grand Piano", 0],
+    ["slap bass", "Slap Bass 1", 36],
+    // Alias for a program whose canonical key here is spelled differently.
+    ["Electric Piano 1", "Electric Piano", 4],
+    ["String Ensemble 1", "String Ensemble", 48],
+    ["Hammond Organ", "Drawbar Organ", 16],
+  ])("resolves %j to %s (GM %i)", (query, expected, program) => {
+    expect(findInstrument(query as string)).toBe(expected);
+    expect(INSTRUMENTS[expected as string]).toBe(program);
+  });
+
+  it("returns undefined rather than a silent piano for a non-instrument", () => {
+    expect(findInstrument("kazoo")).toBeUndefined();
+    expect(findInstrument("theremin")).toBeUndefined();
+    expect(findInstrument("   ")).toBeUndefined();
+  });
+});
+
+describe("resolveInvocationSettings surfaces the resolution", () => {
+  it("says nothing when the name matched exactly", () => {
+    const settings = resolveInvocationSettings({ instrument: "banjo" });
+    expect(settings.instrument).toBe("Banjo");
+    expect(settings.warning).toBeUndefined();
+  });
+
+  it("reports a fuzzy match", () => {
+    const settings = resolveInvocationSettings({ instrument: "sax" });
+    expect(settings.instrument).toBe("Soprano Sax");
+    expect(settings.requestedInstrument).toBe("sax");
+    expect(settings.warning).toContain("Soprano Sax");
+    expect(settings.warning).toContain("GM program 64");
+  });
+
+  it("reports the fallback for an unknown name", () => {
+    const settings = resolveInvocationSettings({ instrument: "kazoo" });
+    expect(settings.instrument).toBe(DEFAULT_INSTRUMENT);
+    expect(settings.requestedInstrument).toBe("kazoo");
+    expect(settings.warning).toContain("Unknown instrument");
+    expect(settings.warning).toContain("kazoo");
+  });
+
+  it("carries the resolution through prepareToolInput", () => {
+    const prepared = prepareToolInput({ abcNotation: BASE_ABC, instrument: "kazoo" });
+    expect(prepared.instrument).toBe(DEFAULT_INSTRUMENT);
+    expect(prepared.warning).toContain("Unknown instrument");
   });
 });
 

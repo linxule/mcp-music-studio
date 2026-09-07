@@ -180,6 +180,34 @@ describe("convert-abc-to-strudel — musical detail", () => {
     expect(ok(fixture("05-lyrics.abc")).code).not.toContain("setcps");
   });
 
+  // play-live-pattern's `bpm` parameter rewrites setcps as bpm/60/4. That is
+  // right only for a four-quarter bar, so an agent that converts a 6/8 tune and
+  // then passes bpm silently retimes it by 4/3.
+  describe("the tempo note warns off play-live-pattern's bpm", () => {
+    it("names the bar length for a compound meter", () => {
+      const result = ok("X:1\nM:6/8\nL:1/8\nQ:3/8=60\nK:C\nCDE FGA|]\n");
+      expect(result.code).toContain("setcps(90/60/3)");
+      expect(result.text).toContain("Tempo is already set");
+      expect(result.text).toContain("don't pass `bpm` for this pattern");
+      expect(result.text).toContain("its bar is 3 quarter-notes, not 4");
+    });
+
+    it("names the bar length for 3/4 as well", () => {
+      const result = ok("X:1\nM:3/4\nL:1/4\nQ:1/4=120\nK:C\nC D E|]\n");
+      expect(result.text).toContain("its bar is 3 quarter-notes, not 4");
+    });
+
+    it("still warns in 4/4, without the misleading 'not 4'", () => {
+      const result = ok("X:1\nM:4/4\nL:1/4\nQ:1/4=96\nK:C\nC D E F|]\n");
+      expect(result.text).toContain("don't pass `bpm` for this pattern");
+      expect(result.text).not.toContain("not 4");
+    });
+
+    it("says nothing when the tune sets no tempo", () => {
+      expect(ok(fixture("05-lyrics.abc")).text).not.toContain("Tempo is already set");
+    });
+  });
+
   it("honours the sound parameter", () => {
     expect(ok(fixture("01-simple-melody.abc")).code).toContain('.s("gm_piano")');
     expect(ok(fixture("01-simple-melody.abc"), { sound: "gm_flute" }).code).toContain(
@@ -213,6 +241,50 @@ describe("convert-abc-to-strudel — voices", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("Voice 4 not found");
+  });
+
+  // Regression: the chosen voice used to be recomputed per system by POSITION.
+  // A later system with fewer voices made the lookup null and every bar of that
+  // system vanished — no rests, no mention in `dropped`, no error.
+  describe("a system that omits a voice", () => {
+    // Two systems: the second re-opens V:1 only, so V:2 is silent there.
+    const TWO_SYSTEMS = `X:1
+T:Uneven Systems
+M:4/4
+L:1/4
+K:C
+V:1
+C D E F | G A B c |
+V:2
+C,4 | G,4 |
+V:1
+c B A G | F E D C |
+`;
+
+    it("keeps the present voice's later bars", () => {
+      const lead = ok(TWO_SYSTEMS);
+      expect(lead.bars).toHaveLength(4);
+      expect(lead.bars[2]).toBe("[c5 b4 a4 g4]");
+      expect(lead.bars[3]).toBe("[f4 e4 d4 c4]");
+      expect(lead.dropped.join(" ")).not.toContain("silent");
+    });
+
+    it("fills the missing voice's bars with rests and says so", () => {
+      const bass = ok(TWO_SYSTEMS, { voice: 2 });
+      // Same cycle count as voice 1, so the two patterns stay aligned.
+      expect(bass.bars).toHaveLength(4);
+      expect(bass.bars.slice(0, 2)).toEqual(["[c3]", "[g3]"]);
+      expect(bass.bars.slice(2)).toEqual(["~", "~"]);
+      expect(bass.dropped).toContain("voice 2 is silent in 1 system (filled with rests)");
+      expect(bass.text).toContain("filled with rests");
+    });
+
+    it("matches by V: id, not by position within the system", () => {
+      // The second system's only voice sits at slot 0, where V:2 used to look.
+      const bass = ok(TWO_SYSTEMS, { voice: 2 });
+      expect(bass.bars.join(" ")).not.toContain("c5");
+      expect(bass.bars.join(" ")).not.toContain("b4");
+    });
   });
 });
 

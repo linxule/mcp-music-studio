@@ -35,6 +35,8 @@ export interface AbcPitchElement {
 export interface AbcVoiceElement {
   el_type?: string;
   type?: string;
+  /** Offset of this element in the ABC source — how a voice slot is identified. */
+  startChar?: number;
   duration?: number;
   pitches?: AbcPitchElement[];
   rest?: { type?: string };
@@ -261,6 +263,99 @@ function readMeter(
   return { num, den };
 }
 
+// -----------------------------------------------------------------------------
+// Voice identity
+// -----------------------------------------------------------------------------
+//
+// abcjs's parse tree carries NO V: identity: `lines[].staff[].voices[]` is a
+// positional list that shrinks when a later system omits a voice. Resolving the
+// requested voice per line by position therefore silently retargets (or, when
+// the system is shorter than the index, drops) whole systems.
+//
+// The identity is recoverable from the source instead: every element carries a
+// `startChar`, and the V: field most recently preceding that offset names the
+// voice the element belongs to. So we resolve the ID ONCE, up front, and then
+// match each system's slots by ID — falling back to position only for tunes
+// with no V: fields in the body at all.
+
+interface VoiceMarker {
+  id: string;
+  /** Source offset at which this voice's music starts. */
+  from: number;
+}
+
+interface VoiceMap {
+  /** Voice IDs in declaration order (header V: fields count). */
+  declared: string[];
+  /** V: fields in the tune BODY, in source order. */
+  body: VoiceMarker[];
+}
+
+/** `V:1 clef=bass` on its own line, or an inline `[V:1]` switch. */
+const VOICE_FIELD = /(?:^[ \t]*V:[ \t]*|\[V:[ \t]*)([^\s\]\n]+)/gm;
+
+export function readVoiceMap(abcNotation: string): VoiceMap {
+  // Everything up to and including the first K: line is the tune header, where
+  // a V: field declares a voice rather than opening its music.
+  const keyLine = abcNotation.match(/^[ \t]*K:[^\n]*\n?/m);
+  const headerEnd =
+    keyLine?.index === undefined ? 0 : keyLine.index + keyLine[0].length;
+
+  const declared: string[] = [];
+  const body: VoiceMarker[] = [];
+  for (const match of abcNotation.matchAll(VOICE_FIELD)) {
+    const id = match[1]!;
+    if (!declared.includes(id)) declared.push(id);
+    if (match.index >= headerEnd) {
+      body.push({ id, from: match.index + match[0].length });
+    }
+  }
+  return { declared, body };
+}
+
+/** Which voice owns the music at this source offset. */
+function voiceIdAt(offset: number, body: readonly VoiceMarker[]): string | null {
+  let id: string | null = null;
+  for (const marker of body) {
+    if (marker.from > offset) break;
+    id = marker.id;
+  }
+  return id;
+}
+
+/**
+ * Earliest source offset in a voice slot. abcjs stamps `startChar: -1` on
+ * elements it synthesised (a restated clef or key at the head of a system), so
+ * only non-negative offsets identify anything — take the smallest of those.
+ */
+function firstOffset(voice: AbcVoiceElement[]): number | null {
+  let earliest: number | null = null;
+  for (const el of voice) {
+    const at = el.startChar;
+    if (typeof at !== "number" || at < 0) continue;
+    if (earliest === null || at < earliest) earliest = at;
+  }
+  return earliest;
+}
+
+/**
+ * How many bars a voice slot contributes, counted the way `closeBar()` does:
+ * a bar line only closes a bar when notes have accumulated since the last one.
+ */
+function countBars(voice: AbcVoiceElement[]): number {
+  let bars = 0;
+  let pending = false;
+  for (const el of voice) {
+    if (el.el_type === "bar") {
+      if (pending) bars += 1;
+      pending = false;
+    } else if (el.el_type === "note") {
+      pending = true;
+    }
+  }
+  return pending ? bars + 1 : bars;
+}
+
 function stripHtml(text: string): string {
   return String(text).replace(/<[^>]*>/g, "");
 }
@@ -372,35 +467,72 @@ export function convertAbcToStrudel(
     ctx.measure.clear();
   };
 
+  // Resolve the voice ONCE by V: id; position is the fallback for tunes whose
+  // body has no V: fields (single-voice tunes, and multi-staff tunes that only
+  // declare voices in the header).
+  const voiceMap = readVoiceMap(abcNotation);
+  const targetVoiceId = voiceMap.declared[voiceIndex] ?? null;
+  const byId = targetVoiceId !== null && voiceMap.body.length > 0;
+  let absentSystems = 0;
+
   for (const line of tune.lines ?? []) {
     if (!line.staff || line.staff.length === 0) continue;
 
-    // Voices are numbered across staves, in reading order.
-    let cursor = 0;
     let chosen: { voice: AbcVoiceElement[]; staff: AbcStaffElement } | null = null;
-    for (const staff of line.staff) {
-      for (const voice of staff.voices ?? []) {
-        if (cursor === voiceIndex) chosen = { voice, staff };
-        cursor += 1;
+    if (byId) {
+      for (const staff of line.staff) {
+        for (const voice of staff.voices ?? []) {
+          const offset = firstOffset(voice);
+          if (offset !== null && voiceIdAt(offset, voiceMap.body) === targetVoiceId) {
+            chosen = { voice, staff };
+          }
+        }
+      }
+    } else {
+      // Voices are numbered across staves, in reading order.
+      let cursor = 0;
+      for (const staff of line.staff) {
+        for (const voice of staff.voices ?? []) {
+          if (cursor === voiceIndex) chosen = { voice, staff };
+          cursor += 1;
+        }
       }
     }
 
-    // The staff carrying our voice restates key/meter on every line.
-    if (chosen) {
-      const lineMeter = readMeter(chosen.staff.meter);
-      if (lineMeter) {
-        if (sawMeter && (lineMeter.num !== meter.num || lineMeter.den !== meter.den)) {
-          dropped.add("meter changes (every bar becomes one cycle)");
-        }
-        meter = lineMeter;
-        if (!sawMeter) firstMeter = lineMeter;
-        sawMeter = true;
+    // The staff carrying our voice restates key/meter on every line. When our
+    // voice is missing from this system, any staff's meter still tells us how
+    // long its bars are.
+    const meterStaff = chosen?.staff ?? line.staff.find((s) => readMeter(s.meter));
+    const lineMeter = readMeter(meterStaff?.meter);
+    if (lineMeter) {
+      if (sawMeter && (lineMeter.num !== meter.num || lineMeter.den !== meter.den)) {
+        dropped.add("meter changes (every bar becomes one cycle)");
       }
-      if (chosen.staff.key?.accidentals) {
-        ctx.key = keyAccidentalMap(chosen.staff.key.accidentals);
-      }
+      meter = lineMeter;
+      if (!sawMeter) firstMeter = lineMeter;
+      sawMeter = true;
     }
-    if (!chosen) continue;
+    if (chosen?.staff.key?.accidentals) {
+      ctx.key = keyAccidentalMap(chosen.staff.key.accidentals);
+    }
+
+    if (!chosen) {
+      // This system has no music for our voice. Silence is not the same as
+      // nothing: emit a rest per bar so the pattern stays aligned with the
+      // other voices, and say so in `dropped` rather than losing the bars.
+      closeBar();
+      const reference = line.staff.flatMap((staff) => staff.voices ?? [])[0];
+      const missing = reference ? countBars(reference) : 0;
+      if (missing > 0) {
+        absentSystems += 1;
+        for (let i = 0; i < missing; i += 1) {
+          bars.push("~");
+          barChords.push(null);
+          barDurations.push(meter.num / meter.den);
+        }
+      }
+      continue;
+    }
 
     for (const el of chosen.voice) {
       const type = el.el_type;
@@ -491,13 +623,18 @@ export function convertAbcToStrudel(
 
   closeBar();
 
-  if (bars.length === 0) {
+  if (bars.length === 0 || bars.every((bar) => bar === "~")) {
     return {
       ok: false,
       error: `Voice ${voiceIndex + 1} has no playable notes. Check the voice number, or that the ABC body has music after the K: line.`,
     };
   }
 
+  if (absentSystems > 0) {
+    dropped.add(
+      `voice ${voiceIndex + 1} is silent in ${absentSystems} system${absentSystems === 1 ? "" : "s"} (filled with rests)`,
+    );
+  }
   if (ctx.microtonal) dropped.add("microtonal accidentals (rounded to the nearest semitone)");
   if (voiceCount > 1) {
     dropped.add(
@@ -528,10 +665,12 @@ export function convertAbcToStrudel(
   // One bar is one cycle, so cps is derived from the bar length in quarter notes.
   const beatsPerBar = (firstMeter.num * 4) / firstMeter.den;
   const lines: string[] = [];
+  let setCps = false;
   if (tempo?.bpm && tempo.bpm > 0) {
     const beat = tempo.duration?.[0] ?? 0.25;
     const quarterBpm = Math.round(tempo.bpm * (beat / 0.25));
     lines.push(`setcps(${quarterBpm}/60/${beatsPerBar})`);
+    setCps = true;
   }
 
   lines.push(`note("<${bars.join(" ")}>").s("${sound}")`);
@@ -553,6 +692,18 @@ export function convertAbcToStrudel(
       ? `Dropped: ${droppedList.join("; ")}.`
       : "Lossless for this tune.";
 
+  // play-live-pattern's `bpm` parameter rewrites setcps as bpm/60/4 — right for
+  // a four-quarter bar, wrong for anything else. This pattern already carries
+  // the tune's own tempo over its own bar length, so passing bpm would silently
+  // retime it (a 6/8 bar is 3 quarter notes, not 4).
+  const tempoNote = !setCps
+    ? ""
+    : beatsPerBar === 4
+      ? "\n\nTempo is already set — don't pass `bpm` for this pattern; it would override the tune's own tempo. Edit the setcps() line instead."
+      : `\n\nTempo is already set — don't pass \`bpm\` for this pattern ` +
+        `(its bar is ${beatsPerBar} quarter-note${beatsPerBar === 1 ? "" : "s"}, not 4). ` +
+        "Edit the setcps() line instead.";
+
   return {
     ok: true,
     code,
@@ -560,6 +711,6 @@ export function convertAbcToStrudel(
     chords,
     dropped: droppedList,
     voiceCount,
-    text: `${header}\n\n${code}\n\n${lossNote}`,
+    text: `${header}\n\n${code}\n\n${lossNote}${tempoNote}`,
   };
 }
