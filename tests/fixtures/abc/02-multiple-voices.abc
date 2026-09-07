@@ -1,0 +1,12 @@
+X:2
+T:Studio fixture 02
+C:Original test fixture for this handoff
+M:4/4
+L:1/4
+Q:1/4=96
+%%score (1 2)
+V:1 clef=treble name="Melody"
+V:2 clef=bass name="Bass"
+K:C
+[V:1] C E G c | B G E C |]
+[V:2] C,2 G,2 | G,2 C,2 |]

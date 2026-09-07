@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { safeJsonForScript } from "./shared/safe-json.js";
+import { injectTempo } from "./shared/tempo.js";
 
 export interface StrudelPlayerOptions {
   code: string;
@@ -20,15 +21,9 @@ export interface StrudelPlayerOptions {
 export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string {
   const { code, bpm, autoplay = true } = options;
 
-  let finalCode = code;
-  if (bpm) {
-    const cps = Math.round((bpm / 60 / 4) * 10000) / 10000;
-    if (/setcps\s*\(/.test(finalCode)) {
-      finalCode = finalCode.replace(/setcps\s*\([^)]*\)/, `setcps(${cps})`);
-    } else {
-      finalCode = `setcps(${cps})\n${finalCode}`;
-    }
-  }
+  // Tempo policy (replace an unambiguous top-level setter, otherwise prepend)
+  // lives in src/shared/tempo.ts and is shared with the ext-apps widget.
+  const finalCode = bpm ? injectTempo(code, bpm).code : code;
 
   // The pattern travels as JSON in a <script type="application/json"> block, not
   // as HTML-escaped text inside <strudel-editor>. `<strudel-editor>` reads its

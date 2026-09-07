@@ -13,6 +13,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
+// abcjs runs parse-only here (no DOM touched at import time — its one browser
+// polyfill is wrapped in try/catch), which is what convert-abc-to-strudel needs.
+import ABCJS from "abcjs";
 
 // Shared guide content (pure data, no Node.js deps)
 import { ABC_GUIDE_TOPICS, ABC_GUIDES } from "../../src/abc-guide.js";
@@ -44,11 +47,20 @@ import {
   SEARCH_DOCS_DESCRIPTION,
   searchDocsInputSchema,
   searchMusicDocs,
+  ANALYZE_HARMONY_ANNOTATIONS,
+  ANALYZE_HARMONY_DESCRIPTION,
+  analyzeHarmonyInputSchema,
+  buildAnalyzeHarmonyResult,
+  CONVERT_ABC_ANNOTATIONS,
+  CONVERT_ABC_DESCRIPTION,
+  convertAbcInputSchema,
+  buildConvertAbcResult,
   registerMusicPrompts,
   WORKER_SERVER_ICONS,
   WEBSITE_URL,
   uiToolMeta,
 } from "../../src/shared/tool-defs.js";
+import type { ParseOnlyFn } from "../../src/shared/abc-to-strudel.js";
 
 // Bundled ext-apps HTML (wrangler imports as text via rules config)
 import sheetMusicHtml from "../../dist/mcp-app.html";
@@ -315,6 +327,35 @@ export function createMusicServer(env: Env): McpServer {
         cachePut: (key, value) =>
           env.DOCS_CACHE.put(key, value, { expirationTtl: 86400 }),
       }),
+  );
+
+  // ===========================================================================
+  // Tool: analyze-harmony (pure music theory, no UI)
+  // ===========================================================================
+  server.registerTool(
+    "analyze-harmony",
+    {
+      title: "Analyze Harmony",
+      description: ANALYZE_HARMONY_DESCRIPTION,
+      inputSchema: analyzeHarmonyInputSchema,
+      annotations: ANALYZE_HARMONY_ANNOTATIONS,
+    },
+    async (args) => buildAnalyzeHarmonyResult(args),
+  );
+
+  // ===========================================================================
+  // Tool: convert-abc-to-strudel (scored composition → live pattern)
+  // ===========================================================================
+  server.registerTool(
+    "convert-abc-to-strudel",
+    {
+      title: "Convert ABC to Strudel",
+      description: CONVERT_ABC_DESCRIPTION,
+      inputSchema: convertAbcInputSchema,
+      annotations: CONVERT_ABC_ANNOTATIONS,
+    },
+    async (args) =>
+      buildConvertAbcResult(args, ABCJS.parseOnly as unknown as ParseOnlyFn),
   );
 
   // ===========================================================================

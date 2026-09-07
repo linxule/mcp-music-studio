@@ -12,10 +12,12 @@ import {
   registerAppResource,
   registerAppTool,
 } from "@modelcontextprotocol/ext-apps/server";
+import ABCJS from "abcjs";
 import {
   createPlaySheetMusicResult,
   type ParseOnlyFn,
 } from "./src/server-logic.js";
+import type { ParseOnlyFn as AbcParseOnlyFn } from "./src/shared/abc-to-strudel.js";
 import {
   openPlayerInBrowser,
   generatePlayerHtml,
@@ -57,6 +59,14 @@ import {
   SEARCH_DOCS_DESCRIPTION,
   searchDocsInputSchema,
   searchMusicDocs,
+  ANALYZE_HARMONY_ANNOTATIONS,
+  ANALYZE_HARMONY_DESCRIPTION,
+  analyzeHarmonyInputSchema,
+  buildAnalyzeHarmonyResult,
+  CONVERT_ABC_ANNOTATIONS,
+  CONVERT_ABC_DESCRIPTION,
+  convertAbcInputSchema,
+  buildConvertAbcResult,
   registerMusicPrompts,
   SERVER_ICONS,
   WEBSITE_URL,
@@ -91,6 +101,19 @@ export async function handlePlayLivePattern(args: {
   title?: string;
 }): Promise<CallToolResult> {
   return buildPlayLiveResult(args);
+}
+
+export async function handleAnalyzeHarmony(
+  args: z.infer<typeof analyzeHarmonyInputSchema>,
+): Promise<CallToolResult> {
+  return buildAnalyzeHarmonyResult(args);
+}
+
+export async function handleConvertAbcToStrudel(
+  args: z.infer<typeof convertAbcInputSchema>,
+  parseOnly: AbcParseOnlyFn = ABCJS.parseOnly as unknown as AbcParseOnlyFn,
+): Promise<CallToolResult> {
+  return buildConvertAbcResult(args, parseOnly);
 }
 
 export async function handleGetStrudelGuide({
@@ -155,10 +178,12 @@ export function createServer(options?: ServerOptions): McpServer {
 
     const playerOpts = {
       abcNotation: args.abcNotation,
+      title: args.title,
       style: args.style,
       instrument: args.instrument,
       tempo: args.tempo,
       swing: args.swing,
+      drumIntro: args.drumIntro,
       transpose: args.transpose,
     };
 
@@ -390,6 +415,34 @@ export function createServer(options?: ServerOptions): McpServer {
       searchMusicDocs(query, library, {
         apiKey: process.env.CONTEXT7_API_KEY,
       }),
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: analyze-harmony (pure music theory, no UI)
+  // ---------------------------------------------------------------------------
+  server.registerTool(
+    "analyze-harmony",
+    {
+      title: "Analyze Harmony",
+      description: ANALYZE_HARMONY_DESCRIPTION,
+      inputSchema: analyzeHarmonyInputSchema,
+      annotations: ANALYZE_HARMONY_ANNOTATIONS,
+    },
+    handleAnalyzeHarmony,
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: convert-abc-to-strudel (scored composition → live pattern)
+  // ---------------------------------------------------------------------------
+  server.registerTool(
+    "convert-abc-to-strudel",
+    {
+      title: "Convert ABC to Strudel",
+      description: CONVERT_ABC_DESCRIPTION,
+      inputSchema: convertAbcInputSchema,
+      annotations: CONVERT_ABC_ANNOTATIONS,
+    },
+    async (args) => handleConvertAbcToStrudel(args),
   );
 
   // ---------------------------------------------------------------------------

@@ -13,15 +13,22 @@ import {
   STYLE_NAMES,
   type StyleName,
   findInstrument,
-  injectTempoAndTranspose,
+  injectTempoHeader,
+  normalizeDrumIntro,
+  normalizeSwing,
 } from "./music-logic.js";
+import { transposeAbc } from "./abc-transpose.js";
+import { ABCJS_CDN_BASE } from "./abcjs-version.js";
 
 export interface BrowserPlayerOptions {
   abcNotation: string;
+  /** Overrides the T: header for the page heading and <title>. */
+  title?: string;
   style?: string;
   instrument?: string;
   tempo?: number;
   swing?: number;
+  drumIntro?: number;
   transpose?: number;
 }
 
@@ -65,21 +72,16 @@ function formatKey(raw: string): string {
   return raw.replace(/([A-G])b/g, "$1♭").replace(/([A-G])#/g, "$1♯");
 }
 
-// ABCJS ≤6.6.2 fails to render notation when V: lines use quoted name
-// attributes (e.g. name="Melody"). Strip the quotes so ABCJS can parse them.
-function stripVoiceNameQuotes(abc: string): string {
-  return abc.replace(/^(V:\S+.*?\bname=)"([^"]*)"(.*)$/gm, "$1$2$3");
-}
-
 export function generatePlayerHtml(options: BrowserPlayerOptions): string {
-  // Process ABC (tempo/transpose injection — baked into notation)
-  let abc = stripVoiceNameQuotes(options.abcNotation);
-  if (options.tempo !== undefined || options.transpose !== undefined) {
-    abc = injectTempoAndTranspose(abc, {
-      tempo: options.tempo,
-      transpose: options.transpose,
-    });
-  }
+  // Transposition first, so `strTranspose` sees the author's ABC before any
+  // Q:/style directives are woven in, then the tempo header.
+  //
+  // (A `stripVoiceNameQuotes()` pass used to run here on the theory that abcjs
+  // choked on `V:1 name="Melody"`. It doesn't — and the regex was lossy, since
+  // dropping the quotes turned `name="Melody Line"` into a voice called
+  // `Melody`. Removed; tests/browser-fallback.test.ts pins the quoted form.)
+  let abc = transposeAbc(options.abcNotation, options.transpose);
+  abc = injectTempoHeader(abc, { tempo: options.tempo });
 
   // Resolve instrument
   const instrumentName = options.instrument
@@ -94,6 +96,8 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
       : "";
 
   const meta = extractMeta(abc);
+  // An explicit `title` argument wins over the T: header, as the schema promises.
+  const displayTitle = options.title?.trim() || meta.title;
   const keyDisplay = formatKey(meta.key);
 
   // Build metadata fragments
@@ -119,11 +123,15 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
     .join("");
 
   // Data for JS — use safe serialization to prevent </script> breakout
+  // `swing`/`drumIntro` go through the same normalizers the widget uses, so the
+  // fallback and the ext-app agree on what abcjs will actually honour (swing at
+  // or below 50 is a no-op; abcjs clamps above 75).
   const initData = safeJsonForScript({
     abc,
     style,
     instrumentProgram,
-    swing: options.swing ?? 0,
+    swing: normalizeSwing(options.swing) ?? 0,
+    drumIntro: normalizeDrumIntro(options.drumIntro) ?? 0,
   });
   const presetsJson = safeJsonForScript(STYLE_PRESETS);
 
@@ -133,9 +141,9 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
-  <title>${escapeHtml(meta.title)} — Music Studio</title>
+  <title>${escapeHtml(displayTitle)} — Music Studio</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♪</text></svg>">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/abcjs@6.6.2/abcjs-audio.css">
+  <link rel="stylesheet" href="${ABCJS_CDN_BASE}/abcjs-audio.css">
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     :root{
@@ -306,7 +314,7 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
     </div>
 
     <div class="piece-info">
-      <h1 class="piece-title anim d2">${escapeHtml(meta.title)}</h1>
+      <h1 class="piece-title anim d2">${escapeHtml(displayTitle)}</h1>
       <p class="piece-meta anim d2">
         ${metaParts.map((p) => `<span>${escapeHtml(p)}</span>`).join("")}
       </p>
@@ -340,9 +348,10 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
     </details>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/abcjs@6.6.2/dist/abcjs-basic-min.js"></script>
+  <script src="${ABCJS_CDN_BASE}/dist/abcjs-basic-min.js"></script>
   <script>
     var INIT = ${initData};
+    var HAS_EXPLICIT_TITLE = ${options.title?.trim() ? "true" : "false"};
     var STYLE_PRESETS = ${presetsJson};
     var synthControl = null;
     var highlighted = [];
@@ -404,12 +413,15 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
 
       var opts = { program: program };
       if (INIT.swing) opts.swing = INIT.swing;
+      if (INIT.drumIntro) opts.drumIntro = INIT.drumIntro;
       await synthControl.setTune(visualObj[0], false, opts);
     }
 
     function renderFromEditor() {
       currentAbc = document.getElementById('abc-editor').value;
-      var m = currentAbc.match(/^T:(.+)$/m);
+      // An explicit title= argument outranks T:, so editing the notation
+      // doesn't silently rename a piece the caller already named.
+      var m = HAS_EXPLICIT_TITLE ? null : currentAbc.match(/^T:(.+)$/m);
       if (m) {
         document.querySelector('.piece-title').textContent = m[1].trim();
         document.title = m[1].trim() + ' \\u2014 Music Studio';

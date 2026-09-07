@@ -5,6 +5,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { createServer } from "../server";
 import { createMusicServer } from "../worker/src/index";
+import { ABC_GUIDE_TOPICS } from "../src/abc-guide";
+import { STRUDEL_GUIDE_TOPICS } from "../src/strudel-guide";
+import { MUSIC_PROMPTS } from "../src/shared/tool-defs";
 
 // =============================================================================
 // Local (stdio/HTTP) vs Cloudflare Worker parity
@@ -51,9 +54,10 @@ describe("tools/list parity", () => {
     const w = byName((await worker.listTools()).tools).map((t) => t.name);
     expect(l).toEqual(w);
     // Guard against a listing that is empty on both sides passing vacuously.
+    // Counts stay open-ended on purpose — adding a tool should not fail parity.
     expect(l).toContain("play-sheet-music");
     expect(l).toContain("play-live-pattern");
-    expect(l.length).toBe(5);
+    expect(l.length).toBeGreaterThanOrEqual(5);
   });
 
   it("exposes identical tool definitions (title, description, schema, annotations, _meta)", async () => {
@@ -100,11 +104,15 @@ describe("resources/list parity", () => {
     expect(l).toEqual(w);
     expect(l.map((r) => r.uri)).toContain("ui://sheet-music/mcp-app.html");
     expect(l.map((r) => r.uri)).toContain("ui://strudel/strudel-app.html");
-    // Both guide families are mirrored as resources.
-    expect(l.filter((r) => r.uri.startsWith("music://guide/")).length).toBe(7);
+    // Both guide families are mirrored as resources, one per topic — derived
+    // from the topic lists so adding a topic doesn't need a test edit, but a
+    // transport that forgets to mirror one still fails.
+    expect(l.filter((r) => r.uri.startsWith("music://guide/")).length).toBe(
+      ABC_GUIDE_TOPICS.length,
+    );
     expect(
       l.filter((r) => r.uri.startsWith("music://strudel-guide/")).length,
-    ).toBe(7);
+    ).toBe(STRUDEL_GUIDE_TOPICS.length);
   });
 
   it("serves both UI resources with the ext-apps mime type and CSP _meta", async () => {
@@ -137,11 +145,10 @@ describe("prompts/list parity", () => {
     const l = byName((await local.listPrompts()).prompts);
     const w = byName((await worker.listPrompts()).prompts);
     expect(l).toEqual(w);
-    expect(l.map((p) => p.name)).toEqual([
-      "arrange-tune",
-      "compose-beat",
-      "harmonize-melody",
-    ]);
+    expect(l.map((p) => p.name)).toEqual(
+      MUSIC_PROMPTS.map((p) => p.name).sort((a, b) => a.localeCompare(b)),
+    );
+    expect(l.length).toBeGreaterThan(0);
   });
 });
 

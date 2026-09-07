@@ -47,33 +47,67 @@ describe("get-strudel-guide handler", () => {
     }
   });
 
-  it("covers all 7 topics", () => {
-    expect(STRUDEL_GUIDE_TOPICS).toHaveLength(7);
+  it("covers all 8 topics", () => {
+    expect(STRUDEL_GUIDE_TOPICS).toHaveLength(8);
+    expect(STRUDEL_GUIDE_TOPICS).toContain("visuals");
   });
 });
 
-describe("strudel visualization guidance (v0.4.1)", () => {
-  const advanced = STRUDEL_GUIDES.advanced;
+describe("strudel visualization guidance (v0.4.1, moved to 'visuals' in v0.5)", () => {
+  const visuals = STRUDEL_GUIDES.visuals;
 
   it("encourages visualization with concrete methods", () => {
-    expect(advanced).toContain(".pianoroll()");
-    expect(advanced).toContain(".punchcard()");
-    expect(advanced).toContain(".scope()");
-    expect(advanced).toContain(".spectrum()");
+    expect(visuals).toContain(".pianoroll()");
+    expect(visuals).toContain(".punchcard()");
+    expect(visuals).toContain(".scope()");
+    expect(visuals).toContain(".spectrum()");
   });
 
   it("no longer claims visuals are suppressed/hidden in ext-apps", () => {
-    const lower = advanced.toLowerCase();
-    expect(lower).not.toContain("suppress");
-    expect(lower).not.toContain("canvas is hidden");
-    expect(lower).not.toContain("open in browser");
+    for (const text of [visuals, STRUDEL_GUIDES.advanced]) {
+      const lower = text.toLowerCase();
+      expect(lower).not.toContain("suppress");
+      expect(lower).not.toContain("canvas is hidden");
+      expect(lower).not.toContain("open in browser");
+    }
   });
 
-  it("documents the one-visual-per-pattern rule", () => {
-    expect(advanced.toLowerCase()).toContain("one visual");
+  it("documents the one-draw-method-per-pattern rule", () => {
+    expect(visuals.toLowerCase()).toContain("one draw method");
   });
 
-  it("nudges visualization from the play-live tool description", () => {
+  it("nudges visualization + Hydra from the play-live tool description", () => {
     expect(PLAY_LIVE_BASE_DESCRIPTION).toContain("pianoroll");
+    expect(PLAY_LIVE_BASE_DESCRIPTION).toContain("initHydra");
+    expect(PLAY_LIVE_BASE_DESCRIPTION).toContain("'visuals'");
+  });
+});
+
+describe("visuals guide topic", () => {
+  const text = STRUDEL_GUIDES.visuals;
+
+  it("teaches both layers: draw methods and Hydra", () => {
+    expect(text).toContain(".pianoroll()");
+    expect(text).toContain("await initHydra()");
+    expect(text).toContain("feedStrudel");
+    expect(text).toContain("H(");
+  });
+
+  it("warns that detectAudio uses the microphone", () => {
+    expect(text.toLowerCase()).toContain("microphone");
+  });
+
+  it("every Hydra recipe starts with initHydra and ends a chain with .out(o0)", () => {
+    const recipes = text.split("### Recipe:").slice(1);
+    expect(recipes.length).toBeGreaterThanOrEqual(4);
+    for (const r of recipes) {
+      expect(r).toMatch(/await initHydra\(/);
+      expect(r).toContain(".out(o0)");
+    }
+  });
+
+  it("advanced topic points at visuals instead of duplicating it", () => {
+    expect(STRUDEL_GUIDES.advanced).toContain('"visuals" topic');
+    expect(STRUDEL_GUIDES.advanced).not.toContain("### pianoroll options");
   });
 });

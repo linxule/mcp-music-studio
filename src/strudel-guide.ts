@@ -9,6 +9,7 @@ export const STRUDEL_GUIDE_TOPICS = [
   "patterns",
   "genres",
   "tips",
+  "visuals",
   "advanced",
 ] as const;
 
@@ -159,11 +160,11 @@ perc=percussion, misc=miscellaneous, fx=effects
 
 ## General MIDI Soundfonts (127 instruments)
 Use with .s("gm_instrument_name"):
-note("c3 e3 g3").s("gm_acoustic_grand_piano")
+note("c3 e3 g3").s("gm_piano")
 note("c2 e2 g2").s("gm_electric_bass_finger")
 
 ### Common GM Instruments (name → GM program number for ABC crossover)
-Piano: gm_acoustic_grand_piano(0), gm_electric_piano_1(4), gm_harpsichord(6)
+Piano: gm_piano(0), gm_epiano1(4), gm_harpsichord(6)
 Organ: gm_drawbar_organ(16), gm_church_organ(19), gm_accordion(21)
 Guitar: gm_acoustic_guitar_nylon(24), gm_acoustic_guitar_steel(25), gm_electric_guitar_clean(27), gm_electric_guitar_jazz(26)
 Bass: gm_acoustic_bass(32), gm_electric_bass_finger(33), gm_electric_bass_pick(34), gm_slap_bass_1(36)
@@ -172,7 +173,7 @@ Brass: gm_trumpet(56), gm_trombone(57), gm_french_horn(60), gm_brass_section(61)
 Reed: gm_alto_sax(65), gm_tenor_sax(66), gm_clarinet(71), gm_oboe(68)
 Pipe: gm_flute(73), gm_recorder(74), gm_pan_flute(75)
 Synth Lead: gm_lead_1_square(80), gm_lead_2_sawtooth(81)
-Synth Pad: gm_pad_1_new_age(88), gm_pad_2_warm(89)
+Synth Pad: gm_pad_new_age(88), gm_pad_warm(89)
 Ethnic: gm_sitar(104), gm_banjo(105), gm_kalimba(108), gm_steel_drums(114)
 
 Note: GM numbers match ABC's %%MIDI program N. Same instrument = same number.
@@ -424,7 +425,7 @@ stack(
 )
 
 ## Jazz
-// Features: GM instruments (gm_acoustic_bass, gm_electric_piano_1), swing feel, walking bass
+// Features: GM instruments (gm_acoustic_bass, gm_epiano1), swing feel, walking bass
 setcps(0.4583)
 stack(
   s("[~ hh] [hh ~ hh] [~ hh] [hh ~ hh]").gain(0.35),
@@ -432,7 +433,7 @@ stack(
   note("[c2 ~ g2 ~] [a2 ~ e2 ~] [d2 ~ a2 ~] [g1 ~ d2 ~]")
     .s("gm_acoustic_bass").gain(0.5),
   note("<[c4 e4 g4 bb4] [a3 c4 e4 g4] [d4 f4 a4 c5] [g3 b3 d4 f4]>")
-    .s("gm_electric_piano_1").gain(0.3).room(0.4)
+    .s("gm_epiano1").gain(0.3).room(0.4)
 )
 
 ## Lo-fi Hip Hop
@@ -441,7 +442,7 @@ setcps(0.3541)
 stack(
   s("[bd ~ ~ bd] [~ sd ~ ~]").gain(0.8),
   s("hh*4").gain(0.2).pan(rand),
-  note("[c3 ~ e3 ~] [g3 ~ e3 c3]").s("gm_electric_piano_1")
+  note("[c3 ~ e3 ~] [g3 ~ e3 c3]").s("gm_epiano1")
     .gain(0.35).room(0.5).lpf(2000).crush(12),
   note("c2 ~ [~ c2] ~").s("gm_acoustic_bass").gain(0.4).lpf(500)
 )
@@ -498,7 +499,7 @@ let drums = stack(
 let bass = note("[c2 ~ c2 ~] [~ c2 c2 ~]")
   .s("sawtooth").lpf(500).gain(0.5)
 let chords = note("<[c4 eb4 g4] [ab3 c4 eb4] [bb3 d4 f4] [g3 bb3 d4]>")
-  .s("gm_pad_2_warm").gain(0.2).room(0.5)
+  .s("gm_pad_warm").gain(0.2).room(0.5)
 let melody = note("c5 [~ eb5] g5 [~ f5] eb5 [~ c5] bb4 [~ g4]")
   .s("gm_flute").gain(0.3).room(0.4).delay(0.2).delaytime(0.375)
 arrange(
@@ -674,13 +675,22 @@ Latin:    s("[bd ~ ~ bd] [~ ~ bd ~]")
 Halftime: s("bd ~ ~ ~ [~ sd] ~ ~ ~")
 Fills:    .every(8, s("bd sd [sd sd] [sd sd sd sd]"))`,
 
-  advanced: `# Strudel Advanced Features
+  visuals: `# Strudel Visuals (draw methods + Hydra shaders)
 
-## Visualization
-Add ONE visualization method to a pattern to see it animate live in the widget.
-The animation renders BEHIND the code (like strudel.cc) and appears automatically
-when your pattern includes a visual — the user can also toggle it with the
-"Visuals" button. This works inline in ext-apps hosts (Claude Desktop) — encourage it!
+Two independent visual layers render BEHIND the code in the widget (native
+strudel.cc look). Both appear automatically when your pattern uses them — the
+user can also toggle them with the "Visuals" button. Encourage visuals: they
+make the pattern legible and the widget feel alive.
+
+  Layer 1 — Strudel draw methods (2D canvas): .pianoroll(), .scope(), ...
+  Layer 2 — Hydra (WebGL shaders): await initHydra() then hydra code.
+
+Use them together: Hydra paints a moving background, the pianoroll draws the
+notes on top of it.
+
+## Layer 1: Strudel draw methods
+Add ONE draw method to a pattern (all of them share the same 2D canvas, so two
+at once fight over it).
 
 .pianoroll()              scrolling piano roll (best for melodies/chords)
 .pianoroll({ cycles: 4 }) show 4 cycles at once
@@ -701,13 +711,117 @@ note("c3 e3 g3 c4").s("sawtooth").lpf(2000).pianoroll()
   labels    1 = draw note-name labels
   fold      1 = collapse unused pitch rows
 
-### Important: one visual per pattern
-All visuals share a single canvas, so use only ONE visualization method per
-pattern. Two at once (e.g. .scope().pianoroll()) makes them fight over the same
-surface. .scope()/.spectrum() animate only while audio is playing;
-.pianoroll()/.punchcard() animate from the pattern's note schedule. Tip: the
-pianoroll updates live as the user edits and re-runs (Ctrl+Enter) — a great way
-to *see* what the code is doing.
+### Per-pattern colors
+.color("cyan") / .color("#ff7aa2") tints that pattern's notes in the pianoroll
+and its highlight in the code. Pattern it for movement: .color("<cyan magenta>").
+
+To draw ALL running patterns in one roll: all(pianoroll) on its own line.
+.scope()/.spectrum() animate only while audio plays; .pianoroll()/.punchcard()
+animate from the note schedule, so they update live as the user edits (Ctrl+Enter).
+
+## Layer 2: Hydra shader backgrounds
+Hydra (hydra.ojack.xyz) is a live-coding video synth. It is bundled with the
+REPL: put \`await initHydra()\` on the FIRST line, write hydra code, then your
+Strudel patterns. Hydra runs its own render loop, so it keeps animating between
+pattern re-evaluations.
+
+Rules:
+- \`await initHydra()\` must come first (it loads the engine; keep the await).
+- Exactly one output chain ending in .out(o0) is enough. No render() needed.
+- Keep it darkish / mid-contrast: the code is drawn over it with a scrim.
+- Hydra code is plain JavaScript — no mini-notation quotes around numbers.
+- Prefer H() (below) over detectAudio for sync — detectAudio listens to the
+  MICROPHONE (asks permission), not to Strudel's output.
+- Hydra + one Strudel draw method is fine; the roll draws on top of the shader.
+
+### Recipe: minimal moving background
+await initHydra()
+osc(8, 0.05, 0.9).rotate(0.3).kaleid(5).color(0.5, 0.35, 1).out(o0)
+
+s("bd*2 [~ sd] hh*4").bank("RolandTR909")
+
+### Recipe: pattern drives the shader with H()
+H(pattern) turns a Strudel pattern into a live value Hydra reads every frame,
+so the visual follows the SAME sequence the music plays.
+
+await initHydra()
+const seq = "<3 4 5 [6 7]>*2"
+shape(H(seq), 0.4, 0.05)
+  .rotate(() => time * 0.2)
+  .scale(1.4)
+  .color(0.9, 0.5, 1)
+  .out(o0)
+
+n(seq).scale("A:minor").s("piano").room(0.6)
+
+### Recipe: kick pulse
+Drive a parameter from a rhythm pattern (values 0–1). Wrap H() in an arrow
+function when you want to remap it.
+
+await initHydra()
+const pulse = "1 0 0.6 0 1 0 0.3 0.3"
+shape(6, () => 0.15 + 0.35 * H(pulse)(), 0.3)
+  .repeat(3, 3)
+  .modulateRotate(osc(4, 0.1), 0.4)
+  .color(0.2, 0.8, 1)
+  .out(o0)
+
+stack(
+  s("bd*2 [~ bd] bd*2 [~ bd]").bank("RolandTR808"),
+  s("~ cp").bank("RolandTR808"),
+  s("hh*8").gain(0.5)
+)
+
+### Recipe: post-process the pianoroll (feedStrudel)
+feedStrudel pipes the Strudel draw canvas into Hydra source s0, so you can
+warp, mirror, and trail the piano roll itself.
+
+await initHydra({ feedStrudel: true })
+src(s0)
+  .kaleid(4)
+  .modulate(noise(3, 0.2), 0.06)
+  .colorama(0.01)
+  .blend(o0, 0.65)   // feedback = trails
+  .out(o0)
+
+note("<[c3 e3 g3 b3] [a2 c3 e3 g3]>*2").s("sawtooth").lpf(1400).pianoroll({ cycles: 2 })
+
+### Recipe: slow ambient wash
+await initHydra()
+noise(2, 0.08)
+  .color(0.15, 0.25, 0.6)
+  .modulate(voronoi(3, 0.2), 0.3)
+  .blend(o0, 0.9)
+  .out(o0)
+
+note("<c3 e3 g3 b3>").s("gm_pad_warm").room(0.9).size(0.9).slow(2)
+
+### Hydra cheat-sheet (the parts that matter here)
+Sources:  osc(freq, sync, offset) noise(scale, speed) voronoi(scale, speed)
+          shape(sides, radius, smoothing) gradient(speed) solid(r, g, b) src(s0|o0)
+Color:    .color(r, g, b) .colorama(amt) .saturate(x) .hue(x) .invert() .luma(th)
+Geometry: .rotate(angle, speed) .scale(x) .kaleid(n) .repeat(x, y) .pixelate(x, y)
+          .scroll(x, y) .scrollX(x, speed)
+Combine:  .add(src, amt) .blend(src, amt) .mult(src) .diff(src) .mask(src)
+Modulate: .modulate(src, amt) .modulateRotate(src, amt) .modulateScale(src, amt)
+          .modulateKaleid(src, n) .modulateScrollX(src, amt)
+Live:     any number can be a function: () => time, () => Math.sin(time),
+          H("<0 1 2>") (pattern value), a.fft[0] (mic, detectAudio only)
+Output:   .out(o0)
+
+### Troubleshooting
+- "initHydra is not defined": the engine failed to load; ask the user to re-run.
+- Nothing visible: you probably forgot .out(o0), or the colors are too dark.
+- Choppy audio: simplify the shader (fewer modulate/kaleid stages).
+- The pattern used Hydra before but not now: the widget stops the old shader
+  automatically; add initHydra() again to bring it back.`,
+  advanced: `# Strudel Advanced Features
+
+## Visualization
+See the dedicated "visuals" topic for Strudel draw methods (.pianoroll(),
+.scope(), .spectrum() ...) and Hydra shader backgrounds (await initHydra()).
+Quick reminder: one Strudel draw method per pattern; Hydra can be layered
+underneath it.
 
 ## Loading Extra Samples
 Load additional sample packs at runtime:

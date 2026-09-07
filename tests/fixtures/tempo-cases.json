@@ -1,0 +1,74 @@
+[
+  {
+    "id": "nested",
+    "code": "setcps(120 / (60 * 4))\nnote(\"c3 e3 g3\")",
+    "bpm": 120,
+    "result": "transform"
+  },
+  {
+    "id": "comments",
+    "code": "// setcps(999)\nnote(\"c3\")",
+    "bpm": 90,
+    "result": "insert"
+  },
+  {
+    "id": "string",
+    "code": "const label = \"setcps(999)\";\nnote(\"c3\")",
+    "bpm": 100,
+    "result": "insert"
+  },
+  {
+    "id": "regex",
+    "code": "const r = /setcps\\(999\\)/;\nnote(\"c3\")",
+    "bpm": 100,
+    "result": "insert"
+  },
+  {
+    "id": "setcpm",
+    "code": "setcpm(30)\nnote(\"c3\")",
+    "bpm": 90,
+    "result": "transform"
+  },
+  {
+    "id": "multiple",
+    "code": "setcps(0.5); setcps(0.6); note(\"c3\")",
+    "bpm": 90,
+    "result": "reject"
+  },
+  {
+    "id": "nested-function",
+    "code": "function later(){setcps(0.5)}; note(\"c3\")",
+    "bpm": 90,
+    "result": "reject"
+  },
+  {
+    "id": "shadowed",
+    "code": "const setcps = x => x; setcps(0.5); note(\"c3\")",
+    "bpm": 90,
+    "result": "reject"
+  },
+  {
+    "id": "effectful",
+    "code": "setcps(getTempo()); note(\"c3\")",
+    "bpm": 90,
+    "result": "reject"
+  },
+  {
+    "id": "alias",
+    "code": "const tempo = setcps; note(\"c3\")",
+    "bpm": 90,
+    "result": "reject"
+  },
+  {
+    "id": "top-await",
+    "code": "await initHydra();\nsetcps(120/(60*4));\nnote(\"c3\")",
+    "bpm": 90,
+    "result": "transform"
+  },
+  {
+    "id": "template-expression",
+    "code": "const t = `${setcps(0.5)}`; note(\"c3\")",
+    "bpm": 90,
+    "result": "reject"
+  }
+]

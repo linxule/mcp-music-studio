@@ -14,6 +14,13 @@ import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { STYLE_NAMES } from "../music-logic.js";
 import { DEFAULT_ABC_NOTATION } from "../abc-guide.js";
+import { analyzeHarmony, HARMONY_TASKS } from "./harmony.js";
+import {
+  convertAbcToStrudel,
+  DEFAULT_STRUDEL_SOUND,
+  type AbcToStrudelArgs,
+  type ParseOnlyFn,
+} from "./abc-to-strudel.js";
 
 // -----------------------------------------------------------------------------
 // Resource URIs
@@ -48,7 +55,9 @@ export const SERVER_INSTRUCTIONS =
   "topic 'genres' for templates, 'styles' for accompaniment presets, 'instruments' for the list) " +
   "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'). Use search-music-docs only " +
   "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
-  '("C", "Am7") above the notes and set a style.';
+  '("C", "Am7") above the notes and set a style. ' +
+  "Call analyze-harmony before writing chord symbols for a style preset; " +
+  "convert-abc-to-strudel turns a scored melody into a live pattern.";
 
 // -----------------------------------------------------------------------------
 // Server identity — icon + website (emitted verbatim in serverInfo by both
@@ -194,7 +203,10 @@ export const playSheetInputSchema = z.object({
   title: z
     .string()
     .optional()
-    .describe("Piece title (overrides T: in ABC). Displayed in the widget header."),
+    .describe(
+      "Piece title (overrides T: in ABC). Shown in the widget header and used as " +
+        "the filename stem for the WAV/MIDI downloads.",
+    ),
   instrument: z
     .string()
     .optional()
@@ -219,17 +231,35 @@ export const playSheetInputSchema = z.object({
   swing: z
     .number()
     .min(0)
-    .max(100)
+    .max(75)
     .optional()
     .describe(
-      "Swing percentage (0-100). 0=straight, 33=light swing, 66=heavy swing. Great for jazz and blues.",
+      "Swing as the share of the beat given to its first half. " +
+        "50 = straight, 60 \u2248 3:2, 66 = triplet swing, 75 = maximum " +
+        "(dotted eighth + sixteenth). Anything at or below 50 is treated as no swing. " +
+        "Only takes effect in an x/4 or x/8 meter.",
+    ),
+  drumIntro: z
+    .number()
+    .int()
+    .min(0)
+    .max(8)
+    .optional()
+    .describe(
+      "Bars of count-in before the melody starts (0-8). " +
+        "Needs a style preset \u2014 the count-in is played by that style's drum kit, " +
+        "so without a style you get silent bars instead.",
     ),
   transpose: z
     .number()
+    .int()
     .min(-12)
     .max(12)
     .optional()
-    .describe("Transpose by semitones (-12 to 12). Positive=higher, negative=lower."),
+    .describe(
+      "Transpose by semitones (-12 to 12). Positive=higher, negative=lower. " +
+        "Rewrites the notation and the key signature, so the printed score matches what plays.",
+    ),
 });
 
 // -----------------------------------------------------------------------------
@@ -242,9 +272,11 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "128 GM instruments, built-in synths, and a full effects chain. " +
   "Patterns play in a REPL the user can edit directly. " +
   "Add .pianoroll() to a pattern to show a live piano-roll animation in the widget " +
-  "(or .punchcard()/.scope()/.spectrum() — use one visual per pattern). " +
+  "(or .punchcard()/.scope()/.spectrum() — one draw method per pattern). " +
+  "For a custom animated background, start the code with `await initHydra()` and write " +
+  "Hydra shader code (H(pattern) syncs it to the music) — see get-strudel-guide topic 'visuals'. " +
   "Use get-strudel-guide for genre templates, sound references, and advanced features " +
-  "like visualization, arrangement, and sample loading.";
+  "like arrangement and sample loading.";
 
 export const PLAY_LIVE_EXT_APPS_SUFFIX =
   "\n\nThe Strudel REPL renders inline with an editable code editor, " +
@@ -320,11 +352,13 @@ export const GET_STRUDEL_GUIDE_DESCRIPTION =
   "patterns (transformations, probability, euclidean, arrangement), " +
   "genres (complete templates: techno/house/dnb/ambient/jazz/lofi/synthwave), " +
   "tips (tempo, common mistakes, ABC↔Strudel crossover), " +
-  "advanced (visualization, sample loading, wavetables, ZZFX, continuous signals, chord voicings).";
+  "visuals (pianoroll/scope draw methods + Hydra shader backgrounds with recipes), " +
+  "advanced (sample loading, wavetables, ZZFX, continuous signals, chord voicings).";
 
 export const GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION =
   "Reference topic. Start with 'genres' for working templates, " +
-  "'sounds' for instruments, 'advanced' for visualization and sample loading.";
+  "'sounds' for instruments, 'visuals' for animations and Hydra backgrounds, " +
+  "'advanced' for sample loading.";
 
 // -----------------------------------------------------------------------------
 // search-music-docs — shared core (cache + key are injected per transport)
@@ -490,6 +524,126 @@ export async function searchMusicDocs(
       ],
     };
   }
+}
+
+// -----------------------------------------------------------------------------
+// analyze-harmony — music theory helper (no UI, pure computation)
+// -----------------------------------------------------------------------------
+
+export const ANALYZE_HARMONY_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+export const ANALYZE_HARMONY_DESCRIPTION =
+  "Music theory helper: name a chord from notes, guess the key, get a progression, " +
+  "or list what fits a key. Returns both the ABC chord-symbol spelling (for play-sheet-music) " +
+  "and the Strudel form (for play-live-pattern). " +
+  "Tasks: detect-chord (notes -> chord name + what to play next), " +
+  "detect-key (notes or chords -> best key + diatonic chords), " +
+  "suggest-progression (key [+ romanNumerals] -> chord symbols), " +
+  "scale-for-chord (chords -> the scale to improvise over each), " +
+  "key-chords (key -> every diatonic triad, seventh, and chord scale). " +
+  "Use it before writing chord symbols for a style preset, or to check a harmonization.";
+
+export const analyzeHarmonyInputSchema = z.object({
+  task: z
+    .enum(HARMONY_TASKS)
+    .describe(
+      "What to work out. detect-chord/detect-key need notes or chords; " +
+        "suggest-progression/key-chords need a key.",
+    ),
+  notes: z
+    .array(z.string())
+    .optional()
+    .describe('Note names, e.g. ["c4","e4","g4","b4"] or ["C","Eb","G"]. For detect-chord/detect-key.'),
+  chords: z
+    .array(z.string())
+    .optional()
+    .describe('Chord symbols, e.g. ["Dm7","G7","Cmaj7"]. For detect-key/scale-for-chord.'),
+  key: z
+    .string()
+    .optional()
+    .describe('Key, e.g. "C", "A minor", "F# major". For suggest-progression/key-chords.'),
+  romanNumerals: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Roman numerals to render in the key, e.g. ["ii7","V7","Imaj7"] or ["I","V","vi","IV"]. ' +
+        "Optional for suggest-progression — omit it to get common progressions instead.",
+    ),
+});
+
+/** Shared handler: identical text on both transports, never throws. */
+export function buildAnalyzeHarmonyResult(
+  args: z.infer<typeof analyzeHarmonyInputSchema>,
+): CallToolResult {
+  return { content: [{ type: "text", text: analyzeHarmony(args) }] };
+}
+
+// -----------------------------------------------------------------------------
+// convert-abc-to-strudel — bridge scored composition into live performance
+// -----------------------------------------------------------------------------
+
+export const CONVERT_ABC_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+export const CONVERT_ABC_DESCRIPTION =
+  "Turn an ABC melody into Strudel mini-notation so a scored piece can be remixed live. " +
+  "Returns runnable code — setcps() from the Q: tempo, one [...] bar group per bar inside " +
+  "note(\"<...>\"), plus a chord(\"<...>\").voicing() line when the ABC has chord symbols — " +
+  "then pass it to play-live-pattern. Durations become @ weights, rests become ~, " +
+  "triplets nest, and the key signature is folded into the note names. " +
+  "Lists what was lost (grace notes, dynamics, repeats, lyrics, other voices). " +
+  "Pick a single voice with `voice`; re-run per voice and stack() them for a full arrangement.";
+
+export const convertAbcInputSchema = z.object({
+  abcNotation: z.string().describe("ABC notation to convert (the same string you'd pass to play-sheet-music)."),
+  voice: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe(
+      "Which voice to convert, 1-based, counted across all staves (default 1). " +
+        "Multi-voice tunes report how many voices there are.",
+    ),
+  sound: z
+    .string()
+    .optional()
+    .describe(
+      `Strudel sound for the melody (default "${DEFAULT_STRUDEL_SOUND}"). ` +
+        "Use a GM soundfont name like gm_flute or gm_epiano1 — see get-strudel-guide topic 'sounds'.",
+    ),
+});
+
+/**
+ * Shared handler. The abcjs parser is injected so this module stays free of the
+ * abcjs import; each transport passes its own `ABCJS.parseOnly`.
+ */
+export function buildConvertAbcResult(
+  args: AbcToStrudelArgs,
+  parseOnly: ParseOnlyFn,
+): CallToolResult {
+  const result = convertAbcToStrudel(args, parseOnly);
+  if (!result.ok) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `${result.error}\n\nTip: use get-music-guide("abc-syntax") for notation reference.`,
+        },
+      ],
+    };
+  }
+  return { content: [{ type: "text", text: result.text }] };
 }
 
 // -----------------------------------------------------------------------------
