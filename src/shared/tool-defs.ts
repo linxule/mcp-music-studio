@@ -173,7 +173,10 @@ export const playSheetInputSchema = z.object({
   title: z
     .string()
     .optional()
-    .describe("Piece title (overrides T: in ABC). Displayed in the widget header."),
+    .describe(
+      "Piece title (overrides T: in ABC). Shown in the widget header and used as " +
+        "the filename stem for the WAV/MIDI downloads.",
+    ),
   instrument: z
     .string()
     .optional()
@@ -198,17 +201,35 @@ export const playSheetInputSchema = z.object({
   swing: z
     .number()
     .min(0)
-    .max(100)
+    .max(75)
     .optional()
     .describe(
-      "Swing percentage (0-100). 0=straight, 33=light swing, 66=heavy swing. Great for jazz and blues.",
+      "Swing as the share of the beat given to its first half. " +
+        "50 = straight, 60 \u2248 3:2, 66 = triplet swing, 75 = maximum " +
+        "(dotted eighth + sixteenth). Anything at or below 50 is treated as no swing. " +
+        "Only takes effect in an x/4 or x/8 meter.",
+    ),
+  drumIntro: z
+    .number()
+    .int()
+    .min(0)
+    .max(8)
+    .optional()
+    .describe(
+      "Bars of count-in before the melody starts (0-8). " +
+        "Needs a style preset \u2014 the count-in is played by that style's drum kit, " +
+        "so without a style you get silent bars instead.",
     ),
   transpose: z
     .number()
+    .int()
     .min(-12)
     .max(12)
     .optional()
-    .describe("Transpose by semitones (-12 to 12). Positive=higher, negative=lower."),
+    .describe(
+      "Transpose by semitones (-12 to 12). Positive=higher, negative=lower. " +
+        "Rewrites the notation and the key signature, so the printed score matches what plays.",
+    ),
 });
 
 // -----------------------------------------------------------------------------

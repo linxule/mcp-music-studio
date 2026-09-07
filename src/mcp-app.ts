@@ -20,11 +20,12 @@ import {
   SOUNDFONTS,
   STYLE_PRESETS,
   applyStyleToAbc,
+  buildSynthOptions,
   isStyleName,
   prepareToolInput,
-  soundFontSynthOptions,
   type SoundFontName,
 } from "./music-logic";
+import { transposeAbc } from "./abc-transpose";
 import { audioBufferToWavBase64 } from "./wav-encoder";
 import { bytesToBase64, sanitizeFileStem } from "./bytes-to-base64";
 import { VERSION } from "./version";
@@ -40,7 +41,9 @@ interface AppState {
   currentStyle: string;
   currentSoundFont: SoundFontName;
   currentAbc: string | null;
-  /** Synth options carried in from the tool call (swing, etc.). */
+  /** Explicit `title` argument from the tool call; outranks the ABC's T:. */
+  toolTitle: string | null;
+  /** Synth options carried in from the tool call (swing, drumIntro, …). */
   toolSynthOpts: Record<string, unknown>;
   highlightedEls: HTMLElement[];
 }
@@ -52,6 +55,7 @@ const state: AppState = {
   currentStyle: "",
   currentSoundFont: DEFAULT_SOUNDFONT,
   currentAbc: null,
+  toolTitle: null,
   toolSynthOpts: {},
   highlightedEls: [],
 };
@@ -59,14 +63,16 @@ const state: AppState = {
 /**
  * Every synth option the widget currently applies — the single place that
  * decides what `setTune()` and `getMidiFile()` both see, so the exported MIDI
- * matches what is playing.
+ * matches what is playing. The assembly itself lives in `music-logic` as the
+ * pure `buildSynthOptions()`, which is what `tests/synth-options.test.ts`
+ * exercises (this wrapper needs a DOM, that function doesn't).
  */
 function currentSynthOptions(): Record<string, unknown> {
-  return {
-    program: INSTRUMENTS[state.currentInstrument] ?? 0,
-    ...soundFontSynthOptions(state.currentSoundFont),
-    ...state.toolSynthOpts,
-  };
+  return buildSynthOptions({
+    instrument: state.currentInstrument,
+    soundFont: state.currentSoundFont,
+    toolSynthOptions: state.toolSynthOpts,
+  });
 }
 
 // =============================================================================
@@ -75,6 +81,7 @@ function currentSynthOptions(): Record<string, unknown> {
 
 const mainEl = document.querySelector(".main") as HTMLElement;
 const statusEl = document.getElementById("status")!;
+const pieceTitleEl = document.getElementById("piece-title")!;
 const sheetMusicEl = document.getElementById("sheet-music")!;
 const audioControlsEl = document.getElementById("audio-controls")!;
 const instrumentSelectorEl = document.getElementById("instrument-selector")!;
@@ -273,10 +280,30 @@ let downloadSupported = false;
 // Whether the host supports widget→chat messages (ui/message). Gates the Send button.
 let messageSupported = false;
 
-function extractTitle(abc: string | null): string {
-  if (!abc) return "music";
-  const match = abc.match(/T:\s*(.+)/);
-  return match ? sanitizeFileStem(match[1]) : "music";
+/** The tune's T: header, if it has one. */
+function abcHeaderTitle(abc: string | null): string | null {
+  const match = abc?.match(/^T:\s*(.+)$/m);
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * What the widget calls this piece: the tool's `title` argument if given,
+ * else the ABC's T: header. Drives the header label and both download stems.
+ */
+function displayTitle(): string {
+  return state.toolTitle ?? abcHeaderTitle(state.currentAbc) ?? "";
+}
+
+/** Filename stem for the WAV/MIDI exports. */
+function downloadStem(): string {
+  return sanitizeFileStem(displayTitle());
+}
+
+/** Paint the title into the header, hiding the slot when there is no title. */
+function renderTitle(): void {
+  const title = displayTitle();
+  pieceTitleEl.textContent = title;
+  pieceTitleEl.hidden = title.length === 0;
 }
 
 downloadBtn.addEventListener("click", async () => {
@@ -292,7 +319,7 @@ downloadBtn.addEventListener("click", async () => {
   downloadBtn.textContent = "...";
   try {
     const wavBase64 = audioBufferToWavBase64(audioBuffer);
-    const title = extractTitle(state.currentAbc);
+    const title = downloadStem();
     await app.downloadFile({
       contents: [
         {
@@ -360,7 +387,7 @@ midiBtn.addEventListener("click", async () => {
     if (!midi || midi.length === 0) {
       throw new Error("MIDI generation produced no data");
     }
-    const title = extractTitle(state.currentAbc);
+    const title = downloadStem();
     await app.downloadFile({
       contents: [
         {
@@ -466,6 +493,7 @@ async function renderAbc(
     }
 
     state.currentAbc = abcNotation;
+    renderTitle();
     sheetMusicEl.innerHTML = "";
     audioControlsEl.innerHTML = "";
 
@@ -532,7 +560,8 @@ appInstance = app;
 // Handle complete tool input
 app.ontoolinput = (params) => {
   console.info("Received tool input:", params);
-  const preparedInput = prepareToolInput(params.arguments ?? {});
+  const args = params.arguments ?? {};
+  const preparedInput = prepareToolInput(args);
 
   state.currentInstrument = preparedInput.instrument;
   instrumentSelect.value = preparedInput.instrument;
@@ -540,10 +569,15 @@ app.ontoolinput = (params) => {
   state.currentStyle = preparedInput.style;
   styleSelect.value = preparedInput.style;
 
+  const argTitle = typeof args.title === "string" ? args.title.trim() : "";
+  state.toolTitle = argTitle.length > 0 ? argTitle : null;
+
   if (preparedInput.abcNotation) {
-    renderAbc(preparedInput.abcNotation, preparedInput.synthOptions).catch(
-      console.error,
-    );
+    // Transpose the notation itself (score + key signature), not just the MIDI
+    // stream, and do it once here so later style/instrument re-renders reuse
+    // the already-transposed ABC rather than shifting it again.
+    const abc = transposeAbc(preparedInput.abcNotation, preparedInput.transpose);
+    renderAbc(abc, preparedInput.synthOptions).catch(console.error);
   } else {
     setStatus("No ABC notation provided", true);
   }
@@ -560,6 +594,15 @@ app.ontoolinputpartial = (params) => {
 
   // Keep state current during streaming so UI controls work
   state.currentAbc = abcNotation;
+
+  // Name the piece as soon as either source of a title arrives, so the header
+  // fills in while the score is still streaming rather than snapping in at the
+  // end. Cheap: renderTitle only touches one text node.
+  const partialTitle = params.arguments?.title;
+  if (typeof partialTitle === "string" && partialTitle.trim().length > 0) {
+    state.toolTitle = partialTitle.trim();
+  }
+  renderTitle();
 
   // Apply style from partial input if provided
   const style = params.arguments?.style as string | undefined;
