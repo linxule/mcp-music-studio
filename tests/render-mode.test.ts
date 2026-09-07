@@ -41,13 +41,54 @@ describe("render modes", () => {
     expect(resourceBlock?.resource?.text).toContain("abcjs");
   });
 
-  it("auto mode returns only text (UI rendered via _meta resource, not inline)", async () => {
+  it("auto mode inlines no player HTML (the UI comes from the _meta resource)", async () => {
     await connect("auto");
     const res = await client.callTool({
       name: "play-sheet-music",
       arguments: { abcNotation: "X:1\nK:C\nCDEF|" },
     });
     const content = res.content as ContentBlock[];
-    expect(content.every((c) => c.type === "text")).toBe(true);
+    // The point of auto mode: the ~600 KB player never travels in the result.
+    expect(content.some((c) => c.type === "resource")).toBe(false);
+    // Text, plus the click-to-play resource_link for hosts with no widget.
+    expect(content.every((c) => c.type === "text" || c.type === "resource_link")).toBe(
+      true,
+    );
+  });
+
+  it("auto mode links a short score to the hosted player", async () => {
+    await connect("auto");
+    const res = await client.callTool({
+      name: "play-sheet-music",
+      arguments: { abcNotation: "X:1\nK:C\nCDEF|" },
+    });
+    const content = res.content as ContentBlock[];
+    const link = content.find((c) => c.type === "resource_link") as
+      | { uri: string; name: string; mimeType: string }
+      | undefined;
+    expect(link?.uri).toContain("/score?a=");
+    expect(link?.name).toBe("Play in browser");
+    expect(link?.mimeType).toBe("text/html");
+
+    const text = (content[0] as { text: string }).text;
+    expect(text).toContain("▶ Play in browser: ");
+    expect(text).toContain(link!.uri);
+    // The dead-end wording is gone precisely because there is now a link.
+    expect(text).not.toContain("nothing has played yet");
+  });
+
+  it("auto mode omits the link when the score is too long for a URL", async () => {
+    await connect("auto");
+    const res = await client.callTool({
+      name: "play-sheet-music",
+      // No KV on the stdio server, so an oversized score gets no link at all.
+      arguments: { abcNotation: `X:1\nK:C\n${"CDEF|".repeat(1000)}` },
+    });
+    const content = res.content as ContentBlock[];
+    expect(content.some((c) => c.type === "resource_link")).toBe(false);
+    // ...and the honest tail stays, because nothing can play it.
+    expect((content[0] as { text: string }).text).toContain(
+      "nothing has played yet",
+    );
   });
 });

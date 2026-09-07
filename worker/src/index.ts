@@ -59,8 +59,29 @@ import {
   WORKER_SERVER_ICONS,
   WEBSITE_URL,
   uiToolMeta,
+  attachPlayLink,
 } from "../../src/shared/tool-defs.js";
 import type { ParseOnlyFn } from "../../src/shared/abc-to-strudel.js";
+import {
+  DEFAULT_SHARE_ORIGIN,
+  SHARE_PARAM_MAX_BYTES,
+  SHARE_TTL_SECONDS,
+  ShareParamError,
+  buildPlayerCsp,
+  buildShareQueryUrl,
+  buildStoredShareUrl,
+  isValidShareId,
+  parsePlaySearchParams,
+  parseScoreSearchParams,
+  shareId,
+  shareKvKey,
+  type SharePayload,
+} from "../../src/shared/share-url.js";
+import { ABCJS_CDN_BASE } from "../../src/abcjs-version.js";
+// The two standalone player pages `--render-mode browser` writes to disk. Both
+// generators are node-free (see src/open-in-browser.ts for the half that isn't).
+import { generatePlayerHtml } from "../../src/browser-fallback.js";
+import { generateStrudelPlayerHtml } from "../../src/strudel-browser-fallback.js";
 
 // Bundled ext-apps HTML (wrangler imports as text via rules config)
 import sheetMusicHtml from "../../dist/mcp-app.html";
@@ -180,11 +201,182 @@ export const WIDGET_BUILD = {
 } as const;
 
 // =============================================================================
+// Share links ("Tier 3") — a URL that actually plays
+// =============================================================================
+//
+// Hosts without ext-apps (Claude Code, CLIs, mobile web, anything hitting this
+// Worker from a terminal) never render the widget, so a play tool used to end
+// at "nothing has played yet". These routes serve the same standalone pages the
+// local `--render-mode browser` path writes to disk, and the tool results link
+// to them.
+//
+// Short patterns travel in the query string — stateless, no storage, and the
+// link keeps working across a KV wipe. Anything longer is stored in KV under a
+// content digest and served from /p/<id>. The namespace is the existing
+// DOCS_CACHE, keyed under a `share:` prefix, so no new binding is needed.
+
+/** Response headers shared by every hosted player page. */
+function playerResponse(html: string, csp: string): Response {
+  return new Response(html, {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": csp,
+      // A share link is somebody's scratch pattern, not a page to index.
+      "x-robots-tag": "noindex, nofollow",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      // Content-addressed, or fully self-describing — safe to cache.
+      "cache-control": "public, max-age=3600",
+    },
+  });
+}
+
+// Derived from the very constants the widgets declare, so a domain added for a
+// widget reaches the hosted page too. The sheet page additionally loads abcjs
+// itself from jsDelivr (the widget bundles it, hence no resourceDomains there).
+const STRUDEL_PAGE_CSP = buildPlayerCsp(STRUDEL_CSP);
+const SHEET_PAGE_CSP = buildPlayerCsp({
+  resourceDomains: [new URL(ABCJS_CDN_BASE).origin],
+  connectDomains: SHEET_CSP.connectDomains,
+});
+
+function renderSharePayload(payload: SharePayload): Response {
+  return payload.kind === "play"
+    ? playerResponse(generateStrudelPlayerHtml(payload.args), STRUDEL_PAGE_CSP)
+    : playerResponse(generatePlayerHtml(payload.args), SHEET_PAGE_CSP);
+}
+
+function shareError(err: unknown): Response {
+  const status = err instanceof ShareParamError ? err.status : 400;
+  const message =
+    err instanceof ShareParamError ? err.message : "Malformed share link.";
+  return new Response(message, {
+    status,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "x-robots-tag": "noindex",
+    },
+  });
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/**
+ * Validate an untrusted share payload down to the exact fields the generators
+ * read. Anything else is dropped rather than stored — a share must never become
+ * a way to smuggle extra keys into a page generator.
+ */
+function coerceSharePayload(raw: unknown): SharePayload {
+  const body = raw as { kind?: unknown; args?: unknown } | null;
+  const args = (body?.args ?? {}) as Record<string, unknown>;
+
+  const str = (
+    v: unknown,
+    field: string,
+    required = false,
+  ): string | undefined => {
+    if (v === undefined || v === null) {
+      if (required) throw new ShareParamError(`Missing "${field}".`, 400);
+      return undefined;
+    }
+    if (typeof v !== "string") {
+      throw new ShareParamError(`"${field}" must be a string.`, 400);
+    }
+    if (byteLength(v) > SHARE_PARAM_MAX_BYTES) {
+      throw new ShareParamError(`"${field}" exceeds the size limit.`, 413);
+    }
+    return v;
+  };
+  const num = (v: unknown, field: string): number | undefined => {
+    if (v === undefined || v === null) return undefined;
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      throw new ShareParamError(`"${field}" must be a number.`, 400);
+    }
+    return v;
+  };
+
+  if (body?.kind === "play") {
+    return {
+      kind: "play",
+      args: {
+        code: str(args.code, "code", true)!,
+        bpm: num(args.bpm, "bpm"),
+        title: str(args.title, "title"),
+        autoplay: typeof args.autoplay === "boolean" ? args.autoplay : undefined,
+      },
+    };
+  }
+  if (body?.kind === "score") {
+    return {
+      kind: "score",
+      args: {
+        abcNotation: str(args.abcNotation, "abcNotation", true)!,
+        title: str(args.title, "title"),
+        instrument: str(args.instrument, "instrument"),
+        style: str(args.style, "style"),
+        tempo: num(args.tempo, "tempo"),
+        swing: num(args.swing, "swing"),
+        drumIntro: num(args.drumIntro, "drumIntro"),
+        transpose: num(args.transpose, "transpose"),
+      },
+    };
+  }
+  throw new ShareParamError('"kind" must be "play" or "score".', 400);
+}
+
+/** Store a payload under its content digest. Returns its /p/<id> URL. */
+async function storeShare(
+  env: Env,
+  payload: SharePayload,
+  origin: string,
+): Promise<string> {
+  const id = await shareId(payload);
+  await env.DOCS_CACHE.put(shareKvKey(id), JSON.stringify(payload), {
+    expirationTtl: SHARE_TTL_SECONDS,
+  });
+  return buildStoredShareUrl(id, origin);
+}
+
+/**
+ * The URL a tool result should link to: the stateless query-string form when the
+ * pattern fits, otherwise a stored share. Never throws — a share link is a bonus,
+ * and a KV hiccup must not turn a working tool call into a failed one.
+ */
+async function shareUrlFor(
+  env: Env,
+  origin: string,
+  payload: SharePayload,
+): Promise<string | undefined> {
+  try {
+    const direct = buildShareQueryUrl(payload, origin);
+    if (direct) return direct;
+    if (!env.DOCS_CACHE) return undefined;
+    return await storeShare(env, payload, origin);
+  } catch {
+    return undefined;
+  }
+}
+
+// =============================================================================
 // Server factory — creates a fresh McpServer per request (stateless)
 // =============================================================================
 
-/** Exported so tests/transport-parity.test.ts can build it over InMemoryTransport. */
-export function createMusicServer(env: Env): McpServer {
+/**
+ * Exported so tests/transport-parity.test.ts can build it over InMemoryTransport.
+ *
+ * `origin` is the incoming request's own origin, so a share link points at the
+ * host the caller actually reached (a custom domain, a preview deployment, or
+ * localhost during `wrangler dev`) instead of a hard-coded one. It only affects
+ * tool RESULTS — every listing is origin-independent, which is what keeps the
+ * two transports comparable in the parity test.
+ */
+export function createMusicServer(
+  env: Env,
+  origin: string = DEFAULT_SHARE_ORIGIN,
+): McpServer {
   const server = new McpServer(
     {
       name: "Music Studio",
@@ -251,9 +443,11 @@ export function createMusicServer(env: Env): McpServer {
       annotations: PLAY_TOOL_ANNOTATIONS,
       _meta: uiToolMeta(SHEET_RESOURCE_URI),
     },
-    async () => ({
-      content: [{ type: "text" as const, text: PLAY_SHEET_NEUTRAL_TEXT }],
-    }),
+    async (args) =>
+      attachPlayLink(
+        { content: [{ type: "text" as const, text: PLAY_SHEET_NEUTRAL_TEXT }] },
+        await shareUrlFor(env, origin, { kind: "score", args }),
+      ),
   );
 
   // ===========================================================================
@@ -268,7 +462,11 @@ export function createMusicServer(env: Env): McpServer {
       annotations: PLAY_TOOL_ANNOTATIONS,
       _meta: uiToolMeta(STRUDEL_RESOURCE_URI),
     },
-    async (args) => buildPlayLiveResult(args),
+    async (args) =>
+      attachPlayLink(
+        buildPlayLiveResult(args),
+        await shareUrlFor(env, origin, { kind: "play", args }),
+      ),
   );
 
   // ===========================================================================
@@ -405,6 +603,101 @@ export default {
       );
     }
 
+    // -------------------------------------------------------------------------
+    // Hosted player pages
+    // -------------------------------------------------------------------------
+
+    // GET /play?c=<base64url>&bpm=&title=&autoplay=  — Strudel live pattern
+    if (url.pathname === "/play") {
+      try {
+        return renderSharePayload({
+          kind: "play",
+          args: parsePlaySearchParams(url.searchParams),
+        });
+      } catch (err) {
+        return shareError(err);
+      }
+    }
+
+    // GET /score?a=<base64url>&instrument=&style=&…  — ABC sheet music
+    if (url.pathname === "/score") {
+      try {
+        return renderSharePayload({
+          kind: "score",
+          args: parseScoreSearchParams(url.searchParams),
+        });
+      } catch (err) {
+        return shareError(err);
+      }
+    }
+
+    // GET /p/<id> — a share too long for a query string, read back from KV.
+    if (url.pathname.startsWith("/p/")) {
+      const id = url.pathname.slice(3);
+      if (!isValidShareId(id)) {
+        return shareError(new ShareParamError("Not a share id.", 400));
+      }
+      if (!env.DOCS_CACHE) {
+        return new Response("Share storage unavailable.", { status: 503 });
+      }
+      const stored = await env.DOCS_CACHE.get(shareKvKey(id));
+      if (stored === null) {
+        // Either never stored, or the 30-day TTL expired.
+        return new Response("This share link has expired.", {
+          status: 404,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
+      }
+      try {
+        // Re-validated on the way out: KV holds what we wrote, but a payload
+        // that reaches a page generator should never be trusted on provenance.
+        return renderSharePayload(coerceSharePayload(JSON.parse(stored)));
+      } catch (err) {
+        return shareError(err);
+      }
+    }
+
+    // POST /share — store a payload too long for a query string, get its URL.
+    //
+    // The play tools reach this logic in-process (`shareUrlFor`); the route
+    // exists so a non-MCP caller can mint the same link. It is unauthenticated,
+    // so it is capped hard: 64 KiB of body, and only the handful of fields the
+    // generators read survive `coerceSharePayload`. Ids are content digests, so
+    // repeated posts of the same pattern rewrite one key rather than growing KV.
+    if (url.pathname === "/share") {
+      if (request.method !== "POST") {
+        return new Response("Method not allowed", {
+          status: 405,
+          headers: { allow: "POST" },
+        });
+      }
+      const declared = Number(request.headers.get("content-length") ?? "0");
+      if (declared > SHARE_PARAM_MAX_BYTES) {
+        return shareError(new ShareParamError("Share body is too large.", 413));
+      }
+      if (!env.DOCS_CACHE) {
+        return new Response("Share storage unavailable.", { status: 503 });
+      }
+      try {
+        const body = await request.text();
+        if (byteLength(body) > SHARE_PARAM_MAX_BYTES) {
+          throw new ShareParamError("Share body is too large.", 413);
+        }
+        const payload = coerceSharePayload(JSON.parse(body));
+        const shareUrl =
+          buildShareQueryUrl(payload, url.origin) ??
+          (await storeShare(env, payload, url.origin));
+        return new Response(JSON.stringify({ url: shareUrl }), {
+          headers: { "content-type": "application/json" },
+        });
+      } catch (err) {
+        if (err instanceof SyntaxError) {
+          return shareError(new ShareParamError("Body is not JSON.", 400));
+        }
+        return shareError(err);
+      }
+    }
+
     if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
       trackRequest(env, ctx, request);
 
@@ -412,7 +705,7 @@ export default {
       // enableJsonResponse is required for Claude Desktop Connectors to render
       // ext-apps UI — the default SSE response format isn't parsed correctly
       // by the Connector client for resources/read calls.
-      const server = createMusicServer(env);
+      const server = createMusicServer(env, url.origin);
       // `agents` bundles its own @modelcontextprotocol/sdk copy, so its McpServer
       // type is nominally distinct from ours (separate private fields). Safe at runtime.
       const handler = createMcpHandler(

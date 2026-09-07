@@ -136,7 +136,11 @@ export function decodeShareParam(param: string): string {
 
   try {
     // fatal: a mangled param must fail loudly rather than decode to U+FFFD soup.
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    // ignoreBOM: keep the bytes as written, so encode→decode is exact. (Both
+    // flags are spelled out because workerd's types require ignoreBOM.)
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      bytes,
+    );
   } catch {
     throw new ShareParamError("Share payload is not valid UTF-8.", 400);
   }
