@@ -334,13 +334,16 @@ export function applyStyleToAbc(abc: string, style: string): string {
 /**
  * Replace/insert the Q: tempo header.
  *
+ * Named for the header it writes so it can't be confused with
+ * `shared/tempo.ts`'s `injectTempo`, which rewrites Strudel's `setcps`.
+ *
  * Transposition used to ride along here as `%%MIDI transpose N`, which shifted
  * only the MIDI stream — the printed score and its K: stayed put, so what you
  * saw was a semitone-shifted lie about what you heard. Transposition now goes
  * through `transposeAbc()` (ABCJS `strTranspose`), which rewrites the notes and
  * the key signature in the ABC itself.
  */
-export function injectTempo(
+export function injectTempoHeader(
   abc: string,
   options: Pick<MusicToolInput, "tempo">,
 ): string {
@@ -393,7 +396,7 @@ export function prepareToolInput(input: MusicToolInput): PreparedToolInput {
   return {
     ...settings,
     abcNotation: input.abcNotation
-      ? injectTempo(input.abcNotation, input)
+      ? injectTempoHeader(input.abcNotation, input)
       : undefined,
     transpose: input.transpose,
     synthOptions,

@@ -13,7 +13,7 @@ import {
   STYLE_NAMES,
   type StyleName,
   findInstrument,
-  injectTempo,
+  injectTempoHeader,
   normalizeDrumIntro,
   normalizeSwing,
 } from "./music-logic.js";
@@ -81,7 +81,7 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
   // dropping the quotes turned `name="Melody Line"` into a voice called
   // `Melody`. Removed; tests/browser-fallback.test.ts pins the quoted form.)
   let abc = transposeAbc(options.abcNotation, options.transpose);
-  abc = injectTempo(abc, { tempo: options.tempo });
+  abc = injectTempoHeader(abc, { tempo: options.tempo });
 
   // Resolve instrument
   const instrumentName = options.instrument
