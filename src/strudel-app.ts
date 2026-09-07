@@ -285,10 +285,13 @@ function syncVizCanvasSize(): void {
 // -----------------------------------------------------------------------------
 // Hydra (WebGL) layer
 //
-// @strudel/hydra@1.3.0's initHydra() reads (verified against the live bundle):
+// @strudel/hydra@1.3.0's initHydra() reads (verified against the live bundle,
+// and pinned by tests/hydra-contract.test.ts against the real source):
 //
 //   async function initHydra(opts = {}) {
-//     ...
+//     if (latestOptions && JSON.stringify(latestOptions) !== JSON.stringify(opts))
+//       document.getElementById("hydra-canvas")?.remove();
+//     latestOptions = opts;
 //     if (!document.getElementById("hydra-canvas")) {
 //       const { canvas } = getDrawContext("hydra-canvas", { contextType: "webgl", ... });
 //       await import("https://unpkg.com/hydra-synth");
@@ -297,6 +300,12 @@ function syncVizCanvasSize(): void {
 //     }
 //     return hydra;
 //   }
+//
+// Note what the guard covers: with UNCHANGED options the whole block is skipped
+// and the existing instance is returned as-is. So anything that block does —
+// the feedStrudel hide, and the engine construction that starts a render loop —
+// must be re-established by our wrapper, or a second Ctrl+Enter on the same
+// pattern silently loses it.
 //
 // So the ELEMENT'S EXISTENCE is Hydra's own "already initialised" flag. Any
 // pre-created #hydra-canvas turns initHydra() into a silent no-op: no engine, no
@@ -398,8 +407,10 @@ function syncHydraCanvasSize(w: number, h: number): void {
 //   1. initHydra() gives us no other handle on the HydraRenderer — the module
 //      keeps it in a closure and `globalThis.hydra` is undefined — so wrapping
 //      is the only way to reach hush()/regl for teardown. It also lets us pin
-//      hydra-synth (upstream defaults to an UNVERSIONED unpkg URL) and re-assert
-//      the resolution once the engine is actually up.
+//      hydra-synth (upstream defaults to an UNVERSIONED unpkg URL), take over
+//      the render loop (autoLoop, see HYDRA_OWNED_LOOP), re-assert the
+//      resolution once the engine is actually up, and re-apply the feedStrudel
+//      display rule that upstream only runs on a FRESH init.
 //   2. H(p) is `() => reify(p).queryArc(t, t)[0].value` — a zero-width query,
 //      so a pattern with a rest under the playhead yields NO hap and it throws
 //      "Cannot read properties of undefined". Hydra calls it every frame, so one
@@ -411,6 +422,75 @@ function syncHydraCanvasSize(w: number, h: number): void {
 
 /** Pinned so a hydra-synth release can't silently change under the widget. */
 const HYDRA_SYNTH_CDN = "https://unpkg.com/hydra-synth@1.4.0";
+
+/**
+ * hydra-synth 1.4.0's constructor ends with
+ *
+ *     if (autoLoop) loop(this.tick.bind(this)).start()
+ *
+ * and throws the `raf-loop` handle away — it is stored on nothing, so there is
+ * no `hydra.loop` / `hydra.synth.loop` to stop. Destroying regl therefore leaves
+ * an external requestAnimationFrame loop calling tick() forever against a dead
+ * context (verified against src/hydra-synth.js at hydra-synth@1.4.0; the repo
+ * publishes no tags, and main's package.json reads 1.4.0).
+ *
+ * So we opt out of that loop and drive tick() ourselves — one rAF we own and
+ * can cancel on teardown.
+ */
+const HYDRA_OWNED_LOOP = { autoLoop: false } as const;
+
+let hydraTickRaf: number | null = null;
+let hydraTickLast = 0;
+
+function startHydraTickLoop(): void {
+  if (hydraTickRaf !== null) return;
+  hydraTickLast = performance.now();
+  const frame = (now: number) => {
+    const instance = hydraInstance;
+    if (!instance) {
+      hydraTickRaf = null;
+      return;
+    }
+    const dt = now - hydraTickLast;
+    hydraTickLast = now;
+    try {
+      // dt in ms, exactly what raf-loop hands upstream's own tick.
+      instance.tick(dt);
+    } catch {
+      // hydra-synth already swallows shader errors inside tick(); this catches
+      // the teardown race where regl is destroyed mid-frame.
+    }
+    hydraTickRaf = requestAnimationFrame(frame);
+  };
+  hydraTickRaf = requestAnimationFrame(frame);
+}
+
+function stopHydraTickLoop(): void {
+  if (hydraTickRaf !== null) {
+    cancelAnimationFrame(hydraTickRaf);
+    hydraTickRaf = null;
+  }
+}
+
+/**
+ * Re-apply the `feedStrudel` display rule after initHydra() returns.
+ *
+ * With feedStrudel, upstream textures the 2D draw canvas into s0 and hides it
+ * (`getDrawContext().canvas.style.display = 'none'`) so the piano roll shows
+ * only through the shader. But that line lives INSIDE the
+ * `if (!document.getElementById('hydra-canvas'))` block: a repeat evaluation
+ * with unchanged options reuses the instance and never runs it, while
+ * setHydraActive() has just cleared the inline display — so the raw piano roll
+ * reappeared on top of its own processed output. Apply the rule from here,
+ * where the effective options are known, on both the fresh and reused paths.
+ */
+function applyHydraFeedMode(feedStrudel: boolean): void {
+  if (feedStrudel) {
+    vizCanvas.style.display = "none";
+  } else {
+    vizCanvas.style.removeProperty("display");
+  }
+}
 
 /** Strudel globals that hydra-synth's makeGlobal clobbers. */
 const CLOBBERED_GLOBALS = ["time", "speed", "shape", "hush"] as const;
@@ -470,10 +550,15 @@ function installEvalScopeHooks(): void {
   snapshotStrudelGlobals();
 
   defineWrappedGlobal("initHydra", (original) => async (options: Record<string, unknown> = {}) => {
-    // `src` first so an explicit caller value still wins. It is destructured out
-    // by initHydra and never reaches the Hydra constructor.
+    // `src` and `autoLoop` first so an explicit caller value still wins. Both
+    // are destructured out by initHydra / the HydraRenderer constructor.
     hydraEverInitialised = true;
-    const instance = await original({ src: HYDRA_SYNTH_CDN, ...options });
+    const merged: Record<string, unknown> = {
+      src: HYDRA_SYNTH_CDN,
+      ...HYDRA_OWNED_LOOP,
+      ...options,
+    };
+    const instance = await original(merged);
     if (instance) hydraInstance = instance;
     // The MutationObserver has normally adopted and sized the canvas already
     // (it fires during getDrawContext, before initHydra's `await import`, which
@@ -484,6 +569,11 @@ function installEvalScopeHooks(): void {
       adoptHydraCanvas(canvas);
       syncHydraCanvasSize(replSection.clientWidth, replSection.clientHeight);
     }
+    // Both of these must run on the REUSED path too: upstream skips its whole
+    // init block when the options are unchanged, so neither the feedStrudel
+    // hide nor (had we left autoLoop on) a render loop would be re-established.
+    applyHydraFeedMode(merged.feedStrudel === true);
+    if (instance) startHydraTickLoop();
     return instance;
   });
 
@@ -547,6 +637,9 @@ function restoreStrudelGlobals(): void {
  * The next initHydra() builds a fresh renderer, having found no #hydra-canvas.
  */
 function stopHydraInstance(): void {
+  // Ours to cancel — upstream's autoLoop is off (see HYDRA_OWNED_LOOP). Stop it
+  // BEFORE regl goes away so no frame renders into a destroyed context.
+  stopHydraTickLoop();
   const instance = hydraInstance;
   hydraInstance = null;
   if (!instance) return;
@@ -565,13 +658,16 @@ function setHydraActive(active: boolean): void {
   // A previous `initHydra({ feedStrudel: true })` sets an INLINE display:none on
   // #test-canvas to hide the piano roll it is texturing. Nothing upstream ever
   // undoes that, so a later .pianoroll() pattern would draw into a hidden
-  // canvas. Clear it on every staging; feedStrudel re-applies it if still asked.
+  // canvas. Clear it on every staging; the initHydra wrapper re-applies it via
+  // applyHydraFeedMode() if still asked — on the reused path as well as the
+  // fresh one, which is the part upstream gets wrong.
   vizCanvas.style.removeProperty("display");
   if (active) return;
 
   // Pattern no longer uses Hydra: stop its render loop so a stale shader doesn't
   // keep the GPU busy under the code. Leave NO #hydra-canvas behind — its
   // presence is what would make the next initHydra() a no-op.
+  stopHydraTickLoop();
   try {
     (window as any).clearHydra?.();
   } catch { /* hydra never initialised — nothing to clear */ }

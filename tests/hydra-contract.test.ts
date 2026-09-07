@@ -207,6 +207,8 @@ describe("@strudel/hydra initHydra() contract", () => {
   function load() {
     class FakeHydra {
       config: Record<string, unknown>;
+      // feedStrudel calls hydra.synth.s0.init({ src: canvas }).
+      synth = { s0: { init() {} } };
       constructor(config: Record<string, unknown>) {
         this.config = config;
         constructed.push(config);
@@ -282,6 +284,43 @@ describe("@strudel/hydra initHydra() contract", () => {
     // the widget's teardown depends on (it must leave NO canvas behind).
     await initHydra();
     expect(constructed).toHaveLength(2);
+  });
+
+  it("REUSES the instance on unchanged options — skipping the feedStrudel hide", async () => {
+    // Why src/strudel-app.ts re-applies the display rule itself
+    // (applyHydraFeedMode) instead of trusting initHydra: everything inside the
+    // `if (!#hydra-canvas)` block — the hide AND the engine construction that
+    // starts a render loop — is skipped when the options are byte-identical.
+    // A second Ctrl+Enter on the same pattern therefore left the raw piano roll
+    // painting over its own processed output.
+    const { initHydra } = load();
+    const opts = { feedStrudel: true, src: "https://unpkg.com/hydra-synth@1.4.0" };
+
+    await initHydra({ ...opts });
+    const drawCanvas = dom.document.getElementById("test-canvas") as StubCanvas;
+    expect(drawCanvas.style.display).toBe("none");
+    expect(constructed).toHaveLength(1);
+
+    // The widget clears the inline display on every staging, then re-evaluates.
+    drawCanvas.style.display = "";
+    await initHydra({ ...opts });
+
+    expect(constructed).toHaveLength(1); // reused: no new engine…
+    expect(drawCanvas.style.display).toBe(""); // …and nobody re-hid the canvas.
+  });
+
+  it("passes autoLoop through to the HydraRenderer constructor", async () => {
+    // hydra-synth 1.4.0 ends its constructor with
+    //   if (autoLoop) loop(this.tick.bind(this)).start()
+    // and keeps no handle on that raf-loop, so destroying regl cannot stop it.
+    // The widget passes autoLoop:false and drives tick() from a rAF it owns —
+    // which only works if initHydra forwards the flag instead of eating it.
+    const { initHydra } = load();
+    await initHydra({ autoLoop: false, src: "https://unpkg.com/hydra-synth@1.4.0" });
+    expect(constructed[0]).toMatchObject({ autoLoop: false });
+    // src / feedStrudel / contextType / pixelRatio / pixelated ARE destructured
+    // out; anything else reaches the constructor verbatim.
+    expect(constructed[0]).not.toHaveProperty("src");
   });
 
   it("resets when the options change, so feedStrudel can be toggled", async () => {
