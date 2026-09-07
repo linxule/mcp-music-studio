@@ -46,7 +46,14 @@ const container = document.getElementById("strudel-container")!;
 let editorEl: HTMLElement | null = null;
 let currentCode = "";
 let isPlaying = false;
-let cdnLoaded = false;
+
+/**
+ * Bumped by every renderPattern() and by teardown. Async work reads its own
+ * generation back after each `await`: if it no longer matches, a newer tool
+ * input (or the host discarding the widget) has taken over and the superseded
+ * run must stop touching the DOM rather than racing the current one.
+ */
+let renderGeneration = 0;
 
 /**
  * A viewer who asked for less motion gets no AUTO-revealed backdrop and no
@@ -87,7 +94,6 @@ let lastRenderArgs: Record<string, unknown> | null = null;
 
 // Recording state
 let mediaRecorder: MediaRecorder | null = null;
-let recordedChunks: Blob[] = [];
 let isRecording = false;
 let recordingStream: MediaStream | null = null;
 // The master-output node the tap is connected to, and the tap destination,
@@ -144,23 +150,40 @@ let soundfontWarning = false;
  *
  * So the editor owns the single prebake and we observe its promise for the
  * soundfont warning (watchPrebake below).
+ *
+ * SINGLE-FLIGHT: one shared promise, not a "loaded" boolean. The boolean was
+ * only set in the script's onload, so two overlapping callers (a streaming boot
+ * and a tool input, or two tool inputs in a row) each saw `false`, each appended
+ * a <script src=…> for the 1.7MB bundle and each raced to define the same custom
+ * element. Everyone now awaits the same promise; a rejection clears it so the
+ * CDN-retry affordance can genuinely retry.
  */
+let cdnLoad: Promise<void> | null = null;
+
 async function loadStrudelCDN(): Promise<void> {
-  if (cdnLoaded) return;
-  return new Promise<void>((resolve, reject) => {
+  if (cdnLoad) return cdnLoad;
+  cdnLoad = new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
     script.src = STRUDEL_CDN;
     script.onload = () => {
-      cdnLoaded = true;
-      // The console watch can go in immediately; the eval-scope globals
-      // (initHydra, H, …) are only published when <strudel-editor> builds its
-      // REPL, so installEvalScopeHooks() is retried from the evaluate hook.
       installConsoleWatch();
+      // The eval-scope globals (initHydra, H, …) are only published once
+      // <strudel-editor> builds its REPL — which is exactly why the accessors go
+      // in NOW: their setters catch that publish. Waiting for the globals to
+      // exist meant the first evaluation of a session ran unwrapped.
+      installEvalScopeHooks();
       resolve();
     };
-    script.onerror = () => reject(new Error("Failed to load Strudel REPL"));
+    script.onerror = () => {
+      script.remove();
+      reject(new Error("Failed to load Strudel REPL"));
+    };
     document.head.appendChild(script);
   });
+  cdnLoad.catch(() => {
+    cdnLoad = null;
+  });
+  return cdnLoad;
 }
 
 /**
@@ -190,10 +213,44 @@ function updatePlayState(playing: boolean) {
   }
 }
 
-// Tempo injection is shared with the browser fallback (src/shared/tempo.ts):
-// one documented policy, no regex that corrupts nested parens.
-function injectBpm(code: string, bpm: number): string {
-  return injectTempo(code, bpm).code;
+// =============================================================================
+// Tempo  (`bpm` tool parameter)
+//
+// Injection is shared with the browser fallback (src/shared/tempo.ts): one
+// documented policy, no regex that corrupts nested parens. Three of its four
+// branches put the tempo INTO the source (replaced / inserted /
+// inserted-ambiguous). The fourth, "unchanged-ambiguous", deliberately returns
+// the code byte for byte — the pattern binds or aliases `setcps` itself, so a
+// prepended call would land in a temporal dead zone (ReferenceError) or call
+// the pattern's own function.
+//
+// For that branch the requested tempo can only reach the pattern through
+// Strudel's runtime API, so we apply it after each evaluation settles via
+// `editor.repl.setCps(cps)` (a method on @strudel/core's repl) and say so, in
+// the status line and to the model — a tempo silently not applied is worse than
+// one applied late.
+// =============================================================================
+
+/** cps to force after each evaluation, or null when the source carries it. */
+let runtimeCps: number | null = null;
+
+function applyRuntimeTempo(): boolean {
+  if (runtimeCps === null) return false;
+  const cps = runtimeCps;
+  try {
+    const repl = getEditor()?.repl;
+    if (typeof repl?.setCps === "function") {
+      repl.setCps(cps);
+      return true;
+    }
+    // Older/newer REPL shapes: the eval-scope global does the same thing.
+    const setcps = (window as any).setcps;
+    if (typeof setcps === "function") {
+      setcps(cps);
+      return true;
+    }
+  } catch { /* the pattern still plays, just at its own tempo */ }
+  return false;
 }
 
 function waitForEditor(timeout = 8000): Promise<any> {
@@ -285,10 +342,13 @@ function syncVizCanvasSize(): void {
 // -----------------------------------------------------------------------------
 // Hydra (WebGL) layer
 //
-// @strudel/hydra@1.3.0's initHydra() reads (verified against the live bundle):
+// @strudel/hydra@1.3.0's initHydra() reads (verified against the live bundle,
+// and pinned by tests/hydra-contract.test.ts against the real source):
 //
 //   async function initHydra(opts = {}) {
-//     ...
+//     if (latestOptions && JSON.stringify(latestOptions) !== JSON.stringify(opts))
+//       document.getElementById("hydra-canvas")?.remove();
+//     latestOptions = opts;
 //     if (!document.getElementById("hydra-canvas")) {
 //       const { canvas } = getDrawContext("hydra-canvas", { contextType: "webgl", ... });
 //       await import("https://unpkg.com/hydra-synth");
@@ -297,6 +357,12 @@ function syncVizCanvasSize(): void {
 //     }
 //     return hydra;
 //   }
+//
+// Note what the guard covers: with UNCHANGED options the whole block is skipped
+// and the existing instance is returned as-is. So anything that block does —
+// the feedStrudel hide, and the engine construction that starts a render loop —
+// must be re-established by our wrapper, or a second Ctrl+Enter on the same
+// pattern silently loses it.
 //
 // So the ELEMENT'S EXISTENCE is Hydra's own "already initialised" flag. Any
 // pre-created #hydra-canvas turns initHydra() into a silent no-op: no engine, no
@@ -398,8 +464,10 @@ function syncHydraCanvasSize(w: number, h: number): void {
 //   1. initHydra() gives us no other handle on the HydraRenderer — the module
 //      keeps it in a closure and `globalThis.hydra` is undefined — so wrapping
 //      is the only way to reach hush()/regl for teardown. It also lets us pin
-//      hydra-synth (upstream defaults to an UNVERSIONED unpkg URL) and re-assert
-//      the resolution once the engine is actually up.
+//      hydra-synth (upstream defaults to an UNVERSIONED unpkg URL), take over
+//      the render loop (autoLoop, see HYDRA_OWNED_LOOP), re-assert the
+//      resolution once the engine is actually up, and re-apply the feedStrudel
+//      display rule that upstream only runs on a FRESH init.
 //   2. H(p) is `() => reify(p).queryArc(t, t)[0].value` — a zero-width query,
 //      so a pattern with a rest under the playhead yields NO hap and it throws
 //      "Cannot read properties of undefined". Hydra calls it every frame, so one
@@ -411,6 +479,75 @@ function syncHydraCanvasSize(w: number, h: number): void {
 
 /** Pinned so a hydra-synth release can't silently change under the widget. */
 const HYDRA_SYNTH_CDN = "https://unpkg.com/hydra-synth@1.4.0";
+
+/**
+ * hydra-synth 1.4.0's constructor ends with
+ *
+ *     if (autoLoop) loop(this.tick.bind(this)).start()
+ *
+ * and throws the `raf-loop` handle away — it is stored on nothing, so there is
+ * no `hydra.loop` / `hydra.synth.loop` to stop. Destroying regl therefore leaves
+ * an external requestAnimationFrame loop calling tick() forever against a dead
+ * context (verified against src/hydra-synth.js at hydra-synth@1.4.0; the repo
+ * publishes no tags, and main's package.json reads 1.4.0).
+ *
+ * So we opt out of that loop and drive tick() ourselves — one rAF we own and
+ * can cancel on teardown.
+ */
+const HYDRA_OWNED_LOOP = { autoLoop: false } as const;
+
+let hydraTickRaf: number | null = null;
+let hydraTickLast = 0;
+
+function startHydraTickLoop(): void {
+  if (hydraTickRaf !== null) return;
+  hydraTickLast = performance.now();
+  const frame = (now: number) => {
+    const instance = hydraInstance;
+    if (!instance) {
+      hydraTickRaf = null;
+      return;
+    }
+    const dt = now - hydraTickLast;
+    hydraTickLast = now;
+    try {
+      // dt in ms, exactly what raf-loop hands upstream's own tick.
+      instance.tick(dt);
+    } catch {
+      // hydra-synth already swallows shader errors inside tick(); this catches
+      // the teardown race where regl is destroyed mid-frame.
+    }
+    hydraTickRaf = requestAnimationFrame(frame);
+  };
+  hydraTickRaf = requestAnimationFrame(frame);
+}
+
+function stopHydraTickLoop(): void {
+  if (hydraTickRaf !== null) {
+    cancelAnimationFrame(hydraTickRaf);
+    hydraTickRaf = null;
+  }
+}
+
+/**
+ * Re-apply the `feedStrudel` display rule after initHydra() returns.
+ *
+ * With feedStrudel, upstream textures the 2D draw canvas into s0 and hides it
+ * (`getDrawContext().canvas.style.display = 'none'`) so the piano roll shows
+ * only through the shader. But that line lives INSIDE the
+ * `if (!document.getElementById('hydra-canvas'))` block: a repeat evaluation
+ * with unchanged options reuses the instance and never runs it, while
+ * setHydraActive() has just cleared the inline display — so the raw piano roll
+ * reappeared on top of its own processed output. Apply the rule from here,
+ * where the effective options are known, on both the fresh and reused paths.
+ */
+function applyHydraFeedMode(feedStrudel: boolean): void {
+  if (feedStrudel) {
+    vizCanvas.style.display = "none";
+  } else {
+    vizCanvas.style.removeProperty("display");
+  }
+}
 
 /** Strudel globals that hydra-synth's makeGlobal clobbers. */
 const CLOBBERED_GLOBALS = ["time", "speed", "shape", "hush"] as const;
@@ -449,31 +586,70 @@ function snapshotStrudelGlobals(): void {
  * was back). An accessor turns every republish into a call to our setter, which
  * re-wraps the incoming original instead of losing to it.
  */
+const WRAPPED_MARK = "__musicStudioWrapped";
+
+function isWrapped(value: unknown): boolean {
+  return typeof value === "function" && (value as any)[WRAPPED_MARK] === true;
+}
+
 function defineWrappedGlobal(key: string, wrap: (original: any) => any): void {
   const w = window as any;
-  let exposed = typeof w[key] === "function" ? wrap(w[key]) : w[key];
+  const apply = (value: any) => {
+    if (typeof value !== "function" || isWrapped(value)) return value;
+    const wrapped = wrap(value);
+    try {
+      Object.defineProperty(wrapped, WRAPPED_MARK, { value: true, configurable: true });
+    } catch { /* exotic function — the re-check below just re-wraps it */ }
+    return wrapped;
+  };
+  // Reading through any accessor already installed, so re-asserting is a no-op
+  // rather than a double-wrap.
+  let exposed = apply(w[key]);
   Object.defineProperty(w, key, {
     configurable: true,
     enumerable: true,
     get: () => exposed,
     set: (value) => {
-      exposed = typeof value === "function" ? wrap(value) : value;
+      exposed = apply(value);
     },
   });
 }
 
+/**
+ * Install the accessors, EAGERLY and repeatedly.
+ *
+ * This used to bail out unless `window.initHydra` was already a function — and
+ * on a cold widget it isn't. The REPL publishes its eval scope asynchronously
+ * after <strudel-editor> is constructed, so both call sites (prepareEditor and
+ * the top of the evaluate hook) ran too early on the FIRST evaluation and the
+ * hooks only landed from the second one onward. Measured consequence: the first
+ * `await initHydra()` of a session ran unwrapped, so the HydraRenderer was
+ * constructed with hydra-synth's default `autoLoop: true` and left an
+ * unstoppable raf-loop behind, and the first pattern's `H()` could still throw
+ * on a rest.
+ *
+ * The accessor was always meant to handle "not published yet" — its setter
+ * wraps whatever arrives. So define it whether or not the global exists, from
+ * the moment the bundle loads, and re-assert if a later publish used
+ * defineProperty (which replaces an accessor instead of calling its setter).
+ */
 function installEvalScopeHooks(): void {
   const w = window as any;
-  if (evalScopeHooked || typeof w.initHydra !== "function") return;
+  if (evalScopeHooked && isWrapped(w.initHydra) && isWrapped(w.H)) return;
   evalScopeHooked = true;
 
   snapshotStrudelGlobals();
 
   defineWrappedGlobal("initHydra", (original) => async (options: Record<string, unknown> = {}) => {
-    // `src` first so an explicit caller value still wins. It is destructured out
-    // by initHydra and never reaches the Hydra constructor.
+    // `src` and `autoLoop` first so an explicit caller value still wins. Both
+    // are destructured out by initHydra / the HydraRenderer constructor.
     hydraEverInitialised = true;
-    const instance = await original({ src: HYDRA_SYNTH_CDN, ...options });
+    const merged: Record<string, unknown> = {
+      src: HYDRA_SYNTH_CDN,
+      ...HYDRA_OWNED_LOOP,
+      ...options,
+    };
+    const instance = await original(merged);
     if (instance) hydraInstance = instance;
     // The MutationObserver has normally adopted and sized the canvas already
     // (it fires during getDrawContext, before initHydra's `await import`, which
@@ -484,6 +660,11 @@ function installEvalScopeHooks(): void {
       adoptHydraCanvas(canvas);
       syncHydraCanvasSize(replSection.clientWidth, replSection.clientHeight);
     }
+    // Both of these must run on the REUSED path too: upstream skips its whole
+    // init block when the options are unchanged, so neither the feedStrudel
+    // hide nor (had we left autoLoop on) a render loop would be re-established.
+    applyHydraFeedMode(merged.feedStrudel === true);
+    if (instance) startHydraTickLoop();
     return instance;
   });
 
@@ -547,6 +728,9 @@ function restoreStrudelGlobals(): void {
  * The next initHydra() builds a fresh renderer, having found no #hydra-canvas.
  */
 function stopHydraInstance(): void {
+  // Ours to cancel — upstream's autoLoop is off (see HYDRA_OWNED_LOOP). Stop it
+  // BEFORE regl goes away so no frame renders into a destroyed context.
+  stopHydraTickLoop();
   const instance = hydraInstance;
   hydraInstance = null;
   if (!instance) return;
@@ -565,13 +749,16 @@ function setHydraActive(active: boolean): void {
   // A previous `initHydra({ feedStrudel: true })` sets an INLINE display:none on
   // #test-canvas to hide the piano roll it is texturing. Nothing upstream ever
   // undoes that, so a later .pianoroll() pattern would draw into a hidden
-  // canvas. Clear it on every staging; feedStrudel re-applies it if still asked.
+  // canvas. Clear it on every staging; the initHydra wrapper re-applies it via
+  // applyHydraFeedMode() if still asked — on the reused path as well as the
+  // fresh one, which is the part upstream gets wrong.
   vizCanvas.style.removeProperty("display");
   if (active) return;
 
   // Pattern no longer uses Hydra: stop its render loop so a stale shader doesn't
   // keep the GPU busy under the code. Leave NO #hydra-canvas behind — its
   // presence is what would make the next initHydra() a no-op.
+  stopHydraTickLoop();
   try {
     (window as any).clearHydra?.();
   } catch { /* hydra never initialised — nothing to clear */ }
@@ -1159,11 +1346,73 @@ function reportToModel(text: string): void {
     .catch(() => { /* context updates are best-effort */ });
 }
 
+// -----------------------------------------------------------------------------
+// Playback-state reports
+//
+// Evaluation reports itself (reportEvaluation below). What used to go
+// unreported is everything that stops playback WITHOUT an evaluation: the user
+// pressing Stop, a pattern calling hush(), the scheduler falling over. Those
+// only flipped the Play button, so the model's last known state stayed
+// "playing" — and it would answer questions about a silent widget as if the
+// music were still running.
+//
+// One bounded message per real transition: coalesced by a 500ms debounce (the
+// `update` event can arrive in bursts), and suppressed entirely when the state
+// is the one already reported. Never per frame.
+// -----------------------------------------------------------------------------
+
+const MODEL_STATE_DEBOUNCE_MS = 500;
+
+let modelStateTimer: ReturnType<typeof setTimeout> | null = null;
+/** Playing-state the model has been told about, so we only send transitions. */
+let lastReportedPlaying: boolean | null = null;
+/** Error text from the last failed evaluation, carried into stop reports. */
+let lastEvalErrorText: string | null = null;
+
+function cancelStateReport(): void {
+  if (modelStateTimer !== null) {
+    clearTimeout(modelStateTimer);
+    modelStateTimer = null;
+  }
+}
+
+/** Note a state we have just reported ourselves, so the debounce won't repeat it. */
+function markReportedPlaying(playing: boolean, errorText: string | null): void {
+  cancelStateReport();
+  lastReportedPlaying = playing;
+  lastEvalErrorText = errorText;
+}
+
+/** Report a stop/start that no evaluation announced. Debounced, deduplicated. */
+function scheduleStateReport(): void {
+  if (!canUpdateModelContext) return;
+  cancelStateReport();
+  modelStateTimer = setTimeout(() => {
+    modelStateTimer = null;
+    const playing = isSchedulerStarted();
+    if (playing === lastReportedPlaying) return;
+    lastReportedPlaying = playing;
+    const errorNote = lastEvalErrorText ? ` (last error: ${lastEvalErrorText})` : "";
+    reportToModel(
+      playing
+        ? `Strudel widget: playing again${errorNote}`
+        : `Strudel widget: playback stopped — nothing is sounding now${errorNote}`,
+    );
+  }, MODEL_STATE_DEBOUNCE_MS);
+}
+
 /** Status line + model context for one finished evaluation. */
-function reportEvaluation(code: string, thrown: Error | null): void {
+function reportEvaluation(
+  code: string,
+  thrown: Error | null,
+  tempoAtRuntime = false,
+): void {
   const err = thrown ?? readEvalError();
   const soundfontNote = soundfontWarning
     ? " (soundfonts unavailable — audio may be silent)"
+    : "";
+  const tempoNote = tempoAtRuntime
+    ? " — tempo applied at runtime: the pattern defines its own setcps"
     : "";
 
   if (err) {
@@ -1175,13 +1424,18 @@ function reportEvaluation(code: string, thrown: Error | null): void {
     isPlaying = playing;
     playBtn.classList.toggle("playing", playing);
     playBtn.textContent = playing ? "Playing" : "Play";
-    reportToModel(`Strudel widget: pattern failed to evaluate — ${msg}`);
+    markReportedPlaying(playing, msg);
+    reportToModel(
+      `Strudel widget: pattern failed to evaluate — ${msg}` +
+        (playing ? " (the previous pattern is still playing)" : " (nothing is playing)"),
+    );
     return;
   }
 
   updatePlayState(isSchedulerStarted());
-  if (soundfontWarning && isPlaying) {
-    setStatus(`Playing...${soundfontNote}`, "playing");
+  markReportedPlaying(isPlaying, null);
+  if ((soundfontWarning || tempoAtRuntime) && isPlaying) {
+    setStatus(`Playing...${soundfontNote}${tempoNote}`, "playing");
   }
   const intent = detectViz(code);
   const layers = [
@@ -1190,7 +1444,7 @@ function reportEvaluation(code: string, thrown: Error | null): void {
   ].filter(Boolean);
   reportToModel(
     `Strudel widget: ${isPlaying ? "playing" : "loaded, not playing"}` +
-      ` (visuals: ${layers.length ? layers.join(" + ") : "none"})${soundfontNote}`,
+      ` (visuals: ${layers.length ? layers.join(" + ") : "none"})${soundfontNote}${tempoNote}`,
   );
 }
 
@@ -1230,16 +1484,21 @@ function installEvaluateHook(editor: any): void {
     // Strudel's). A widget whose FIRST pattern uses Hydra therefore has no
     // Strudel value to put back — nothing observable depends on it.
     snapshotStrudelGlobals();
-    reportEvaluation(code, null);
+    // The pattern owns the `setcps` name, so the requested bpm could not be
+    // written into the source — apply it now that the scheduler is up.
+    const tempoAtRuntime = applyRuntimeTempo();
+    reportEvaluation(code, null, tempoAtRuntime);
   };
 }
 
 /**
  * <strudel-editor> dispatches an `update` CustomEvent carrying the whole repl
  * state whenever it changes. We report outcomes from the evaluate wrapper (one
- * message per evaluation), so this listener only keeps the Play button honest
- * for state changes we did not initiate — a pattern calling hush(), say. It
- * deliberately leaves the status text alone so it can't overwrite an error.
+ * message per evaluation), so this listener handles the state changes we did
+ * NOT initiate — a pattern calling hush(), the scheduler stopping — keeping the
+ * Play button honest and telling the model the music has stopped (debounced, and
+ * skipped when the evaluate report already said so). It deliberately leaves the
+ * status text alone so it can't overwrite an error.
  */
 function installStateListener(element: HTMLElement): void {
   if ((element as any).__musicStudioStateHooked) return;
@@ -1250,12 +1509,60 @@ function installStateListener(element: HTMLElement): void {
     isPlaying = started;
     playBtn.classList.toggle("playing", started);
     playBtn.textContent = started ? "Playing" : "Play";
+    scheduleStateReport();
   });
 }
 
 // =============================================================================
 // Recording — tap Strudel's audio graph via MediaRecorder
+//
+// Container negotiation: WebM/Opus is what Chromium gives us, but Safari and
+// WKWebView (which is what an ext-apps host is on macOS/iOS) record MP4/AAC and
+// support NO webm at all — the old code tried two webm types and gave up, so
+// "Record" was simply dead there. Walk a candidate list through
+// MediaRecorder.isTypeSupported() instead, and keep whichever type was actually
+// negotiated so decodeAudioData() is handed a blob whose type is true.
+//
+// A recording also owns its own chunk array. The chunks used to live in a
+// module-level `recordedChunks` that startRecording() reset, so a late
+// `ondataavailable` from the PREVIOUS recorder appended into the new
+// recording's buffer and the WAV came out spliced.
 // =============================================================================
+
+/** Tried in order; the first supported one wins. "" = let the UA choose. */
+const RECORDING_MIME_CANDIDATES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/ogg;codecs=opus",
+  "audio/mp4;codecs=mp4a.40.2", // Safari / WKWebView
+  "audio/mp4",
+  "",
+];
+
+/** Bounds. A recording is decoded whole into memory, so it cannot be open-ended. */
+const MAX_RECORDING_MINUTES = 5;
+const MAX_RECORDING_MS = MAX_RECORDING_MINUTES * 60_000;
+const MAX_RECORDING_BYTES = 50 * 1024 * 1024;
+
+interface Recording {
+  chunks: Blob[];
+  mimeType: string;
+  bytes: number;
+}
+
+/** The recorder currently filling, and the finished one the ↓ button exports. */
+let activeRecording: Recording | null = null;
+let lastRecording: Recording | null = null;
+let recordingLimitTimer: ReturnType<typeof setTimeout> | null = null;
+
+function pickRecordingMime(): string {
+  const canCheck = typeof MediaRecorder?.isTypeSupported === "function";
+  for (const mime of RECORDING_MIME_CANDIDATES) {
+    if (mime === "") break;
+    if (!canCheck || MediaRecorder.isTypeSupported(mime)) return mime;
+  }
+  return ""; // no named type claimed support — let the UA pick its default
+}
 
 function setupRecordingTap(): MediaStream | null {
   try {
@@ -1288,40 +1595,80 @@ function startRecording(): void {
     return;
   }
 
-  recordedChunks = [];
+  const mime = pickRecordingMime();
   try {
-    mediaRecorder = new MediaRecorder(recordingStream, {
-      mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm",
-    });
+    mediaRecorder = mime
+      ? new MediaRecorder(recordingStream, { mimeType: mime })
+      : new MediaRecorder(recordingStream);
   } catch {
-    setStatus("Recording not supported", "error");
+    setStatus("Recording not supported on this browser", "error");
     return;
   }
 
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data.size > 0) recordedChunks.push(e.data);
+  // Closed over, so a late callback from a PREVIOUS recorder fills its own
+  // buffer and can never splice itself into this recording.
+  const recorder = mediaRecorder;
+  const recording: Recording = {
+    chunks: [],
+    mimeType: recorder.mimeType || mime || "audio/webm",
+    bytes: 0,
+  };
+  activeRecording = recording;
+
+  recorder.ondataavailable = (e) => {
+    if (e.data.size === 0) return;
+    recording.chunks.push(e.data);
+    recording.bytes += e.data.size;
+    if (recording.bytes >= MAX_RECORDING_BYTES && activeRecording === recording) {
+      stopRecording("size");
+    }
   };
 
-  mediaRecorder.onstop = () => {
-    downloadBtn.disabled = recordedChunks.length === 0;
+  recorder.onstop = () => {
+    // The negotiated type is only reliably readable once recording has begun.
+    recording.mimeType = recorder.mimeType || recording.mimeType;
+    if (recording.chunks.length > 0) lastRecording = recording;
+    downloadBtn.disabled = !lastRecording;
   };
 
-  mediaRecorder.start(100);
+  recorder.start(100);
   isRecording = true;
   recordBtn.classList.add("recording");
   recordBtn.textContent = "Stop Rec";
   setStatus("Recording...", "playing");
+
+  if (recordingLimitTimer !== null) clearTimeout(recordingLimitTimer);
+  recordingLimitTimer = setTimeout(() => {
+    recordingLimitTimer = null;
+    if (activeRecording === recording) stopRecording("time");
+  }, MAX_RECORDING_MS);
 }
 
-function stopRecording(): void {
+/** `reason` is set when a bound tripped, so the status can say why it ended. */
+function stopRecording(reason?: "time" | "size"): void {
+  if (recordingLimitTimer !== null) {
+    clearTimeout(recordingLimitTimer);
+    recordingLimitTimer = null;
+  }
   if (mediaRecorder?.state === "recording") {
     mediaRecorder.stop();
   }
+  if (!isRecording) return;
   isRecording = false;
+  activeRecording = null;
   recordBtn.classList.remove("recording");
   recordBtn.textContent = "Record";
+  if (reason === "time") {
+    setStatus(
+      `Recording stopped at the ${MAX_RECORDING_MINUTES}-minute limit — ready to download`,
+      "normal",
+    );
+    return;
+  }
+  if (reason === "size") {
+    setStatus("Recording stopped at the size limit — ready to download", "normal");
+    return;
+  }
   if (isPlaying) {
     setStatus("Playing...", "playing");
   } else {
@@ -1330,7 +1677,8 @@ function stopRecording(): void {
 }
 
 async function handleDownload(): Promise<void> {
-  if (recordedChunks.length === 0) return;
+  const recording = lastRecording;
+  if (!recording || recording.chunks.length === 0) return;
   if (!canDownload) {
     setStatus("Download not supported on this host", "error");
     return;
@@ -1339,8 +1687,9 @@ async function handleDownload(): Promise<void> {
   downloadBtn.disabled = true;
   downloadBtn.textContent = "...";
   try {
-    // Decode recorded WebM → AudioBuffer → WAV for consistent format
-    const blob = new Blob(recordedChunks, { type: "audio/webm" });
+    // Decode the recording (WebM/Opus, MP4/AAC, whatever was negotiated) →
+    // AudioBuffer → WAV, so the exported format is the same everywhere.
+    const blob = new Blob(recording.chunks, { type: recording.mimeType });
     const arrayBuf = await blob.arrayBuffer();
     const audioCtx: AudioContext | undefined = (window as any).getAudioContext?.();
     if (!audioCtx) throw new Error("No audio context");
@@ -1363,7 +1712,7 @@ async function handleDownload(): Promise<void> {
     setStatus(`Download failed: ${(err as Error).message}`, "error");
   } finally {
     downloadBtn.textContent = "↓";
-    downloadBtn.disabled = recordedChunks.length === 0;
+    downloadBtn.disabled = !lastRecording;
   }
 }
 
@@ -1454,10 +1803,15 @@ let pendingPartialCode = "";
 
 function startStreamingBoot(): Promise<void> {
   if (streamingBoot) return streamingBoot;
+  const generation = renderGeneration;
   streamingBoot = (async () => {
     try {
       await loadStrudelCDN();
+      if (generation !== renderGeneration) return;
       const editor = await prepareEditor();
+      // A real tool input (or a teardown) landed while we were booting — it owns
+      // the buffer now, so don't write a half-streamed pattern over it.
+      if (generation !== renderGeneration) return;
       if (pendingPartialCode) editor.setCode(pendingPartialCode);
     } catch {
       // Speculative: renderPattern() runs the real load with its own error
@@ -1473,6 +1827,11 @@ async function renderPattern(args: Record<string, unknown>) {
   const code = args.code as string | undefined;
   if (!code) return;
 
+  // Every overlapping tool input gets its own generation; the older one stops
+  // at its next checkpoint instead of writing into a buffer it no longer owns.
+  const generation = ++renderGeneration;
+  const superseded = () => generation !== renderGeneration;
+
   lastRenderArgs = args;
   const bpm = args.bpm as number | undefined;
   const autoplay = args.autoplay as boolean | undefined;
@@ -1485,18 +1844,28 @@ async function renderPattern(args: Record<string, unknown>) {
     // let it finish rather than racing it with a second <strudel-editor>.
     if (streamingBoot) {
       await streamingBoot.catch(() => { /* falls through to the real load */ });
+      if (superseded()) return;
     }
     try {
       await loadStrudelCDN();
     } catch (cdnErr) {
+      if (superseded()) return;
       setStatus("Failed to load Strudel — click Retry", "error");
       showCdnError();
       return;
     }
+    if (superseded()) return;
 
     let finalCode = code;
+    runtimeCps = null;
     if (bpm) {
-      finalCode = injectBpm(finalCode, bpm);
+      const tempo = injectTempo(finalCode, bpm);
+      finalCode = tempo.code;
+      // String compare, so this still builds against a tempo.ts whose policy
+      // union predates the branch.
+      if ((tempo.policy as string) === "unchanged-ambiguous") {
+        runtimeCps = tempo.cps;
+      }
     }
     // Fold in the `visuals` preset AFTER the tempo injection, so a Hydra recipe
     // keeps `await initHydra()` on the first line where the engine expects it.
@@ -1517,6 +1886,7 @@ async function renderPattern(args: Record<string, unknown>) {
 
     setStatus("Initializing...");
     const editor = await prepareEditor();
+    if (superseded()) return;
 
     editor.setCode(finalCode);
 
@@ -1538,6 +1908,7 @@ async function renderPattern(args: Record<string, unknown>) {
       setStatus(`Ready — click Play or Ctrl+Enter${soundfontNote}`, "normal");
     }
   } catch (err) {
+    if (superseded()) return;
     setStatus(`Error: ${(err as Error).message}`, "error");
   }
 }
@@ -1554,6 +1925,8 @@ playBtn.addEventListener("click", async () => {
       if (isRecording) stopRecording();
       editor.stop();
       updatePlayState(false);
+      // The model was last told "playing"; say the music has stopped.
+      scheduleStateReport();
     } else {
       // evaluate() always runs the LIVE buffer (editor.code), so a pattern the
       // user edited in the REPL is what plays. The hook stages its visuals and
@@ -1600,10 +1973,46 @@ sendBtn.addEventListener("click", async () => {
   }
 });
 
-// Fullscreen toggle
+// Fullscreen toggle.
+//
+// The call was fire-and-forget, so a host that declines (or doesn't implement
+// the method at all — it answers -32601) produced an unhandled rejection and no
+// feedback: the button looked broken. Await it, report what the host actually
+// granted, and leave the inline layout working either way — fullscreen is an
+// enhancement to the stage, never a requirement for it.
 fullscreenBtn.addEventListener("click", () => {
-  app.requestDisplayMode({ mode: "fullscreen" });
+  void toggleDisplayMode();
 });
+
+/** The mode the host says we are in; drives the toggle and the button state. */
+let displayMode: "inline" | "fullscreen" | "pip" = "inline";
+let availableDisplayModes: readonly string[] | null = null;
+
+function syncFullscreenButton(): void {
+  const isFullscreen = displayMode === "fullscreen";
+  fullscreenBtn.classList.toggle("active", isFullscreen);
+  fullscreenBtn.setAttribute("aria-pressed", String(isFullscreen));
+  fullscreenBtn.title = isFullscreen ? "Leave fullscreen" : "Toggle fullscreen";
+}
+
+async function toggleDisplayMode(): Promise<void> {
+  const wanted = displayMode === "fullscreen" ? "inline" : "fullscreen";
+  if (availableDisplayModes && !availableDisplayModes.includes(wanted)) {
+    setStatus(`This host doesn't offer ${wanted} mode — using the inline layout`, "normal");
+    return;
+  }
+  try {
+    const result = await app.requestDisplayMode({ mode: wanted });
+    // Trust what was GRANTED, not what was asked for.
+    if (result?.mode) displayMode = result.mode;
+    syncFullscreenButton();
+    // Fullscreen changes the frame, so the backdrop needs a new backing store.
+    requestAnimationFrame(syncVizCanvasSize);
+  } catch {
+    setStatus("Fullscreen isn't available here — using the inline layout", "normal");
+    syncFullscreenButton();
+  }
+}
 
 // Visuals toggle — once clicked, the user's choice sticks across re-renders.
 // Guard the reveal: visuals only PAINT when the pattern has a viz method, so
@@ -1694,9 +2103,17 @@ app.ontoolcancelled = (params) => {
 // tears this instance down, so a discarded widget leaves nothing running.
 app.onteardown = () => {
   try {
+    // Invalidate any in-flight render/boot so a late `await` can't repopulate
+    // the DOM of a widget the host has already discarded.
+    renderGeneration++;
     if (isRecording) stopRecording();
     if (mediaRecorder?.state === "recording") mediaRecorder.stop();
     mediaRecorder = null;
+    activeRecording = null;
+    if (recordingLimitTimer !== null) {
+      clearTimeout(recordingLimitTimer);
+      recordingLimitTimer = null;
+    }
     const editor = getEditor();
     editor?.stop?.();
     updatePlayState(false);
@@ -1722,6 +2139,8 @@ app.onteardown = () => {
       clearTimeout(missingSoundTimer);
       missingSoundTimer = null;
     }
+    // A pending state report would fire into a host that has already let go.
+    cancelStateReport();
     removeConsoleWatch();
     // Stop Hydra's WebGL render loop too — it runs independently of the
     // Strudel scheduler and would otherwise keep the GPU busy after teardown.
@@ -1742,6 +2161,15 @@ app.onerror = console.error;
 function handleHostContextChanged(ctx: McpUiHostContext) {
   if (ctx.theme) {
     applyDocumentTheme(ctx.theme);
+  }
+  if (ctx.displayMode) {
+    displayMode = ctx.displayMode;
+    syncFullscreenButton();
+    // The frame just changed size; the backdrop's backing store must follow.
+    requestAnimationFrame(syncVizCanvasSize);
+  }
+  if (ctx.availableDisplayModes) {
+    availableDisplayModes = ctx.availableDisplayModes;
   }
   if (ctx.styles?.variables) {
     applyHostStyleVariables(ctx.styles.variables);

@@ -82,6 +82,44 @@ stack(
     },
   },
   {
+    // Regression guard for the viz-detect string fix: `.pianoroll()` and
+    // `initHydra(` appear ONLY inside string literals, so the backdrop must
+    // stay hidden and no WebGL layer may be staged.
+    id: "viz-string-lookalike",
+    label: "Detect — visuals named only inside strings (must stay off)",
+    widget: "strudel",
+    args: {
+      title: "String look-alike",
+      code: `note("c3 e3 g3").s('sawtooth').color('.pianoroll() initHydra(')`,
+    },
+  },
+  {
+    // The other half: a quoted `//` used to be treated as a comment, so the
+    // real draw call after it was never seen and the backdrop stayed dark.
+    id: "viz-quoted-slashes",
+    label: "Detect — quoted // before a real .pianoroll() (must reveal)",
+    widget: "strudel",
+    args: {
+      title: "Quoted slashes",
+      code: `note("c3 e3 g3 c4").s('sawtooth').color('a // b').pianoroll({ cycles: 2 })`,
+    },
+  },
+  {
+    // tempo.ts returns this one UNCHANGED (a local `setcps` binding would put a
+    // prepended call in its temporal dead zone), so the widget has to apply the
+    // bpm through editor.repl.setCps() after evaluation and say so.
+    id: "tempo-bound-setcps",
+    label: "Tempo — pattern binds setcps (applied at runtime)",
+    widget: "strudel",
+    args: {
+      title: "Bound setcps",
+      bpm: 120,
+      code: `const setcps = () => {}
+setcps()
+note("c3 e3 g3 c4").s('sawtooth')`,
+    },
+  },
+  {
     id: "hydra-shader-error",
     label: "ERROR — Hydra shader typo (.foo())",
     widget: "strudel",
