@@ -11,6 +11,17 @@
   --accent-hover: #6d28d9;
   --success: #10b981;
   --error: #ef4444;
+
+  /* Visuals stage + readability scrim.
+     These are DEFAULTS for the built-in dark editor theme. When a `theme` is
+     applied, syncVizTheme() (src/strudel-app.ts) overwrites all three from the
+     theme's own `--background`, which @strudel/codemirror's activateTheme()
+     writes onto :root — so a light theme gets a light stage and a light scrim
+     instead of code-on-black. */
+  --viz-stage: #14111d;
+  --viz-scrim: rgba(20, 17, 29, 0.5);
+  --viz-gutter-scrim: rgba(20, 17, 29, 0.3);
+  --viz-code-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -103,10 +114,29 @@ html, body {
   color: var(--text);
 }
 
+/* args.title. Pushed to the right with the status line; truncates rather than
+   wrapping the toolbar onto a second row in a narrow host frame. */
+.pattern-title {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+
 .status {
   font-size: 12px;
   color: var(--text-secondary);
   margin-left: auto;
+}
+
+/* When a title is showing it already claims the auto margin — keep the status
+   line beside it instead of fighting for the same space. */
+.pattern-title:not([hidden]) ~ .status {
+  margin-left: 12px;
 }
 
 .status.playing {
@@ -136,7 +166,7 @@ html, body {
   height: 100%;
   z-index: 0;
   pointer-events: none;
-  background: #14111d;  /* dark stage so the purple/blue visuals read well */
+  background: var(--viz-stage);  /* stage the visuals read against (theme-derived) */
 }
 
 /* Hydra (WebGL) layer. Same footprint as #test-canvas but painted first in
@@ -189,16 +219,70 @@ html, body {
 
 .repl-section.viz-on .cm-scroller {
   height: 100% !important;
-  background-color: rgba(20, 17, 29, 0.5) !important;  /* single readability scrim */
+  background-color: var(--viz-scrim) !important;  /* single readability scrim */
 }
 
 .repl-section.viz-on .cm-gutters {
-  background-color: rgba(20, 17, 29, 0.3) !important;
+  background-color: var(--viz-gutter-scrim) !important;
 }
 
-/* Lift the code off the animation for legibility (matches strudel.cc's glow). */
+/* Lift the code off the animation for legibility (matches strudel.cc's glow).
+   The shadow flips to a light halo under light themes — see syncVizTheme(). */
 .repl-section.viz-on .cm-content {
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+  text-shadow: var(--viz-code-shadow);
+}
+
+/* ==========================================================================
+   Stage mode — the visuals without the code.
+
+   Hides #strudel-container so the canvases (which already fill .repl-section as
+   an absolute backdrop) become the whole frame. Kept separate from fullscreen:
+   the two compose, and either can be used alone.
+   ========================================================================== */
+
+.repl-section.stage-on .strudel-container {
+  display: none;
+}
+
+/* No scrim to see through in stage mode — the stage is the point. */
+.repl-section.stage-on .viz-canvas {
+  display: block;
+}
+
+.control-btn.active[aria-pressed="true"] {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+/* Nothing to do yet, but still clickable so the click can say why (the "Visuals"
+   and "Stage" toggles both nudge instead of going inert). */
+.control-btn[aria-disabled="true"] {
+  opacity: 0.45;
+}
+
+/* a.show() — hydra's little band-level meter, ported onto Strudel's own output.
+   Bottom-right of the stage, same corner hydra puts it in. */
+.audio-meter {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 100px;
+  height: 80px;
+  z-index: 2;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 4px;
+}
+
+/* A viewer who asked for less motion gets a still frame, not a moving backdrop.
+   The widget also skips AUTO-revealing visuals and skips hydra presets in this
+   mode (see prefersReducedMotion in src/strudel-app.ts); this rule only calms
+   what CSS itself animates. */
+@media (prefers-reduced-motion: reduce) {
+  .control-btn {
+    transition: none;
+  }
 }
 
 /* CDN load-failure recovery affordance */
