@@ -152,6 +152,53 @@ describe("prompts/list parity", () => {
   });
 });
 
+describe("tool results — the click-to-play link", () => {
+  // Listings are origin-independent (that is what keeps the two transports
+  // diffable above), but RESULTS carry a share URL, and the Worker builds it
+  // from the origin the request arrived on. This is the one deliberate way the
+  // two transports' output differs — pinned here so it stays deliberate.
+
+  const linkOf = (content: unknown) =>
+    (content as { type: string; uri?: string }[]).find(
+      (c) => c.type === "resource_link",
+    );
+
+  it("both transports return a resource_link plus the URL in the text", async () => {
+    for (const client of [local, worker]) {
+      const res = await client.callTool({
+        name: "play-live-pattern",
+        arguments: { code: 's("bd sd")' },
+      });
+      const link = linkOf(res.content);
+      expect(link?.uri).toContain("/play?c=");
+      const text = (res.content as { type: string; text?: string }[])[0]!.text!;
+      expect(text).toContain(link!.uri!);
+      // The honest tail is replaced, not merely appended to.
+      expect(text).not.toContain("nothing has played yet");
+    }
+  });
+
+  it("the Worker links the origin it was reached on; stdio links the hosted one", async () => {
+    const custom = await connect(
+      createMusicServer(WORKER_ENV, "https://music.example.com"),
+    );
+    const res = await custom.callTool({
+      name: "play-live-pattern",
+      arguments: { code: 's("bd")' },
+    });
+    expect(linkOf(res.content)?.uri).toContain("https://music.example.com/play?");
+
+    // A stdio server has no request context, so it points at the deployed worker.
+    const localRes = await local.callTool({
+      name: "play-live-pattern",
+      arguments: { code: 's("bd")' },
+    });
+    expect(linkOf(localRes.content)?.uri).toContain(
+      "https://mcp-music-studio.linxule.workers.dev/play?",
+    );
+  });
+});
+
 describe("serverInfo — documented, deliberate differences", () => {
   it("shares name, version and instructions", () => {
     const l = local.getServerVersion();

@@ -18,20 +18,20 @@ import {
   type ParseOnlyFn,
 } from "./src/server-logic.js";
 import type { ParseOnlyFn as AbcParseOnlyFn } from "./src/shared/abc-to-strudel.js";
-import {
-  openPlayerInBrowser,
-  generatePlayerHtml,
-} from "./src/browser-fallback.js";
+import { generatePlayerHtml } from "./src/browser-fallback.js";
 import {
   STRUDEL_GUIDE_TOPICS,
   STRUDEL_GUIDES,
   type StrudelGuideTopic,
 } from "./src/strudel-guide.js";
 import { ABC_GUIDE_TOPICS, ABC_GUIDES } from "./src/abc-guide.js";
+import { generateStrudelPlayerHtml } from "./src/strudel-browser-fallback.js";
+// The disk-writing/browser-launching half now lives in its own module so the
+// two generators above stay node-free (the Worker imports them for /play, /score).
 import {
-  generateStrudelPlayerHtml,
+  openPlayerInBrowser,
   openStrudelInBrowser,
-} from "./src/strudel-browser-fallback.js";
+} from "./src/open-in-browser.js";
 import { VERSION } from "./src/version.js";
 import {
   SHEET_RESOURCE_URI,
@@ -71,7 +71,9 @@ import {
   SERVER_ICONS,
   WEBSITE_URL,
   uiToolMeta,
+  attachPlayLink,
 } from "./src/shared/tool-defs.js";
+import { buildShareQueryUrl } from "./src/shared/share-url.js";
 
 const DIST_DIR = import.meta.filename.endsWith(".ts")
   ? path.join(import.meta.dirname, "dist")
@@ -176,7 +178,16 @@ export function createServer(options?: ServerOptions): McpServer {
     if (result.isError) return result;
 
     // Explicit --render-mode flag delivers HTML / opens a browser file.
-    if (defaultRenderMode === "auto") return result;
+    if (defaultRenderMode === "auto") {
+      // No KV here, so only the stateless query-string form is available; a
+      // score too long for a URL simply gets no link (and the honest tail
+      // stays honest). The page is served by the hosted worker, which is the
+      // only origin a stdio server can offer.
+      return attachPlayLink(
+        result,
+        buildShareQueryUrl({ kind: "score", args }),
+      );
+    }
 
     const playerOpts = {
       abcNotation: args.abcNotation,
@@ -316,7 +327,9 @@ export function createServer(options?: ServerOptions): McpServer {
   ): Promise<CallToolResult> => {
     const result = await handlePlayLivePattern(args);
 
-    if (defaultRenderMode === "auto") return result;
+    if (defaultRenderMode === "auto") {
+      return attachPlayLink(result, buildShareQueryUrl({ kind: "play", args }));
+    }
 
     const playerOpts = {
       code: args.code,

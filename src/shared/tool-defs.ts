@@ -189,6 +189,28 @@ export const PLAY_SHEET_EXT_APPS_SUFFIX =
 export const PLAY_SHEET_FALLBACK_SUFFIX =
   "\n\nThe music player is delivered as HTML or opened in the browser automatically.";
 
+// -----------------------------------------------------------------------------
+// The honest tail — and the click-to-play link that can now replace it
+// -----------------------------------------------------------------------------
+//
+// Neither transport can tell whether the caller renders ext-apps widgets (the
+// SDK strips inbound capabilities.extensions, and the stateless worker never
+// replays `initialize`), so both play tools end on a sentence that refuses to
+// claim playback. When a hosted player URL is available that sentence changes
+// from a dead end into an instruction — see `attachPlayLink`.
+
+export const NO_INLINE_PLAYER_TAIL =
+  "If you don't see a player here, this client can't play it inline, so nothing has played yet.";
+
+export const NO_INLINE_PLAYER_TAIL_WITH_LINK =
+  "If you don't see a player here, this client can't play it inline — click the link below to play it in your browser.";
+
+/** Prefix of the line carrying the hosted player URL. */
+export const PLAY_LINK_PREFIX = "\u25b6 Play in browser: ";
+
+/** `name` of the resource_link block, so clients render a sensible label. */
+export const PLAY_LINK_NAME = "Play in browser";
+
 /**
  * Honest confirmation for transports that don't server-side validate ABC (the worker).
  * Deliberately does NOT assert that anything played — a terminal client sees only this
@@ -196,8 +218,58 @@ export const PLAY_SHEET_FALLBACK_SUFFIX =
  */
 export const PLAY_SHEET_NEUTRAL_TEXT =
   "Sheet music ready. It renders as an interactive, playable score in MCP-app hosts " +
-  "(e.g. Claude Desktop, claude.ai). If you don't see a player here, this client can't play it " +
-  "inline, so nothing has played yet.";
+  `(e.g. Claude Desktop, claude.ai). ${NO_INLINE_PLAYER_TAIL}`;
+
+/**
+ * Add the "Tier 3" click-to-play link to a play-tool result.
+ *
+ * Two content blocks, because clients disagree about what they render: the URL
+ * goes into the text (terminals show text and nothing else) *and* as a
+ * `resource_link`, which Claude Code and other structured clients turn into an
+ * actual link. The honest tail is swapped for its click-the-link variant at the
+ * same time, so the result never simultaneously offers a player and says
+ * nothing has played.
+ *
+ * A no-op when there is no URL (nothing fit, or the transport has no host) or
+ * when the result is an error — a link to a page that renders broken notation
+ * helps nobody.
+ */
+export function attachPlayLink(
+  result: CallToolResult,
+  // `null` is what buildShareQueryUrl returns for a payload too long to fit in
+  // a URL; `undefined` is "this transport had nowhere to host it".
+  url: string | null | undefined,
+): CallToolResult {
+  if (!url || result.isError) return result;
+
+  let linked = false;
+  const content = result.content.map((block) => {
+    // The tail is not always final — the local server appends a --render-mode
+    // hint after it — so swap it in place and put the link at the very end.
+    if (linked || block.type !== "text" || !block.text.includes(NO_INLINE_PLAYER_TAIL)) {
+      return block;
+    }
+    linked = true;
+    const swapped = block.text.replace(
+      NO_INLINE_PLAYER_TAIL,
+      NO_INLINE_PLAYER_TAIL_WITH_LINK,
+    );
+    return { ...block, text: `${swapped}\n\n${PLAY_LINK_PREFIX}${url}` };
+  });
+
+  return {
+    ...result,
+    content: [
+      ...content,
+      {
+        type: "resource_link" as const,
+        uri: url,
+        name: PLAY_LINK_NAME,
+        mimeType: "text/html",
+      },
+    ],
+  };
+}
 
 export const playSheetInputSchema = z.object({
   abcNotation: z
@@ -353,8 +425,7 @@ export function buildPlayLiveResult(args: { code: string; title?: string }): Cal
         type: "text",
         text:
           `${label}Strudel pattern ready. It plays in an editable REPL widget in MCP-app hosts ` +
-          "(e.g. Claude Desktop, claude.ai). If you don't see a player here, this client can't play it " +
-          "inline, so nothing has played yet.",
+          `(e.g. Claude Desktop, claude.ai). ${NO_INLINE_PLAYER_TAIL}`,
       },
     ],
   };

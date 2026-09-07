@@ -3,11 +3,9 @@
 // In browser mode (not iframe sandbox), the full REPL renders correctly.
 // =============================================================================
 
-import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
+// Runtime-agnostic: no node: imports here, so the Cloudflare Worker can render
+// the same page for its /play route. The disk-writing + browser-launching half
+// lives in src/open-in-browser.ts.
 import { safeJsonForScript } from "./shared/safe-json.js";
 import { injectTempo } from "./shared/tempo.js";
 
@@ -180,29 +178,4 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
 </script>
 </body>
 </html>`;
-}
-
-export async function openStrudelInBrowser(
-  options: StrudelPlayerOptions,
-  outputDir?: string,
-): Promise<string> {
-  const html = generateStrudelPlayerHtml(options);
-
-  const dir = outputDir ?? path.join(os.homedir(), "Desktop", "mcp-music-studio");
-  await fs.mkdir(dir, { recursive: true });
-
-  const filename = `strudel-${randomUUID()}.html`;
-  const filepath = path.join(dir, filename);
-  await fs.writeFile(filepath, html, "utf-8");
-
-  // Use execFile with an argv array so no shell parses the path.
-  const openErr = (err: Error | null) => {
-    if (err) console.error("Failed to open browser:", err.message);
-  };
-  if (process.platform === "darwin") execFile("open", [filepath], openErr);
-  else if (process.platform === "win32")
-    execFile("cmd", ["/c", "start", "", filepath], openErr);
-  else execFile("xdg-open", [filepath], openErr);
-
-  return filepath;
 }
