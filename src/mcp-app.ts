@@ -25,6 +25,7 @@ import {
   prepareToolInput,
   type SoundFontName,
 } from "./music-logic";
+import { resetSoundsCache, soundsCacheLooksLive } from "./abcjs-sound-cache";
 import { transposeAbc } from "./abc-transpose";
 import {
   cleanAbcWarnings,
@@ -64,6 +65,76 @@ const state: AppState = {
   toolSynthOpts: {},
   highlightedEls: [],
 };
+
+// =============================================================================
+// Render generations (why every async step re-checks a counter)
+// =============================================================================
+//
+// Three things can start work that finishes much later: the 150 ms partial
+// -render debounce, `renderAbc()` (parse → renderAbc → setTune → play, all
+// awaited), and the editor's debounced re-render. Nothing used to stop an
+// older one from landing on top of a newer one, which produced two real bugs:
+//
+//  * a partial score, still queued when the COMPLETE tool input arrived,
+//    replaced the finished score and reset the status to "Composing…";
+//  * after `ontoolcancelled` / `onteardown`, an in-flight render could still
+//    finish, rebuild the transport and (via autoplay) start audio in a widget
+//    the host had already discarded.
+//
+// `renderGeneration` is bumped by every event that invalidates outstanding
+// work — new tool input, cancel, teardown. Anything asynchronous captures it
+// up front and bails the moment it no longer matches, so the LAST intent wins
+// and a discarded widget stays discarded. `disposed` is the terminal case:
+// once the host tears us down, nothing may resume.
+let renderGeneration = 0;
+let disposed = false;
+
+/** Invalidate every outstanding render/load/play continuation. */
+function newGeneration(): number {
+  return ++renderGeneration;
+}
+
+/** Has this continuation been superseded (or the widget torn down)? */
+const isStale = (generation: number): boolean =>
+  disposed || generation !== renderGeneration;
+
+/**
+ * Fully shut down one SynthController.
+ *
+ * `pause()` is not enough for a controller we are abandoning: it leaves the
+ * TimingCallbacks timer and the primed midiBuffer alive, so a late beat
+ * callback can still fire `cursorControl.onEvent` and paint `.note-playing`
+ * onto elements of a score that no longer exists. `destroy()` (abcjs
+ * synth-controller.js) resets and stops the timer, stops the buffer, and
+ * resets the transport.
+ */
+function destroySynthControl(control: ABCJS.SynthObjectController): void {
+  try {
+    control.pause();
+  } catch {
+    // Never loaded — nothing to pause.
+  }
+  try {
+    (control as unknown as { destroy?: () => void }).destroy?.();
+  } catch {
+    // destroy() is best-effort; abcjs guards most of it but not all.
+  }
+}
+
+/** Retire the widget's current controller, if any. */
+function retireSynthControl(): void {
+  if (state.synthControl) destroySynthControl(state.synthControl);
+  state.synthControl = null;
+  clearHighlights();
+}
+
+/**
+ * Whether any audio has actually been primed in this widget.
+ *
+ * Drives the sound-bank cache guard: before the first prime an empty sample
+ * cache is meaningless, after it an empty one is proof we lost the singleton.
+ */
+let hasPrimedAudio = false;
 
 /**
  * Every synth option the widget currently applies — the single place that
@@ -164,18 +235,41 @@ instrumentSelect.addEventListener("change", () => {
   }
 });
 
+/**
+ * Re-prime the live synth with the current instrument / bank / synth options.
+ *
+ * `userAction` MUST be true. Walked through abcjs's own
+ * `src/synth/synth-controller.js`:
+ *
+ *  * `setTune(visualObj, userAction, audioParams)` pauses, rewinds, resets the
+ *    transport, sets `isStarted = false` — and then calls `go()` only when
+ *    `userAction` is truthy. With `false` it returns
+ *    `{status: "no-audio-context"}` and touches nothing else.
+ *  * `isLoaded` is set in `go()` and **never cleared** — not by `setTune()`,
+ *    not by `destroy()`. So after one play, `setTune(..., false, ...)` leaves
+ *    `isLoaded === true`, `runWhenReady()` skips `go()`, and the next ▶ plays
+ *    the PREVIOUS instrument's already-primed buffer while the UI claims the
+ *    new one.
+ *  * `go()` does **not** start playback. It resumes the AudioContext, calls
+ *    `midiBuffer.init()` + `.prime()`, builds the TimingCallbacks and sets
+ *    `isLoaded`. Only `_play()` flips `isStarted` and calls
+ *    `midiBuffer.start()`. So passing `true` re-primes without ever making a
+ *    paused widget suddenly play — which is exactly what we want here, and why
+ *    this doesn't need to be gated on `isStarted`.
+ *
+ * The audio context resume inside `go()` is why `true` is honest rather than a
+ * fib: every caller of this function is a real user gesture (a selector change
+ * or ⌘↵ in the editor).
+ */
 async function applySettings(): Promise<void> {
   if (!state.synthControl || !state.visualObj?.[0]) return;
   try {
-    // userAction MUST be true: abcjs sets isLoaded in go() and never clears it,
-    // so setTune(..., false) after a first play leaves the OLD audio buffer in
-    // place and the next Play replays the previous instrument/bank. `true`
-    // forces go() to re-prime with the new options (the user did click).
     await state.synthControl.setTune(
       state.visualObj[0],
       true,
       currentSynthOptions() as SynthOptions,
     );
+    hasPrimedAudio = true;
   } catch (error) {
     console.error("Failed to apply settings:", error);
   }
@@ -197,9 +291,19 @@ const styleSelect = document.createElement("select");
 styleSelect.id = "style-select";
 styleSelect.className = "control-select";
 
+// "No preset accompaniment", not "melody only": abcjs still synthesises bass
+// and chords from any chord symbols ("C", "Am7") in the ABC, because the
+// default gchord stays in force and we deliberately do NOT set `chordsOff`.
+// Measured on a two-bar tune with chord symbols and no style: 32 note events,
+// only 16 of which are the melody. Setting `chordsOff: true` was the other
+// option and was rejected — the chord symbols are the composer's, the style
+// preset is the widget's, and this selector only chooses among the widget's.
+// Someone who wants a bare melody removes the chord symbols.
 const noneOption = document.createElement("option");
 noneOption.value = "";
-noneOption.textContent = "No style (melody only)";
+noneOption.textContent = "No preset accompaniment";
+noneOption.title =
+  "Turns off the style preset. Chord symbols in the ABC still play.";
 styleSelect.appendChild(noneOption);
 
 for (const name of Object.keys(STYLE_PRESETS)) {
@@ -227,8 +331,16 @@ styleSelectorEl.appendChild(styleSelect);
 // Sound Font Selector
 // =============================================================================
 //
-// Switches the sample bank abcjs streams from. Changing it re-primes the synth
-// (every sample is refetched), so it only re-applies settings — no re-render.
+// Switches the sample bank abcjs streams from. Only re-primes the synth — no
+// re-render, since the notation is unchanged.
+//
+// The catch, and why `resetSoundsCache()` is here: abcjs caches decoded samples
+// in a module singleton keyed `soundsCache[instrument][note]`, with the bank
+// URL absent from the key (src/synth/load-note.js). Re-priming alone therefore
+// replays the FIRST bank's samples forever — the previous comment here claimed
+// "every sample is refetched", which was measurably false (see
+// src/abcjs-sound-cache.ts and tests/soundfont-cache.test.ts: two banks, one
+// request). Emptying the cache first is what makes that comment true.
 
 const soundFontSelect = document.createElement("select");
 soundFontSelect.id = "soundfont-select";
@@ -242,16 +354,50 @@ for (const [name, font] of Object.entries(SOUNDFONTS)) {
   soundFontSelect.appendChild(option);
 }
 
+/**
+ * Disable the Sound selector and say why.
+ *
+ * Only reached if the deep import into abcjs's sample cache ever stops landing
+ * on the live object — the one failure mode that would otherwise turn this
+ * control back into a silent lie. Better a disabled control with an
+ * explanation than an enabled one that does nothing.
+ */
+function retireSoundFontSelector(): void {
+  soundFontSelect.disabled = true;
+  soundFontSelect.title =
+    "Re-run the tool to change the sound bank — this widget has already loaded samples.";
+  soundFontLabel.title = soundFontSelect.title;
+}
+
 soundFontSelect.addEventListener("change", () => {
+  const previous = state.currentSoundFont;
   state.currentSoundFont = soundFontSelect.value as SoundFontName;
-  if (state.visualObj && state.synthControl) {
-    setStatus("Loading sounds…");
-    applySettings()
-      .then(() => setStatus("Click ▶ to play"))
-      .catch((err) =>
-        setStatus(`Sound change failed: ${(err as Error).message}`, true),
-      );
+  if (!state.visualObj || !state.synthControl) return;
+
+  // Nothing primed yet => nothing stale to drop, and an empty cache proves
+  // nothing about our reference. Once audio HAS been primed, an empty cache
+  // means we are not holding abcjs's real singleton and cannot honour the
+  // switch — say so instead of pretending.
+  if (!soundsCacheLooksLive(hasPrimedAudio)) {
+    state.currentSoundFont = previous;
+    soundFontSelect.value = previous;
+    retireSoundFontSelector();
+    setStatus(
+      "Sound bank can't be changed in this session — re-run the tool.",
+      true,
+    );
+    return;
   }
+
+  // Drop every cached sample so init()/prime() refetch from the new bank.
+  resetSoundsCache();
+
+  setStatus("Loading sounds…");
+  applySettings()
+    .then(() => setStatus("Click ▶ to play"))
+    .catch((err) =>
+      setStatus(`Sound change failed: ${(err as Error).message}`, true),
+    );
 });
 
 const soundFontLabel = document.createElement("label");
@@ -351,8 +497,12 @@ function cancelEditRender(): void {
 
 function scheduleEditRender(): void {
   cancelEditRender();
+  const generation = renderGeneration;
   editTimer = setTimeout(() => {
     editTimer = null;
+    // New tool input or a teardown while the user paused mid-keystroke: the
+    // text they typed belongs to a score that is no longer on screen.
+    if (isStale(generation)) return;
     void applyEditorAbc(false);
   }, EDIT_DEBOUNCE_MS);
 }
@@ -412,6 +562,12 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     (state.synthControl as unknown as { isStarted?: boolean }).isStarted,
   );
 
+  // The user's edit is the newest intent, so it supersedes any partial render
+  // still queued from a stream. Everything after an await re-checks this.
+  const generation = newGeneration();
+  const synthControl = state.synthControl;
+  cancelPartialRender();
+
   try {
     clearHighlights();
     const visualObj = ABCJS.renderAbc(sheetMusicEl, effective, {
@@ -432,26 +588,38 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     renderTitle();
     setEditorMessage(messages.length > 0 ? messages.join("\n") : null, "warn");
 
-    await state.synthControl.setTune(
+    await synthControl.setTune(
       visualObj[0],
       true,
       currentSynthOptions() as SynthOptions,
     );
+    hasPrimedAudio = true;
+
+    // New tool input, a cancel or a teardown landed while setTune was priming.
+    // The controller we just re-primed may already have been retired; don't
+    // wire it back up, and don't let it start playing.
+    if (isStale(generation)) {
+      if (state.synthControl !== synthControl) destroySynthControl(synthControl);
+      return;
+    }
 
     downloadBtn.disabled = !downloadSupported;
     midiBtn.disabled = !downloadSupported;
     sendBtn.disabled = !messageSupported;
 
     if (wasPlaying || forcePlay) {
-      await (state.synthControl.play() as unknown as
-        | Promise<unknown>
-        | undefined);
+      await (synthControl.play() as unknown as Promise<unknown> | undefined);
+      if (isStale(generation)) {
+        destroySynthControl(synthControl);
+        return;
+      }
       setStatus("Playing...");
     } else {
       setStatus("Edit applied — click ▶ to play");
     }
     reportEditToModel(abc);
   } catch (error) {
+    if (isStale(generation)) return;
     console.error("Edit render error:", error);
     setEditorMessage(`Edit not applied: ${(error as Error).message}`, "error");
     setStatus(`Edit not applied: ${(error as Error).message}`, true);
@@ -575,12 +743,35 @@ downloadBtn.addEventListener("click", async () => {
 // is why style-preset tracks — drums, bass, chords — land as separate MIDI
 // tracks at the right tempo. Sound-font options are stripped: they only
 // affect sample playback and mean nothing in an SMF.
+//
+// ## It is the SCORE, not the performance — and it says so
+//
+// Two things the player does never reach the file, because abcjs applies them
+// after the MIDI writer has had its turn:
+//
+//  * **Swing.** `addSwing()` lives in create-synth.js and runs during
+//    `prime()`, on the already-flattened event list. `getMidiFile()` goes
+//    through abc_midi_create.js instead, which never sees it. Measured: swing
+//    0 and swing 66 on the same tune produce byte-identical 241-byte files,
+//    and even `setUpAudio()`'s note start times are unchanged
+//    (tests/midi-swing.test.ts).
+//  * **Tempo warp.** The transport's warp slider scales
+//    `millisecondsPerMeasure` inside SynthController; the tune's own Q: is
+//    what the writer reads.
+//
+// Reimplementing either in the export would mean forking abcjs's timing model
+// and keeping the fork honest forever. The export is labelled for what it is
+// instead, in the tooltip and again in the status line after each download, so
+// nobody discovers the difference by ear in another program.
 
 const midiBtn = document.createElement("button");
 midiBtn.className = "toolbar-btn toolbar-btn-text";
 midiBtn.textContent = "MIDI";
-midiBtn.title = "Download MIDI file";
-midiBtn.setAttribute("aria-label", "Download score as a MIDI file");
+midiBtn.title = "Score MIDI (no swing) — notes as written, without swing or the tempo slider";
+midiBtn.setAttribute(
+  "aria-label",
+  "Download score MIDI — no swing or tempo warp",
+);
 midiBtn.disabled = true;
 toolbarEl.appendChild(midiBtn);
 
@@ -625,6 +816,7 @@ midiBtn.addEventListener("click", async () => {
         },
       ],
     });
+    setStatus("Score MIDI saved — notes as written, without swing or tempo warp.");
   } catch (err) {
     setStatus(`MIDI download failed: ${(err as Error).message}`, true);
   } finally {
@@ -703,6 +895,11 @@ async function renderAbc(
   abcNotation: string,
   extraSynthOpts?: Record<string, unknown>,
 ): Promise<void> {
+  // Supersede any partial render, any earlier renderAbc still awaiting, and
+  // any queued play() continuation. Everything below re-checks this.
+  const generation = newGeneration();
+  cancelPartialRender();
+
   try {
     setStatus("Rendering...");
 
@@ -712,10 +909,12 @@ async function renderAbc(
       state.toolSynthOpts = extraSynthOpts;
     }
 
-    // Stop any active playback before re-rendering
-    if (state.synthControl) {
-      state.synthControl.pause();
-    }
+    // Retire the previous controller outright rather than merely pausing it.
+    // pause() leaves its TimingCallbacks timer and primed midiBuffer alive; a
+    // late callback from the old one would then highlight notes in the new
+    // SVG. destroy() stops the timer, stops the buffer and resets the
+    // transport (abcjs synth-controller.js).
+    retireSynthControl();
 
     state.currentAbc = abcNotation;
     syncEditor(abcNotation);
@@ -739,19 +938,28 @@ async function renderAbc(
       throw new Error("Audio not supported in this browser");
     }
 
-    state.synthControl = new ABCJS.synth.SynthController();
-    state.synthControl.load(audioControlsEl, cursorControl, {
+    const synthControl = new ABCJS.synth.SynthController();
+    state.synthControl = synthControl;
+    synthControl.load(audioControlsEl, cursorControl, {
       displayLoop: true,
       displayPlay: true,
       displayProgress: true,
       displayWarp: true,
     });
 
-    await state.synthControl.setTune(
+    await synthControl.setTune(
       state.visualObj[0],
       false,
       currentSynthOptions() as SynthOptions,
     );
+
+    // setTune awaited: a newer render (or a teardown) may have landed while we
+    // were gone. Retire what we just built rather than wiring it up.
+    if (isStale(generation)) {
+      if (state.synthControl === synthControl) retireSynthControl();
+      else destroySynthControl(synthControl);
+      return;
+    }
 
     // Show toolbar once we have content
     toolbarEl.classList.add("visible");
@@ -764,13 +972,27 @@ async function renderAbc(
     // (may be blocked by browser autoplay policy until user clicks).
     // play() returns a Promise, so a synchronous try/catch never fires —
     // attach to the promise to report the real outcome.
-    (state.synthControl.play() as Promise<void> | undefined)
-      ?.then(() => setStatus("Playing..."))
+    //
+    // play() goes through runWhenReady(), which primes first, so this is the
+    // slowest continuation in the widget and the one most likely to land in a
+    // discarded generation. Both branches re-check before touching the UI, and
+    // the resolved branch stops audio it started into a stale generation.
+    (synthControl.play() as Promise<void> | undefined)
+      ?.then(() => {
+        hasPrimedAudio = true;
+        if (isStale(generation)) {
+          destroySynthControl(synthControl);
+          return;
+        }
+        setStatus("Playing...");
+      })
       .catch((e) => {
+        if (isStale(generation)) return;
         console.debug("Autoplay blocked:", e);
         setStatus("Click ▶ to play");
       });
   } catch (error) {
+    if (isStale(generation)) return;
     console.error("Render error:", error);
     setStatus(`Error: ${(error as Error).message}`, true);
     audioControlsEl.innerHTML = "";
@@ -787,6 +1009,14 @@ appInstance = app;
 // Handle complete tool input
 app.ontoolinput = (params) => {
   console.info("Received tool input:", params);
+
+  // The complete input supersedes the stream that produced it. Without this,
+  // a partial render still sitting in the 150 ms debounce fires AFTER the
+  // final score is on screen — replacing it with a half-finished tune and
+  // resetting the status to "Composing…". `renderAbc()` cancels it again for
+  // its own sake; this call also covers the no-notation branch below.
+  cancelPartialRender();
+
   const args = params.arguments ?? {};
   const preparedInput = prepareToolInput(args);
 
@@ -859,9 +1089,17 @@ app.ontoolinputpartial = (params) => {
   if (abcNotation === lastPartialAbc) return;
   lastPartialAbc = abcNotation;
 
-  // Debounce: wait for a pause in streaming before re-rendering
+  // Debounce: wait for a pause in streaming before re-rendering.
+  //
+  // Two guards, because clearTimeout alone is not enough: a `renderAbc()`
+  // started by the complete input can still be mid-await when this fires, and
+  // the timer must not paint a half-tune over it. The captured generation is
+  // the check that makes "the newest intent wins" true rather than hoped for.
   if (partialRenderTimer) clearTimeout(partialRenderTimer);
+  const generation = renderGeneration;
   partialRenderTimer = setTimeout(() => {
+    partialRenderTimer = null;
+    if (isStale(generation)) return;
     try {
       const abcWithStyle = applyStyleToAbc(abcNotation, state.currentStyle);
       // Render in place — ABCJS replaces the target element's content
@@ -906,7 +1144,12 @@ function cancelPartialRender(): void {
 }
 
 // Tool cancelled — clear the stale "Composing…" status so the UI isn't stuck.
+//
+// `newGeneration()` matters as much as the two cancels: a `renderAbc()` that
+// is already past its `setTune` await has no timer to clear, and would
+// otherwise go on to autoplay a tune the user just cancelled.
 app.ontoolcancelled = (params) => {
+  newGeneration();
   stopPlayback();
   cancelPartialRender();
   const reason = params?.reason ? ` (${params.reason})` : "";
@@ -914,12 +1157,17 @@ app.ontoolcancelled = (params) => {
 };
 
 // Host is tearing down this instance — stop audio so a discarded widget
-// leaves nothing playing.
+// leaves nothing playing. `disposed` is terminal: it fails every outstanding
+// continuation, including ones whose generation is still current.
 app.onteardown = () => {
-  stopPlayback();
+  disposed = true;
+  newGeneration();
   cancelPartialRender();
   // A pending edit render must not fire into a discarded widget.
   cancelEditRender();
+  // Not just pause(): the timer and primed buffer have to go too, or a late
+  // beat callback keeps running against a detached document.
+  retireSynthControl();
   return {};
 };
 
