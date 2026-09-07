@@ -10,7 +10,7 @@
 // (for play-sheet-music) and the Strudel form (for play-live-pattern).
 // =============================================================================
 
-import { Chord, Key, Note, Progression, Scale } from "tonal";
+import { Chord, Key, Mode, Note, Progression, Scale } from "tonal";
 
 export const HARMONY_TASKS = [
   "detect-chord",
@@ -75,6 +75,141 @@ export function friendlyChordSymbol(name: string): string {
     PREFERRED_ALIASES.find((a) => chord.aliases.includes(a)) ?? chord.aliases[0] ?? "";
   const bass = chord.bass && chord.bass !== chord.tonic ? `/${chord.bass}` : "";
   return `${chord.tonic}${alias}${bass}`;
+}
+
+// -----------------------------------------------------------------------------
+// Strudel voicing symbols — the `ireal` dictionary
+// -----------------------------------------------------------------------------
+//
+// `chord("Cmaj7").voicing()` prints NOTHING. Verified against the published
+// @strudel/tonal@1.2.6 source:
+//
+//   voicings.mjs  registerVoicings('ireal', simple)  and  defaultDict = 'ireal'
+//   tonleiter.mjs renderVoicing() → tokenizeChord(chord) splits the symbol into
+//                 [root, suffix, bass] and then does `dictionary[suffix]` — an
+//                 EXACT key lookup. A miss throws, `voicing` catches it, logs
+//                 `[voicing]: unknown chord` and returns `silence`.
+//
+// So the only spellings that sound are the keys of `ireal.mjs`'s `simple` table
+// plus the aliases voicings.mjs derives from them at import time. `maj7` is not
+// one of them; `^7` and `M7` are. Everything this module prints inside a
+// `chord("…")` goes through `irealChordSymbol` first.
+
+/** Keys of the `simple` table in @strudel/tonal@1.2.6's ireal.mjs, verbatim. */
+const IREAL_CANONICAL_SUFFIXES = [
+  "2", "5", "6", "7", "9", "11", "13", "69", "add9", "+", "o", "h", "sus", "^", "-",
+  "^7", "-7", "7sus", "h7", "o7", "^9", "^13", "^7#11", "^9#11", "^7#5", "-6", "-69",
+  "-^7", "-^9", "-9", "-add9", "-11", "-7b5", "h9", "-b6", "-#5", "7b9", "7#9", "7#11",
+  "7b5", "7#5", "9#11", "9b5", "9#5", "7b13", "7#9#5", "7#9b5", "7#9#11", "7b9#11",
+  "7b9b5", "7b9#5", "7b9#9", "7b9b13", "7alt", "13#11", "13b9", "13#9", "7b9sus",
+  "7susadd3", "9sus", "13sus", "7b13sus",
+] as const;
+
+/**
+ * Every suffix `voicing()` accepts — the canonical keys plus the aliases
+ * voicings.mjs adds, reproduced with the same substitutions it uses
+ * (`^` → no symbol for the bare major triad, `-` → `m`, `^` → `M`, `+` → `aug`;
+ * String.replace only touches the FIRST occurrence, exactly as upstream).
+ */
+export const IREAL_VOICING_SUFFIXES: ReadonlySet<string> = (() => {
+  const set = new Set<string>(IREAL_CANONICAL_SUFFIXES);
+  set.add(""); // voicingAlias('^', '') — a bare "C" is a major triad
+  for (const suffix of IREAL_CANONICAL_SUFFIXES) {
+    if (suffix.includes("-")) set.add(suffix.replace("-", "m"));
+    if (suffix.includes("^")) set.add(suffix.replace("^", "M"));
+    if (suffix.includes("+")) set.add(suffix.replace("+", "aug"));
+  }
+  return set;
+})();
+
+/**
+ * Which accepted spelling to print when a chord has several. Readability only —
+ * every entry is in `IREAL_VOICING_SUFFIXES` (a test asserts it).
+ */
+const IREAL_PREFERRED_SUFFIXES = [
+  "", "m", "^7", "m7", "7", "6", "m6", "69", "^9", "m9", "9", "sus", "add9", "2",
+  "m7b5", "o7", "o", "aug", "7sus", "9sus", "13sus", "m11", "11", "13", "^13",
+  "7b9", "7#9", "7#11", "7b5", "7#5", "7b13", "7alt", "m^7", "5", "h7", "h",
+];
+
+/**
+ * tonal alias → ireal suffix, for the handful of chords whose tonal aliases and
+ * the ireal keys never overlap. Checked after the alias search.
+ */
+const IREAL_SUFFIX_FALLBACKS: Record<string, string> = {
+  alt7: "7alt", // tonal's "Calt7" (1P 3M 7m 9m) — ireal spells the altered dominant "7alt"
+  sus2: "2", // ireal's "2" is the sus2 voicing (1P 5P 8P 9M — no third)
+  "-^7": "m^7", // both work; "m^7" reads better than the iReal dash
+  "m/ma7": "m^7",
+  maj7: "^7",
+  dim: "o",
+  dim7: "o7",
+};
+
+/**
+ * Strip the typographic accidentals abcjs and lead-sheet fonts use, so a chord
+ * symbol is plain ASCII before anything tries to parse it.
+ * `B♭7` → `Bb7`, `F♯m7` → `F#m7`, `C△` → `Cmaj7`.
+ */
+export function asciiChordSymbol(name: string): string {
+  return String(name)
+    .replace(/♭/g, "b")
+    .replace(/♯/g, "#")
+    .replace(/♮/g, "")
+    .replace(/\u{1D12A}/gu, "##")
+    .replace(/\u{1D12B}/gu, "bb")
+    .replace(/[Δ△]/g, "maj7")
+    // "Cø7" and "Cø" are the same chord — don't let the 7 survive twice.
+    .replace(/[øØ]7?/g, "m7b5")
+    .replace(/°/g, "dim")
+    .replace(/\s+/g, "");
+}
+
+/** Is this a chord symbol at all (as opposed to an annotation like "rit.")? */
+export function isChordSymbol(name: string): boolean {
+  const chord = Chord.get(asciiChordSymbol(name));
+  return !chord.empty && !!chord.tonic;
+}
+
+/**
+ * Respell a chord symbol so Strudel's default `ireal` voicing dictionary can
+ * find it — `Cmaj7` → `C^7`, `C6/9` → `C69`, `Bdim` → `Bo`, `Csus4` → `Csus`.
+ * Returns null when no accepted spelling exists; the caller should then say so
+ * rather than emit a symbol that renders silence.
+ */
+export function irealChordSymbol(symbol: string): string | null {
+  const chord = Chord.get(asciiChordSymbol(symbol));
+  if (chord.empty || !chord.tonic) return null;
+
+  const aliases = chord.aliases ?? [];
+  let suffix = IREAL_PREFERRED_SUFFIXES.find(
+    (a) => aliases.includes(a) && IREAL_VOICING_SUFFIXES.has(a),
+  );
+  if (suffix === undefined) {
+    for (const alias of aliases) {
+      const mapped = IREAL_SUFFIX_FALLBACKS[alias];
+      if (mapped && IREAL_VOICING_SUFFIXES.has(mapped)) {
+        suffix = mapped;
+        break;
+      }
+    }
+  }
+  suffix ??= aliases.find((a) => IREAL_VOICING_SUFFIXES.has(a));
+  if (suffix === undefined) return null;
+
+  // renderVoicing ignores the bass note, but tokenizeChord accepts it, so a
+  // slash chord still voices — keep it for the reader.
+  const bass = chord.bass && chord.bass !== chord.tonic ? `/${chord.bass}` : "";
+  return `${chord.tonic}${suffix}${bass}`;
+}
+
+/**
+ * Render a list of chord symbols for a `chord("…")` mini-notation string.
+ * Anything without an ireal spelling becomes `~` (a silent cycle) rather than a
+ * symbol that would make Strudel log "unknown chord" and drop the layer.
+ */
+export function irealChordList(symbols: readonly string[]): string {
+  return symbols.map((s) => irealChordSymbol(s) ?? "~").join(" ");
 }
 
 /** Lowercase Strudel note token: `C#4` → `c#4`, `Bb3` → `bb3`. */
@@ -230,14 +365,69 @@ function pitchClassesFromChords(chords: readonly string[]): {
 // Key parsing ("C", "A minor", "F# major", "Bbm")
 // -----------------------------------------------------------------------------
 
+/**
+ * The modes this module can build material for. `major` and `minor` are the
+ * ionian and aeolian rows under the names musicians (and ABC's K: field) use.
+ */
+export const KEY_MODES = [
+  "major",
+  "minor",
+  "dorian",
+  "phrygian",
+  "lydian",
+  "mixolydian",
+  "locrian",
+] as const;
+
+export type KeyMode = (typeof KEY_MODES)[number];
+
+/**
+ * Accepted spellings of a mode. The suffix is matched EXACTLY (case-insensitively,
+ * except for the bare `M`/`m` pair, where case is the whole distinction) — the old
+ * `startsWith("m")` test read "Cmonsoon" as C minor and "D dorian" as D major,
+ * because anything that wasn't recognisably minor silently became major.
+ */
+const KEY_MODE_ALIASES: Record<string, KeyMode> = {
+  "": "major",
+  major: "major",
+  maj: "major",
+  ionian: "major",
+  minor: "minor",
+  min: "minor",
+  m: "minor",
+  aeolian: "minor",
+  "natural minor": "minor",
+  dorian: "dorian",
+  phrygian: "phrygian",
+  lydian: "lydian",
+  mixolydian: "mixolydian",
+  locrian: "locrian",
+};
+
+/** ABC's K: field spells the modes with a three-letter suffix. */
+const ABC_MODE_SUFFIX: Record<KeyMode, string> = {
+  major: "",
+  minor: "m",
+  dorian: "dor",
+  phrygian: "phr",
+  lydian: "lyd",
+  mixolydian: "mix",
+  locrian: "loc",
+};
+
+export const KEY_HELP =
+  'Write a key as a tonic plus an optional mode: "C", "A minor", "F# major", "D dorian". ' +
+  "Modes: major (ionian), minor (aeolian), dorian, phrygian, lydian, mixolydian, locrian " +
+  "— plus the shorthands m, min, maj, M.";
+
 export interface ParsedKey {
   tonic: string;
-  mode: "major" | "minor";
+  mode: KeyMode;
   name: string;
 }
 
 export function parseKeyName(input: string): ParsedKey | null {
-  const raw = input.trim();
+  const raw = String(input ?? "").trim();
   if (!raw) return null;
 
   const match = raw.match(/^([A-Ga-g](?:#{1,2}|b{1,2}|s)?)\s*(.*)$/);
@@ -247,10 +437,12 @@ export function parseKeyName(input: string): ParsedKey | null {
   const tonic = tonicRaw[0]!.toUpperCase() + tonicRaw.slice(1);
   if (Note.get(tonic).empty) return null;
 
-  const rest = match[2]!.trim().toLowerCase();
-  const minor =
-    rest.startsWith("m") && !rest.startsWith("maj") && !rest.startsWith("major");
-  const mode: "major" | "minor" = minor || rest === "min" ? "minor" : "major";
+  const rest = match[2]!.trim();
+  // `CM` is C major and `Cm` is C minor — the one place case carries meaning.
+  if (rest === "M") return { tonic, mode: "major", name: `${tonic} major` };
+
+  const mode = KEY_MODE_ALIASES[rest.toLowerCase().replace(/\s+/g, " ")];
+  if (!mode) return null;
   return { tonic, mode, name: `${tonic} ${mode}` };
 }
 
@@ -258,8 +450,46 @@ export function parseKeyName(input: string): ParsedKey | null {
 // Diatonic helpers
 // -----------------------------------------------------------------------------
 
-const ROMAN_MAJOR = ["I", "ii", "iii", "IV", "V", "vi", "vii°"];
-const ROMAN_MINOR = ["i", "ii°", "III", "iv", "v", "VI", "VII"];
+const ROMAN_DEGREES = ["I", "II", "III", "IV", "V", "VI", "VII"];
+
+/** The seven modes in rotation order, so a mode's chord scales are a slice of it. */
+const MODE_ROTATION: KeyMode[] = [
+  "major",
+  "dorian",
+  "phrygian",
+  "lydian",
+  "mixolydian",
+  "minor",
+  "locrian",
+];
+
+/** tonal's mode name for a `KeyMode` (it spells the two familiar ones differently). */
+const TONAL_MODE_NAME: Record<KeyMode, string> = {
+  major: "ionian",
+  minor: "aeolian",
+  dorian: "dorian",
+  phrygian: "phrygian",
+  lydian: "lydian",
+  mixolydian: "mixolydian",
+  locrian: "locrian",
+};
+
+/**
+ * Roman numerals read off the triads themselves: lowercase for a minor third,
+ * `°` for a diminished fifth, `+` for an augmented one. Reproduces the familiar
+ * `I ii iii IV V vi vii°` / `i ii° III iv v VI VII` rows exactly, and gets the
+ * modal rows right for free.
+ */
+function romansFromTriads(triads: readonly string[]): string[] {
+  return triads.map((symbol, i) => {
+    const chord = Chord.get(symbol);
+    const minor = chord.quality === "Minor" || chord.quality === "Diminished";
+    const base = minor ? ROMAN_DEGREES[i]!.toLowerCase() : ROMAN_DEGREES[i]!;
+    if (chord.quality === "Diminished") return `${base}°`;
+    if (chord.quality === "Augmented") return `${base}+`;
+    return base;
+  });
+}
 
 export interface KeyMaterial {
   name: string;
@@ -270,30 +500,38 @@ export interface KeyMaterial {
   triads: string[];
   romans: string[];
   chordScales: string[];
+  /** The suffix ABC's K: field uses for this mode ("", "m", "dor", …). */
+  abcModeSuffix: string;
+  /** Scale name for Strudel's `.scale("C:major")` — always a real tonal name. */
+  strudelScale: string;
 }
 
 export function keyMaterial(parsed: ParsedKey): KeyMaterial | null {
-  if (parsed.mode === "major") {
-    const k = Key.majorKey(parsed.tonic);
-    if (k.scale.length === 0) return null;
-    return {
-      name: parsed.name,
-      scale: k.scale.slice(),
-      sevenths: k.chords.map(friendlyChordSymbol),
-      triads: k.triads.map(friendlyChordSymbol),
-      romans: ROMAN_MAJOR,
-      chordScales: k.chordScales.slice(),
-    };
-  }
-  const k = Key.minorKey(parsed.tonic);
-  if (k.natural.scale.length === 0) return null;
+  const mode: KeyMode = parsed.mode;
+  const tonal = TONAL_MODE_NAME[mode];
+  if (!tonal) return null;
+
+  const scale = Mode.notes(tonal, parsed.tonic);
+  if (scale.length !== 7 || scale.some((n) => Note.get(n).empty)) return null;
+
+  const triads = Mode.triads(tonal, parsed.tonic).map(friendlyChordSymbol);
+  const sevenths = Mode.seventhChords(tonal, parsed.tonic).map(friendlyChordSymbol);
+
+  // Degree i of a mode takes the mode that sits i steps further round the cycle.
+  const start = MODE_ROTATION.indexOf(mode);
+  const chordScales = scale.map(
+    (note, i) => `${note} ${MODE_ROTATION[(start + i) % 7]}`,
+  );
+
   return {
     name: parsed.name,
-    scale: k.natural.scale.slice(),
-    sevenths: k.natural.chords.map(friendlyChordSymbol),
-    triads: k.natural.triads.map(friendlyChordSymbol),
-    romans: ROMAN_MINOR,
-    chordScales: k.natural.chordScales.slice(),
+    scale,
+    sevenths,
+    triads,
+    romans: romansFromTriads(triads),
+    chordScales,
+    abcModeSuffix: ABC_MODE_SUFFIX[mode],
+    strudelScale: mode,
   };
 }
 
@@ -344,9 +582,11 @@ export const CHORD_SCALE_NAMES = [
   "whole-half diminished",
   "whole tone",
   "altered",
+  "lydian dominant",
   "mixolydian",
   "major",
   "minor",
+  "melodic minor",
   "dorian",
 ] as const;
 
@@ -360,25 +600,54 @@ export function strudelScaleName(scale: string): string {
   return scale.trim().replace(/\s+/g, ":");
 }
 
-/** Chord-scale suggestions keyed by tonal's chord `type`, longest match first. */
-const CHORD_SCALE_BY_TYPE: [RegExp, ChordScaleName][] = [
-  [/half.?diminished|minor seventh flat five/, "locrian"],
-  // tonal's "whole-half diminished" is the symmetric scale for a dim7 chord.
-  [/diminished seventh/, "whole-half diminished"],
-  [/diminished/, "locrian"],
-  [/augmented/, "whole tone"],
-  // tonal calls this one "altered"; "super locrian" is its alias.
-  [/dominant seventh flat nine|seventh b9|altered/, "altered"],
-  [/dominant|seventh(?! flat five)$|^7/, "mixolydian"],
-  [/major seventh|major ninth|major sixth|^major$|^sixth$/, "major"],
-  [/minor seventh|minor ninth|minor sixth|^minor$/, "dorian"],
-  [/suspended/, "mixolydian"],
-];
+/**
+ * Root-position intervals. A slash chord's `intervals` are measured from the
+ * BASS (`C/G` is `5P 8P 10M` — no third in sight), so re-read the chord from its
+ * first alias to get the quality back before matching on it.
+ */
+function rootIntervals(chord: ReturnType<typeof Chord.get>): string[] {
+  if (!chord.bass || chord.bass === chord.tonic) return chord.intervals;
+  const root = Chord.get(`${chord.tonic}${chord.aliases[0] ?? ""}`);
+  return root.empty ? chord.intervals : root.intervals;
+}
 
+/**
+ * Chord → chord scale, decided by what the chord actually CONTAINS.
+ *
+ * The old table matched prose against tonal's `type` string, which meant a
+ * symbol whose prose tonal happened to spell differently fell through to a
+ * broad `/dominant/` catch-all: `G7b9` is "dominant flat ninth", matched no
+ * altered-dominant branch, and was answered with mixolydian — a scale
+ * containing the natural 9 the chord explicitly flattens.
+ */
 function chordScaleFor(chordName: string): ChordScaleName {
   const chord = Chord.get(chordName);
-  const type = `${chord.type} ${chord.quality}`.toLowerCase();
-  for (const [re, scale] of CHORD_SCALE_BY_TYPE) if (re.test(type)) return scale;
+  const intervals = new Set(rootIntervals(chord));
+  const has = (...wanted: string[]) => wanted.every((i) => intervals.has(i));
+  const any = (...wanted: string[]) => wanted.some((i) => intervals.has(i));
+
+  const third = intervals.has("3M") ? "major" : intervals.has("3m") ? "minor" : null;
+  const dominant = third === "major" && intervals.has("7m");
+
+  // Diminished family, innermost first: dim7 (bb7) before m7b5 before the triad.
+  if (has("3m", "5d")) {
+    // tonal spells the dim7's seventh "7d" (a doubly-flattened seventh).
+    if (any("7d", "6M") && !intervals.has("7m")) return "whole-half diminished";
+    return "locrian";
+  }
+  // Altered dominant: any alteration of the 5th or 9th over a dominant 7th.
+  if (dominant && any("5A", "5d", "9m", "9A", "13m", "6m")) return "altered";
+  // Lydian dominant is the one #11 that isn't "altered".
+  if (dominant && any("11A", "4A")) return "lydian dominant";
+  if (dominant) return "mixolydian";
+  // Augmented triads and maj7#5.
+  if (third === "major" && intervals.has("5A")) return "whole tone";
+  if (third === "major") return "major";
+  // A minor triad with a major 7th is melodic minor, not dorian.
+  if (third === "minor" && intervals.has("7M")) return "melodic minor";
+  if (third === "minor") return "dorian";
+  // No third at all: sus chords (and power chords) read as dominant.
+  if (any("4P", "2M", "5P")) return "mixolydian";
   return chord.quality === "Minor" ? "dorian" : "major";
 }
 
@@ -446,7 +715,9 @@ function detectChord(args: AnalyzeHarmonyArgs): string {
       `No standard chord matches ${noteList}. It may be a fragment, a cluster, or an incomplete voicing.`,
     );
     lines.push(`Closest keys for those notes: ${keys.slice(0, 3).map((k) => k.name).join(", ")}.`);
-    lines.push(`Strudel: note("${parsed.map((n) => strudelNote(n)).join(" ")}")`);
+    // `note("c4 e4 g4")` plays a SEQUENCE in Strudel; a chord is one bracketed
+    // step with the notes comma-separated.
+    lines.push(`Strudel: note("[${parsed.map((n) => strudelNote(n)).join(",")}]")`);
     if (bad.length) lines.push(`Ignored unreadable notes: ${bad.join(", ")}.`);
     return lines.join("\n");
   }
@@ -473,10 +744,14 @@ function detectChord(args: AnalyzeHarmonyArgs): string {
   }
 
   lines.push(`ABC chord symbol: "${best}"`);
+  // ABC and Strudel spell the same chord differently: ABC wants "Cmaj7", the
+  // ireal voicing dictionary only answers to "C^7".
+  const voiced = irealChordSymbol(best);
+  const spelled = `note("[${ascendingStrudelNotes(chord.notes).join(",")}]")`;
   lines.push(
-    `Strudel: chord("${best}").voicing()  —  or spelled out: note("${ascendingStrudelNotes(
-      chord.notes,
-    ).join(" ")}")`,
+    voiced
+      ? `Strudel: chord("${voiced}").voicing()  —  or spelled out: ${spelled}`
+      : `Strudel: ${spelled}  (no ireal voicing for "${best}" — spell it out)`,
   );
   if (bad.length) lines.push(`Ignored unreadable notes: ${bad.join(", ")}.`);
   return lines.join("\n");
@@ -526,9 +801,7 @@ function detectKey(args: AnalyzeHarmonyArgs): string {
     lines.push(`Diatonic sevenths: ${material.sevenths.join(" ")}`);
   }
   lines.push(`ABC key field: K:${best.tonic}${best.mode === "minor" ? "m" : ""}`);
-  lines.push(
-    `Strudel: n("0 2 4").scale("${best.tonic}:${best.mode === "minor" ? "minor" : "major"}")`,
-  );
+  lines.push(`Strudel: n("0 2 4").scale("${best.tonic}:${best.mode}")`);
   if (unreadable.length) lines.push(`Ignored unreadable input: ${unreadable.join(", ")}.`);
   return lines.join("\n");
 }
@@ -541,7 +814,7 @@ function suggestProgression(args: AnalyzeHarmonyArgs): string {
   const parsed = parseKeyName(keyInput);
   const material = parsed ? keyMaterial(parsed) : null;
   if (!parsed || !material) {
-    return `Could not read the key "${keyInput}". Try "C", "F# major", or "A minor".`;
+    return `Could not read the key "${keyInput}". ${KEY_HELP}`;
   }
 
   const numerals = nonEmpty(args.romanNumerals);
@@ -560,19 +833,23 @@ function suggestProgression(args: AnalyzeHarmonyArgs): string {
       );
     }
     lines.push(`ABC: ${chords.map((c) => `"${c}"`).join(" ")}`);
-    lines.push(`Strudel: chord("<${chords.join(" ")}>").voicing().s("gm_epiano1")`);
+    lines.push(`Strudel: chord("<${irealChordList(chords)}>").voicing().s("gm_epiano1")`);
     return lines.join("\n");
   }
 
   lines.push("");
+  // The canned sets are written for the two tonal modes; a modal key borrows the
+  // set whose third matches its own.
+  const minorish = parsed.mode !== "major" && parsed.mode !== "lydian" &&
+    parsed.mode !== "mixolydian";
   for (const preset of CANNED_PROGRESSIONS) {
-    const numeralSet = parsed.mode === "major" ? preset.major : preset.minor;
+    const numeralSet = minorish ? preset.minor : preset.major;
     const chords = Progression.fromRomanNumerals(
       parsed.tonic,
       numeralSet.map(normalizeRomanNumeral),
     ).map(friendlyChordSymbol);
     lines.push(`${preset.label}: ${chords.join(" ")}`);
-    lines.push(`  Strudel: chord("<${chords.join(" ")}>").voicing().s("gm_epiano1")`);
+    lines.push(`  Strudel: chord("<${irealChordList(chords)}>").voicing().s("gm_epiano1")`);
   }
   lines.push("");
   lines.push(`Diatonic sevenths: ${material.sevenths.join(" ")}`);
@@ -626,7 +903,7 @@ function keyChords(args: AnalyzeHarmonyArgs): string {
   const parsed = parseKeyName(keyInput);
   const material = parsed ? keyMaterial(parsed) : null;
   if (!parsed || !material) {
-    return `Could not read the key "${keyInput}". Try "C", "F# major", or "A minor".`;
+    return `Could not read the key "${keyInput}". ${KEY_HELP}`;
   }
 
   const rows = material.romans.map(
@@ -639,10 +916,10 @@ function keyChords(args: AnalyzeHarmonyArgs): string {
     `Scale: ${material.scale.join(" ")}`,
     "  deg   triad    seventh   chord scale",
     ...rows,
-    `ABC key field: K:${parsed.tonic}${parsed.mode === "minor" ? "m" : ""}`,
+    `ABC key field: K:${parsed.tonic}${material.abcModeSuffix}`,
     `ABC chord symbols: ${material.sevenths.map((c) => `"${c}"`).join(" ")}`,
-    `Strudel: chord("<${material.sevenths.slice(0, 4).join(" ")}>").voicing().s("gm_epiano1")`,
-    `Strudel scale: n("0 1 2 3 4 5 6").scale("${parsed.tonic}:${parsed.mode}")`,
+    `Strudel: chord("<${irealChordList(material.sevenths.slice(0, 4))}>").voicing().s("gm_epiano1")`,
+    `Strudel scale: n("0 1 2 3 4 5 6").scale("${parsed.tonic}:${strudelScaleName(material.strudelScale)}")`,
   ].join("\n");
 }
 

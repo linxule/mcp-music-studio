@@ -3,9 +3,14 @@ import { Scale } from "tonal";
 import { describe, expect, it } from "vitest";
 import {
   analyzeHarmony,
+  asciiChordSymbol,
   CHORD_SCALE_NAMES,
   friendlyChordSymbol,
   HARMONY_TASKS,
+  irealChordSymbol,
+  IREAL_VOICING_SUFFIXES,
+  isChordSymbol,
+  KEY_MODES,
   keyMaterial,
   normalizeRomanNumeral,
   parseKeyName,
@@ -132,7 +137,8 @@ describe("analyzeHarmony — detect-chord", () => {
     expect(text).toContain("C E G B");
     expect(text).toContain("Fits keys: C major");
     expect(text).toContain("Try next");
-    expect(text).toContain('chord("Cmaj7").voicing()');
+    // ABC spells it Cmaj7; Strudel's ireal voicing dictionary only knows C^7.
+    expect(text).toContain('chord("C^7").voicing()');
     expect(text).toContain('ABC chord symbol: "Cmaj7"');
   });
 
@@ -150,7 +156,9 @@ describe("analyzeHarmony — detect-chord", () => {
       task: "detect-chord",
       notes: ["d4", "f4", "a4", "c5"],
     });
-    expect(text).toContain('note("d4 f4 a4 c5")');
+    // Comma-separated inside one bracketed step — `note("d4 f4 a4 c5")` would
+    // play the chord as an arpeggio, one note per quarter of the cycle.
+    expect(text).toContain('note("[d4,f4,a4,c5]")');
   });
 
   it("explains itself when no chord matches", () => {
@@ -207,7 +215,7 @@ describe("analyzeHarmony — suggest-progression", () => {
     const text = analyzeHarmony({ task: "suggest-progression", key: "C" });
     expect(text).toContain("ii-V-I (jazz cadence): Dm7 G7 Cmaj7");
     expect(text).toContain("I-V-vi-IV (pop): C G Am F");
-    expect(text).toContain('chord("<Dm7 G7 Cmaj7>").voicing()');
+    expect(text).toContain('chord("<Dm7 G7 C^7>").voicing()');
   });
 
   it("renders supplied roman numerals with minor quality intact", () => {
@@ -394,5 +402,262 @@ describe("analyze-harmony handler", () => {
     const result = await handleAnalyzeHarmony({ task: "detect-chord" });
     expect(result.isError).toBeUndefined();
     expect(result.content[0]?.text).toContain("at least 2 notes");
+  });
+});
+
+// =============================================================================
+// Regressions the mechanical audit found (report section 5)
+// =============================================================================
+
+describe("H1 — the key suffix is read, not skimmed", () => {
+  // The old parser tested `rest.startsWith("m")` and called everything else
+  // major, so "garbage" was G major, "D dorian" was D major, "A aeolian" was A
+  // major, and "Cmonsoon" was C minor.
+  it("names the mode that was actually asked for", () => {
+    expect(parseKeyName("D dorian")).toMatchObject({ tonic: "D", mode: "dorian" });
+    expect(parseKeyName("G mixolydian")).toMatchObject({ tonic: "G", mode: "mixolydian" });
+    expect(parseKeyName("E phrygian")).toMatchObject({ tonic: "E", mode: "phrygian" });
+    expect(parseKeyName("F lydian")).toMatchObject({ tonic: "F", mode: "lydian" });
+    expect(parseKeyName("B locrian")).toMatchObject({ tonic: "B", mode: "locrian" });
+    // ionian and aeolian are major and minor under their other names
+    expect(parseKeyName("C ionian")).toMatchObject({ tonic: "C", mode: "major" });
+    expect(parseKeyName("A aeolian")).toMatchObject({ tonic: "A", mode: "minor" });
+  });
+
+  it("refuses a suffix it does not know", () => {
+    for (const bad of ["garbage", "Cmonsoon", "D dorina", "C blues", "Ffoo", "Bbmajorish"]) {
+      expect(parseKeyName(bad), bad).toBeNull();
+    }
+  });
+
+  it("keeps the shorthands, case and all", () => {
+    expect(parseKeyName("Cm")).toMatchObject({ mode: "minor" });
+    expect(parseKeyName("Cmin")).toMatchObject({ mode: "minor" });
+    expect(parseKeyName("CM")).toMatchObject({ mode: "major" });
+    expect(parseKeyName("Cmaj")).toMatchObject({ mode: "major" });
+    expect(parseKeyName("C")).toMatchObject({ mode: "major" });
+  });
+
+  it("tells the caller what a key may look like", () => {
+    const text = analyzeHarmony({ task: "key-chords", key: "Cmonsoon" });
+    expect(text).toContain('Could not read the key "Cmonsoon"');
+    expect(text).toContain("dorian");
+    expect(text).toContain("mixolydian");
+  });
+
+  it("builds the modal material, not the parallel major's", () => {
+    const text = analyzeHarmony({ task: "key-chords", key: "D dorian" });
+    expect(text).toContain("Key: D dorian");
+    expect(text).toContain("Scale: D E F G A B C");
+    // dorian's degree 1 is minor and its IV is dominant — that is the whole point
+    expect(text).toContain("Dm7");
+    expect(text).toContain("G7");
+    expect(text).toContain("ABC key field: K:Ddor");
+    expect(text).toContain('scale("D:dorian")');
+  });
+
+  it("reads the roman numerals off the triads, for every mode", () => {
+    const romans = (key: string) => keyMaterial(parseKeyName(key)!)!.romans;
+    expect(romans("C")).toEqual(["I", "ii", "iii", "IV", "V", "vi", "vii°"]);
+    expect(romans("A minor")).toEqual(["i", "ii°", "III", "iv", "v", "VI", "VII"]);
+    expect(romans("D dorian")).toEqual(["i", "ii", "III", "IV", "v", "vi°", "VII"]);
+    expect(romans("G mixolydian")).toEqual(["I", "ii", "iii°", "IV", "v", "vi", "VII"]);
+  });
+
+  it("has material and an ABC spelling for every declared mode", () => {
+    for (const mode of KEY_MODES) {
+      const parsed = parseKeyName(`C ${mode}`);
+      expect(parsed, mode).not.toBeNull();
+      const material = keyMaterial(parsed!)!;
+      expect(material.scale, mode).toHaveLength(7);
+      expect(material.sevenths, mode).toHaveLength(7);
+      expect(material.romans, mode).toHaveLength(7);
+      expect(Scale.get(`C ${material.strudelScale}`).empty, mode).toBe(false);
+      expect(analyzeHarmony({ task: "key-chords", key: `C ${mode}` }), mode).toContain(
+        `Key: C ${mode}`,
+      );
+    }
+  });
+});
+
+describe("H2 — the chord scale follows the chord's intervals", () => {
+  const scaleFor = (chord: string) => {
+    const line = analyzeHarmony({ task: "scale-for-chord", chords: [chord] }).split("\n")[0]!;
+    return line.slice(line.indexOf("→ ") + 2).split(":")[0]!.trim();
+  };
+
+  it("hears the flat nine in a G7b9", () => {
+    // tonal calls this type "dominant flat ninth", which no prose branch matched,
+    // so it fell through to /dominant/ and was answered with G mixolydian — a
+    // scale containing the very A the chord flattens.
+    expect(scaleFor("G7b9")).toBe("G altered");
+    expect(scaleFor("C7#9")).toBe("C altered");
+    expect(scaleFor("C7b13")).toBe("C altered");
+    expect(scaleFor("C7alt")).toBe("C altered");
+    expect(scaleFor("Calt7")).toBe("C altered");
+  });
+
+  it("leaves an unaltered dominant on mixolydian", () => {
+    expect(scaleFor("G7")).toBe("G mixolydian");
+    expect(scaleFor("C13")).toBe("C mixolydian");
+    expect(scaleFor("C7sus4")).toBe("C mixolydian");
+  });
+
+  it("separates the two sharp-eleven dominants", () => {
+    expect(scaleFor("C7#11")).toBe("C lydian dominant");
+    expect(scaleFor("C7b9#11")).toBe("C altered");
+  });
+
+  it("keeps the diminished family apart", () => {
+    expect(scaleFor("Cdim7")).toBe("C whole-half diminished");
+    expect(scaleFor("Cm7b5")).toBe("C locrian");
+    expect(scaleFor("Cdim")).toBe("C locrian");
+  });
+
+  it("hears a minor triad with a major seventh as melodic minor", () => {
+    expect(scaleFor("CmMaj7")).toBe("C melodic minor");
+    expect(scaleFor("Cm7")).toBe("C dorian");
+    expect(scaleFor("Cm6")).toBe("C dorian");
+  });
+
+  it("reads a slash chord from its root, not its bass", () => {
+    // `Chord.get("C/G").intervals` is measured from the BASS (5P 8P 10M), so a
+    // naive interval test finds no third at all.
+    expect(scaleFor("C/G")).toBe("C major");
+    expect(scaleFor("Cmaj7/E")).toBe("C major");
+    expect(scaleFor("G7/B")).toBe("G mixolydian");
+  });
+
+  it("still answers for the plain triads", () => {
+    expect(scaleFor("C")).toBe("C major");
+    expect(scaleFor("Cm")).toBe("C dorian");
+    expect(scaleFor("Caug")).toBe("C whole tone");
+    expect(scaleFor("Cmaj7")).toBe("C major");
+  });
+});
+
+describe("H3 — the Strudel snippets are ones Strudel can play", () => {
+  it("prints a chord as one bracketed step, not an arpeggio", () => {
+    // `note("c4 e4 g4")` is a SEQUENCE — three events, one per third of a cycle.
+    const text = analyzeHarmony({ task: "detect-chord", notes: ["c4", "e4", "g4"] });
+    expect(text).toContain('note("[c4,e4,g4]")');
+    expect(text).not.toMatch(/note\("[a-g][#b]?\d [a-g]/);
+  });
+
+  it("brackets the fallback spelling when no chord matches either", () => {
+    const text = analyzeHarmony({ task: "detect-chord", notes: ["c4", "c#4"] });
+    expect(text).toContain('note("[c4,c#4]")');
+  });
+
+  describe("irealChordSymbol", () => {
+    // Verified against the published @strudel/tonal@1.2.6 source: renderVoicing
+    // does `dictionary[suffix]` — an exact lookup in ireal.mjs's `simple` table
+    // plus the aliases voicings.mjs derives at import time. A miss is caught and
+    // becomes `silence`, so a wrong spelling is a SILENT layer, not an error.
+    it("respells the symbols the dictionary would otherwise miss", () => {
+      expect(irealChordSymbol("Cmaj7")).toBe("C^7");
+      expect(irealChordSymbol("Cmaj9")).toBe("C^9");
+      expect(irealChordSymbol("Cmaj13")).toBe("C^13");
+      expect(irealChordSymbol("Cdim")).toBe("Co");
+      expect(irealChordSymbol("Cdim7")).toBe("Co7");
+      expect(irealChordSymbol("Csus4")).toBe("Csus");
+      expect(irealChordSymbol("Csus2")).toBe("C2");
+      expect(irealChordSymbol("C6/9")).toBe("C69");
+      expect(irealChordSymbol("CmMaj7")).toBe("Cm^7");
+      expect(irealChordSymbol("Calt7")).toBe("C7alt");
+    });
+
+    it("leaves the spellings the dictionary already accepts alone", () => {
+      for (const symbol of ["C", "Cm", "Cm7", "C7", "C9", "C6", "Cm6", "C69", "Cadd9",
+        "Cm7b5", "C7b9", "C7#9", "C7#11", "C7b13", "C11", "Cm11", "C13", "C5"]) {
+        expect(irealChordSymbol(symbol), symbol).toBe(symbol);
+      }
+    });
+
+    it("keeps the root's spelling and the slash bass", () => {
+      expect(irealChordSymbol("Bbmaj7")).toBe("Bb^7");
+      expect(irealChordSymbol("F#m7")).toBe("F#m7");
+      expect(irealChordSymbol("Cmaj7/E")).toBe("C^7/E");
+    });
+
+    it("says no rather than guessing", () => {
+      for (const bad of ["N.C.", "rit.", "", "hello", "Cm(add9)"]) {
+        expect(irealChordSymbol(bad), bad).toBeNull();
+      }
+    });
+
+    it("only ever returns a suffix the dictionary holds", () => {
+      const roots = ["C", "F#", "Bb"];
+      const suffixes = ["", "m", "maj7", "m7", "7", "6", "m6", "maj9", "m9", "9", "sus4",
+        "sus2", "add9", "dim", "dim7", "aug", "m7b5", "7b9", "7#9", "7#11", "7b13", "11",
+        "13", "mMaj7", "6/9", "alt7"];
+      for (const root of roots) {
+        for (const suffix of suffixes) {
+          const out = irealChordSymbol(`${root}${suffix}`);
+          expect(out, `${root}${suffix}`).not.toBeNull();
+          const tail = out!.replace(/^[A-G][b#]*/, "").split("/")[0]!;
+          expect(IREAL_VOICING_SUFFIXES.has(tail), `${root}${suffix} → ${out}`).toBe(true);
+        }
+      }
+    });
+  });
+
+  it("respells every chord it prints inside chord(…)", () => {
+    const texts = [
+      analyzeHarmony({ task: "detect-chord", notes: ["c4", "e4", "g4", "b4"] }),
+      analyzeHarmony({ task: "suggest-progression", key: "C" }),
+      analyzeHarmony({ task: "suggest-progression", key: "A minor" }),
+      analyzeHarmony({ task: "suggest-progression", key: "D dorian" }),
+      analyzeHarmony({ task: "suggest-progression", key: "C", romanNumerals: ["iim7", "V7", "Imaj7"] }),
+      analyzeHarmony({ task: "key-chords", key: "C" }),
+      analyzeHarmony({ task: "key-chords", key: "F# major" }),
+      analyzeHarmony({ task: "key-chords", key: "A minor" }),
+      analyzeHarmony({ task: "key-chords", key: "G mixolydian" }),
+    ].join("\n");
+
+    const emitted = [...texts.matchAll(/chord\("<?([^"]*?)>?"\)/g)].flatMap((m) =>
+      m[1]!.split(/[\s[\]]+/).filter(Boolean),
+    );
+    expect(emitted.length).toBeGreaterThan(15);
+    for (const token of emitted) {
+      if (token === "~") continue;
+      const suffix = token.replace(/^[A-G][b#]*/, "").split("/")[0]!.replace(/@\d+$/, "");
+      expect(IREAL_VOICING_SUFFIXES.has(suffix), `${token} → "${suffix}"`).toBe(true);
+    }
+    // ABC still gets the lead-sheet spelling — the two notations differ on purpose.
+    expect(texts).toContain('ABC chord symbol: "Cmaj7"');
+  });
+
+  it("derives the dictionary the way voicings.mjs does", () => {
+    // Spot-checks against the published table, so a wrong derivation is caught.
+    for (const present of ["", "^7", "M7", "m7", "-7", "m7b5", "h7", "o7", "o", "aug",
+      "+", "sus", "7sus", "69", "add9", "7alt", "m^7", "-^7", "2", "5"]) {
+      expect(IREAL_VOICING_SUFFIXES.has(present), present).toBe(true);
+    }
+    for (const absent of ["maj7", "maj9", "dim", "dim7", "sus4", "sus2", "mMaj7", "6/9",
+      "min7", "M9#5", "alt7"]) {
+      expect(IREAL_VOICING_SUFFIXES.has(absent), absent).toBe(false);
+    }
+  });
+});
+
+describe("chord symbols arrive as ASCII", () => {
+  it("undoes the typographic accidentals abcjs prints", () => {
+    expect(asciiChordSymbol("B♭maj7")).toBe("Bbmaj7");
+    expect(asciiChordSymbol("F♯m7")).toBe("F#m7");
+    expect(asciiChordSymbol("C△")).toBe("Cmaj7");
+    expect(asciiChordSymbol("C°7")).toBe("Cdim7");
+    // ø already means the seventh — don't let it survive twice
+    expect(asciiChordSymbol("Cø7")).toBe("Cm7b5");
+    expect(asciiChordSymbol("Cø")).toBe("Cm7b5");
+  });
+
+  it("separates chord symbols from annotations", () => {
+    for (const yes of ["C", "Am7", "B♭maj7", "F#m7b5", "G7/B", "Csus4"]) {
+      expect(isChordSymbol(yes), yes).toBe(true);
+    }
+    for (const no of ["rit.", "N.C.", "", "poco a poco", "cresc."]) {
+      expect(isChordSymbol(no), no).toBe(false);
+    }
   });
 });
