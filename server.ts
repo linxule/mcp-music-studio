@@ -38,7 +38,7 @@ import {
   STRUDEL_RESOURCE_URI,
   SERVER_INSTRUCTIONS,
   advertiseUiExtension,
-  PLAY_TOOL_ANNOTATIONS,
+  playToolAnnotations,
   GUIDE_TOOL_ANNOTATIONS,
   SEARCH_TOOL_ANNOTATIONS,
   SHEET_CSP,
@@ -167,6 +167,48 @@ export function createServer(options?: ServerOptions): McpServer {
   // and could never fire before tools/list in stateless HTTP anyway.
   const inlineMode = defaultRenderMode === "auto";
 
+  // Hints follow the mode: only --render-mode browser writes a file and opens
+  // an app, and only then is the tool not read-only. See playToolAnnotations.
+  const playAnnotations = playToolAnnotations(defaultRenderMode);
+
+  /**
+   * Register a play tool, with its ext-apps widget only in "auto" mode.
+   *
+   * `--render-mode html|browser` exists precisely because the operator knows the
+   * client can't render a widget. Advertising `_meta.ui.resourceUri` anyway let
+   * a *capable* host render the inline widget **as well as** receiving the HTML
+   * blob / opening a browser window — two players for one call. In the explicit
+   * modes the tool is registered plainly, with no UI metadata at all, so there
+   * is exactly one rendering path.
+   */
+  const registerPlayTool = (
+    name: string,
+    config: {
+      title: string;
+      description: string;
+      inputSchema: z.ZodTypeAny;
+      resourceUri: string;
+    },
+    handler: (args: never) => Promise<CallToolResult>,
+  ) => {
+    const base = {
+      title: config.title,
+      description: config.description,
+      inputSchema: config.inputSchema,
+      annotations: playAnnotations,
+    };
+    if (inlineMode) {
+      registerAppTool(
+        server,
+        name,
+        { ...base, _meta: uiToolMeta(config.resourceUri) },
+        handler as never,
+      );
+    } else {
+      server.registerTool(name, base as never, handler as never);
+    }
+  };
+
   // ---------------------------------------------------------------------------
   // Tool: play-sheet-music
   // ---------------------------------------------------------------------------
@@ -245,8 +287,7 @@ export function createServer(options?: ServerOptions): McpServer {
     return result;
   };
 
-  registerAppTool(
-    server,
+  registerPlayTool(
     "play-sheet-music",
     {
       title: "Play Sheet Music",
@@ -254,10 +295,9 @@ export function createServer(options?: ServerOptions): McpServer {
         PLAY_SHEET_BASE_DESCRIPTION +
         (inlineMode ? PLAY_SHEET_EXT_APPS_SUFFIX : PLAY_SHEET_FALLBACK_SUFFIX),
       inputSchema: playSheetInputSchema,
-      annotations: PLAY_TOOL_ANNOTATIONS,
-      _meta: uiToolMeta(SHEET_RESOURCE_URI),
+      resourceUri: SHEET_RESOURCE_URI,
     },
-    playHandler,
+    playHandler as never,
   );
 
   // ---------------------------------------------------------------------------
@@ -335,6 +375,9 @@ export function createServer(options?: ServerOptions): McpServer {
       code: args.code,
       bpm: args.bpm,
       autoplay: args.autoplay,
+      // The generator gained an optional `title`; spread so this compiles
+      // whether or not that option is present in the signature yet.
+      ...(args.title ? { title: args.title } : {}),
     };
 
     if (defaultRenderMode === "html") {
@@ -382,8 +425,7 @@ export function createServer(options?: ServerOptions): McpServer {
     return result;
   };
 
-  registerAppTool(
-    server,
+  registerPlayTool(
     "play-live-pattern",
     {
       title: "Play Live Pattern",
@@ -391,10 +433,9 @@ export function createServer(options?: ServerOptions): McpServer {
         PLAY_LIVE_BASE_DESCRIPTION +
         (inlineMode ? PLAY_LIVE_EXT_APPS_SUFFIX : PLAY_LIVE_FALLBACK_SUFFIX),
       inputSchema: playLiveInputSchema,
-      annotations: PLAY_TOOL_ANNOTATIONS,
-      _meta: uiToolMeta(STRUDEL_RESOURCE_URI),
+      resourceUri: STRUDEL_RESOURCE_URI,
     },
-    strudelPlayHandler,
+    strudelPlayHandler as never,
   );
 
   // ---------------------------------------------------------------------------

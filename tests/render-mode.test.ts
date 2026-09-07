@@ -12,7 +12,7 @@ describe("render modes", () => {
   let client: Client;
   let cleanup: () => Promise<void>;
 
-  async function connect(mode: "auto" | "html") {
+  async function connect(mode: "auto" | "html" | "browser") {
     const server = createServer({ defaultRenderMode: mode });
     const [c, s] = InMemoryTransport.createLinkedPair();
     client = new Client({ name: "test-client", version: "1.0.0" });
@@ -90,5 +90,111 @@ describe("render modes", () => {
     expect((content[0] as { text: string }).text).toContain(
       "nothing has played yet",
     );
+  });
+});
+
+// =============================================================================
+// What tools/list says about each mode
+// =============================================================================
+//
+// Two things used to be constant across modes and shouldn't be:
+//
+// T4 — the widget `_meta`. `--render-mode html|browser` is set precisely because
+//      the client can't render an inline widget, yet the play tools still
+//      advertised `ui.resourceUri`. A host that CAN render one would then show
+//      the widget *and* deliver the HTML blob / open a browser window.
+// T3 — `readOnlyHint`. Browser mode writes a file under --output-dir and shells
+//      out to open it, which is neither read-only nor closed-world.
+describe("tools/list per render mode", () => {
+  let client: Client;
+  let cleanup: () => Promise<void>;
+
+  async function toolsFor(mode: "auto" | "html" | "browser") {
+    const server = createServer({ defaultRenderMode: mode });
+    const [c, s] = InMemoryTransport.createLinkedPair();
+    client = new Client({ name: "test-client", version: "1.0.0" });
+    await Promise.all([client.connect(c), server.server.connect(s)]);
+    cleanup = async () => {
+      await client.close();
+      await server.close();
+    };
+    const { tools } = await client.listTools();
+    return tools;
+  }
+
+  afterEach(async () => {
+    await cleanup();
+  });
+
+  const PLAY_TOOLS = ["play-sheet-music", "play-live-pattern"];
+
+  it("auto mode advertises the widget in both _meta spellings", async () => {
+    const tools = await toolsFor("auto");
+    for (const name of PLAY_TOOLS) {
+      const meta = tools.find((t) => t.name === name)?._meta as
+        | { ui?: { resourceUri?: string }; "ui/resourceUri"?: string }
+        | undefined;
+      expect(meta?.ui?.resourceUri, name).toBeTruthy();
+      expect(meta?.["ui/resourceUri"], name).toBe(meta?.ui?.resourceUri);
+    }
+  });
+
+  it.each(["html", "browser"] as const)(
+    "%s mode registers the play tools with NO ui metadata",
+    async (mode) => {
+      const tools = await toolsFor(mode);
+      for (const name of PLAY_TOOLS) {
+        const meta = tools.find((t) => t.name === name)?._meta as
+          | Record<string, unknown>
+          | undefined;
+        expect(meta?.ui, name).toBeUndefined();
+        expect(meta?.["ui/resourceUri"], name).toBeUndefined();
+      }
+    },
+  );
+
+  it.each(["auto", "html"] as const)(
+    "%s mode keeps the play tools read-only (nothing is written)",
+    async (mode) => {
+      const tools = await toolsFor(mode);
+      for (const name of PLAY_TOOLS) {
+        expect(
+          tools.find((t) => t.name === name)?.annotations,
+          name,
+        ).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+      }
+    },
+  );
+
+  it("browser mode admits it writes a file and launches an app", async () => {
+    const tools = await toolsFor("browser");
+    for (const name of PLAY_TOOLS) {
+      expect(
+        tools.find((t) => t.name === name)?.annotations,
+        name,
+      ).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      });
+    }
+  });
+
+  it("still registers the widget RESOURCES in every mode", async () => {
+    // Harmless: without the tool _meta nothing points a host at them, and
+    // keeping them keeps resources/list identical across transports.
+    for (const mode of ["auto", "html", "browser"] as const) {
+      const server = createServer({ defaultRenderMode: mode });
+      const [c, s] = InMemoryTransport.createLinkedPair();
+      const probe = new Client({ name: "probe", version: "1.0.0" });
+      await Promise.all([probe.connect(c), server.server.connect(s)]);
+      const uris = (await probe.listResources()).resources.map((r) => r.uri);
+      expect(uris, mode).toContain("ui://sheet-music/mcp-app.html");
+      expect(uris, mode).toContain("ui://strudel/strudel-app.html");
+      await probe.close();
+      await server.close();
+    }
+    cleanup = async () => {};
   });
 });

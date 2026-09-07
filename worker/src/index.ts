@@ -34,7 +34,6 @@ import {
   STRUDEL_CSP,
   PLAY_SHEET_BASE_DESCRIPTION,
   PLAY_SHEET_EXT_APPS_SUFFIX,
-  PLAY_SHEET_NEUTRAL_TEXT,
   playSheetInputSchema,
   PLAY_LIVE_BASE_DESCRIPTION,
   PLAY_LIVE_EXT_APPS_SUFFIX,
@@ -62,6 +61,12 @@ import {
   attachPlayLink,
 } from "../../src/shared/tool-defs.js";
 import type { ParseOnlyFn } from "../../src/shared/abc-to-strudel.js";
+// Same ABC validation as the local server: abcjs is already in this bundle for
+// convert-abc-to-strudel and the /score share route, so there is no new weight.
+import {
+  createPlaySheetMusicResult,
+  type ParseOnlyFn as SheetParseOnlyFn,
+} from "../../src/server-logic.js";
 import {
   DEFAULT_SHARE_ORIGIN,
   SHARE_PARAM_MAX_BYTES,
@@ -432,8 +437,11 @@ export function createMusicServer(
   // ===========================================================================
   // Tool: play-sheet-music
   // ===========================================================================
-  // Note: ABC is parsed/rendered client-side in the widget, so the worker does
-  // not assert a parse result here — neutral wording avoids a false success.
+  // The worker used to return an unconditional receipt while the local server
+  // validated the same ABC through abcjs `parseOnly` — so a remote caller was
+  // told "sheet music ready" for notation that renders as an error in the
+  // widget. Both transports now run the identical check; the only difference is
+  // the trailing hint, since `--render-mode` is a local flag (`hint: ""`).
   server.registerTool(
     "play-sheet-music",
     {
@@ -443,11 +451,20 @@ export function createMusicServer(
       annotations: PLAY_TOOL_ANNOTATIONS,
       _meta: uiToolMeta(SHEET_RESOURCE_URI),
     },
-    async (args) =>
-      attachPlayLink(
-        { content: [{ type: "text" as const, text: PLAY_SHEET_NEUTRAL_TEXT }] },
+    async (args) => {
+      const result = createPlaySheetMusicResult(
+        args,
+        ABCJS.parseOnly as unknown as SheetParseOnlyFn,
+        { hint: "" },
+      );
+      // attachPlayLink is already a no-op on errors — don't mint a share URL
+      // for notation that won't render.
+      if (result.isError) return result;
+      return attachPlayLink(
+        result,
         await shareUrlFor(env, origin, { kind: "score", args }),
-      ),
+      );
+    },
   );
 
   // ===========================================================================
