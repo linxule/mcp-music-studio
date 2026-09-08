@@ -22,6 +22,9 @@ import {
   type ParseOnlyFn,
 } from "./abc-to-strudel.js";
 import { EDITOR_THEMES, VISUAL_PRESETS } from "./visual-presets.js";
+// Type-only: the validator itself (and the ~200 KiB of Strudel behind it) is
+// imported by each transport's handler, not by this module.
+import type { StrudelValidation } from "./strudel-validate.js";
 
 // -----------------------------------------------------------------------------
 // Resource URIs
@@ -259,14 +262,19 @@ export const PLAY_SHEET_NEUTRAL_TEXT =
  * A no-op when there is no URL (nothing fit, or the transport has no host) or
  * when the result is an error — a link to a page that renders broken notation
  * helps nobody.
+ *
+ * `keepOnError` is the one exception, and it exists for play-live-pattern:
+ * broken ABC renders as a broken score, but broken Strudel lands in an EDITABLE
+ * REPL, so the link is where the user goes to fix it.
  */
 export function attachPlayLink(
   result: CallToolResult,
   // `null` is what buildShareQueryUrl returns for a payload too long to fit in
   // a URL; `undefined` is "this transport had nowhere to host it".
   url: string | null | undefined,
+  { keepOnError = false }: { keepOnError?: boolean } = {},
 ): CallToolResult {
-  if (!url || result.isError) return result;
+  if (!url || (result.isError && !keepOnError)) return result;
 
   let linked = false;
   const content = result.content.map((block) => {
@@ -458,19 +466,132 @@ export const playLiveInputSchema = z.object({
 });
 
 /**
- * Build the play-live-pattern tool result. Strudel code is evaluated client-side
- * in the REPL, so the server cannot confirm it runs — the wording is deliberately
- * non-asserting so the agent doesn't over-trust a silent failure.
+ * Why the remote transport returns an unchecked receipt.
+ *
+ * Not a bundle-size decision: the @strudel packages fit the Worker fine
+ * (+215 KiB gzip, measured). Strudel's evaluate() transpiles a pattern and runs
+ * it through `new Function`, and workerd rejects that outright — "EvalError:
+ * Code generation from strings disallowed for this context" — with no flag to
+ * lift it. So the remote server says what it cannot do, and points at the one
+ * that can.
  */
-export function buildPlayLiveResult(args: { code: string; title?: string }): CallToolResult {
+export const PLAY_LIVE_UNVALIDATED_REMOTE =
+  "Not verified: this remote server can't run Strudel to check it — Cloudflare " +
+  "Workers disallow the dynamic code generation its evaluator needs. The local npm " +
+  "server (npx mcp-music-studio) reports parse errors, sounds and event counts.";
+
+/** Where the pattern actually plays — the one sentence every branch ends on. */
+const PLAY_LIVE_PLAYBACK_TAIL =
+  "It plays in an editable REPL widget in MCP-app hosts " +
+  `(e.g. Claude Desktop, claude.ai). ${NO_INLINE_PLAYER_TAIL}`;
+
+/** Trim float noise off a cps computed as e.g. 120/60/4. */
+const showCps = (cps: number) => String(Math.round(cps * 1000) / 1000);
+
+/** The "parses OK: ..." clause — what the server can actually vouch for. */
+function summariseValidation(v: StrudelValidation): string {
+  const parts: string[] = [];
+  if (v.layers) parts.push(`${v.layers} layers`);
+  if (v.eventsPerCycle !== undefined) parts.push(`${v.eventsPerCycle} events/cycle`);
+  if (v.cps !== undefined) parts.push(`cps ${showCps(v.cps)}`);
+  if (v.sounds?.length) {
+    // A samples() call registers names this server cannot see, so "unknown"
+    // there means unverifiable, not wrong — say so rather than crying wolf.
+    const qualifier = v.sampleUrls?.length
+      ? " (custom samples loaded — names not checked)"
+      : v.unregistered?.length
+        ? ""
+        : " (all registered)";
+    parts.push(`sounds: ${v.sounds.join(" ")}${qualifier}`);
+  } else if (v.usesNotes) {
+    parts.push("notes with no sound named (plays on the default triangle synth)");
+  }
+  if (v.usesHydra) parts.push("Hydra background: yes");
+  if (v.visuals?.length) parts.push(`visuals: ${v.visuals.join(", ")}`);
+  return parts.join(", ");
+}
+
+/** Lines that qualify an otherwise-OK result. */
+function validationWarnings(v: StrudelValidation): string[] {
+  const warnings: string[] = [];
+  if (v.eventsPerCycle === 0) {
+    warnings.push(
+      "This pattern produces no events over the cycles queried — it evaluates, " +
+        "but nothing will be heard.",
+    );
+  }
+  if (v.unregistered?.length) {
+    warnings.push(
+      `Sounds not in the default banks: ${v.unregistered.join(", ")} — they will be ` +
+        "silent unless samples() loads them.",
+    );
+  }
+  return warnings;
+}
+
+/**
+ * Build the play-live-pattern tool result.
+ *
+ * With no `validation` the wording is deliberately non-asserting: the REPL
+ * evaluates the code client-side, so a server that has not run it cannot claim
+ * it works. Pass a `validation` (see src/shared/strudel-validate.ts) and the
+ * result can say what the pattern actually does — which for a text-only client
+ * is the only feedback there is.
+ */
+export function buildPlayLiveResult(
+  args: { code: string; title?: string },
+  validation?: StrudelValidation,
+  /**
+   * Why no validation ran, when a transport cannot run one at all. A complete
+   * sentence or two; rendered on its own line, like a validation warning.
+   */
+  unvalidatedNote?: string,
+): CallToolResult {
   const label = args.title ? `"${args.title}" — ` : "";
+
+  if (!validation) {
+    const text = unvalidatedNote
+      ? [`${label}Strudel pattern ready.`, unvalidatedNote, PLAY_LIVE_PLAYBACK_TAIL].join(
+          "\n",
+        )
+      : `${label}Strudel pattern ready. ${PLAY_LIVE_PLAYBACK_TAIL}`;
+    return { content: [{ type: "text", text }] };
+  }
+
+  if (!validation.ok) {
+    const { message = "unknown error", line, column } = validation.error ?? {};
+    // Acorn puts the position on the error object; V8 puts it in the message.
+    // Append it only when it isn't already there.
+    const at =
+      line !== undefined && !/\(\d+:\d+\)\s*$/.test(message)
+        ? ` (${line}:${column ?? 0})`
+        : "";
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text:
+            `${label}Strudel pattern failed to evaluate: ${message}${at}. ` +
+            `Nothing will play until it is fixed — the code is loaded in the REPL, ` +
+            `where you can edit and re-run it. ${NO_INLINE_PLAYER_TAIL}`,
+        },
+      ],
+    };
+  }
+
+  const summary = summariseValidation(validation);
+  const head = summary
+    ? `${label}Strudel pattern ready — parses OK: ${summary}.`
+    : `${label}Strudel pattern ready — parses OK.`;
+
   return {
     content: [
       {
         type: "text",
-        text:
-          `${label}Strudel pattern ready. It plays in an editable REPL widget in MCP-app hosts ` +
-          `(e.g. Claude Desktop, claude.ai). ${NO_INLINE_PLAYER_TAIL}`,
+        text: [head, ...validationWarnings(validation), PLAY_LIVE_PLAYBACK_TAIL].join(
+          "\n",
+        ),
       },
     ],
   };

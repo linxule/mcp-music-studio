@@ -39,6 +39,7 @@ import {
   PLAY_LIVE_EXT_APPS_SUFFIX,
   playLiveInputSchema,
   buildPlayLiveResult,
+  PLAY_LIVE_UNVALIDATED_REMOTE,
   GET_MUSIC_GUIDE_DESCRIPTION,
   GET_MUSIC_GUIDE_TOPIC_DESCRIPTION,
   GET_STRUDEL_GUIDE_DESCRIPTION,
@@ -479,9 +480,17 @@ export function createMusicServer(
       annotations: PLAY_TOOL_ANNOTATIONS,
       _meta: uiToolMeta(STRUDEL_RESOURCE_URI),
     },
+    // No server-side validation here, and it is not a bundling problem: the
+    // @strudel packages bundle into the isolate fine (+1024 KiB raw / +215 KiB
+    // gzip, well inside budget). Strudel's evaluate() transpiles the pattern
+    // and runs it through `new Function`, and workerd refuses — "EvalError:
+    // Code generation from strings disallowed for this context" — as a
+    // platform rule with no flag to lift it. So the remote transport returns
+    // the honest unchecked receipt and names the local server as the place
+    // that does check. See src/shared/strudel-validate.ts.
     async (args) =>
       attachPlayLink(
-        buildPlayLiveResult(args),
+        buildPlayLiveResult(args, undefined, PLAY_LIVE_UNVALIDATED_REMOTE),
         await shareUrlFor(env, origin, { kind: "play", args }),
       ),
   );
