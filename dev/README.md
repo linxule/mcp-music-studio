@@ -21,9 +21,12 @@ so what you test is what the MCP server ships. Re-run `bun run build` and hit
 ## What it does
 
 - **widget** picks `strudel-app` or `mcp-app` (ABC).
-- **preset** fills the arguments box from `dev/presets.ts` — the Hydra recipes
-  from the guide's `visuals` topic, a plain pattern, and three deliberately
-  broken patterns for testing error surfacing.
+- **preset** fills the arguments box from `dev/presets.ts`: the Hydra recipes
+  from the guide's `visuals` topic, a plain pattern, regression cases for
+  viz-detection and tempo injection (string look-alikes, quoted slashes, a
+  locally-bound `setcps`), three deliberately broken patterns for testing error
+  surfacing (shader error, syntax error, unknown sound), and two ABC scores for
+  the sheet-music widget.
 - **Send tool input** sends `ui/notifications/tool-input` with those arguments,
   then a `ui/notifications/tool-result`. **Send partial** streams half the code
   first; **Send cancelled** and **Send teardown** exercise the other lifecycle
