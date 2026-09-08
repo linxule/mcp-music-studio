@@ -55,6 +55,7 @@ Write code → hear it play → edit in a live REPL.
 - **`theme`** — 39 CodeMirror colour schemes; the visuals stage and its readability scrim are derived from the active theme, so light themes stay readable
 - **Stage mode** — hide the code and let the visuals fill the frame (composes with the host's fullscreen)
 - **Honest runtime feedback** — evaluation errors, unknown sound names, and stops the user triggered are reported back to the model as they happen, so it never answers about a silent widget as if the music were still playing
+- **Server-side validation** — the local server evaluates every Strudel pattern headlessly before answering: the tool result reports layers, events per cycle, tempo, and which sound names are registered (or a syntax error with line:column), so terminal clients get real diagnostics too. (The hosted worker can't — Cloudflare forbids dynamic code generation — and says so.)
 - **Record & download** — capture live audio and export as WAV
 - **`get-strudel-guide`** — 8 reference topics (mini-notation, sounds, effects, patterns, genres, tips, visuals, advanced)
 
