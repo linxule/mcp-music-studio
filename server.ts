@@ -74,6 +74,7 @@ import {
   attachPlayLink,
 } from "./src/shared/tool-defs.js";
 import { buildShareQueryUrl } from "./src/shared/share-url.js";
+import { validateStrudelCode } from "./src/shared/strudel-validate.js";
 
 const DIST_DIR = import.meta.filename.endsWith(".ts")
   ? path.join(import.meta.dirname, "dist")
@@ -100,11 +101,21 @@ export async function handleGetMusicGuide({
   return { content: [{ type: "text", text: ABC_GUIDES[topic] }] };
 }
 
-export async function handlePlayLivePattern(args: {
-  code: string;
-  title?: string;
-}): Promise<CallToolResult> {
-  return buildPlayLiveResult(args);
+/**
+ * Evaluate the pattern before answering.
+ *
+ * The REPL widget is the feedback in an MCP-app host, but a terminal client
+ * gets only this text — so run the code headlessly and say what it does. The
+ * validator never throws and bounds its own work (see
+ * src/shared/strudel-validate.ts); `validation: false` opts out for callers
+ * that only want the neutral receipt.
+ */
+export async function handlePlayLivePattern(
+  args: { code: string; title?: string },
+  validate = true,
+): Promise<CallToolResult> {
+  const validation = validate ? await validateStrudelCode(args.code) : undefined;
+  return buildPlayLiveResult(args, validation);
 }
 
 export async function handleAnalyzeHarmony(
@@ -368,7 +379,11 @@ export function createServer(options?: ServerOptions): McpServer {
     const result = await handlePlayLivePattern(args);
 
     if (defaultRenderMode === "auto") {
-      return attachPlayLink(result, buildShareQueryUrl({ kind: "play", args }));
+      // Broken Strudel still gets the link: it opens the same code in an
+      // editable REPL, which is where a fix happens.
+      return attachPlayLink(result, buildShareQueryUrl({ kind: "play", args }), {
+        keepOnError: true,
+      });
     }
 
     const playerOpts = {

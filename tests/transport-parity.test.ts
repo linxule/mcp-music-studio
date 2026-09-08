@@ -155,8 +155,9 @@ describe("prompts/list parity", () => {
 describe("tool results — the click-to-play link", () => {
   // Listings are origin-independent (that is what keeps the two transports
   // diffable above), but RESULTS carry a share URL, and the Worker builds it
-  // from the origin the request arrived on. This is the one deliberate way the
-  // two transports' output differs — pinned here so it stays deliberate.
+  // from the origin the request arrived on. That is one of the two deliberate
+  // ways the transports' output differs (the other is Strudel validation, at
+  // the bottom of this block) — both pinned here so they stay deliberate.
 
   const linkOf = (content: unknown) =>
     (content as { type: string; uri?: string }[]).find(
@@ -176,6 +177,59 @@ describe("tool results — the click-to-play link", () => {
       // The honest tail is replaced, not merely appended to.
       expect(text).not.toContain("nothing has played yet");
     }
+  });
+
+  // T6: the local server now RUNS the Strudel it is handed, so a terminal
+  // client gets a real report. The Worker deliberately does not, and this is
+  // the second whitelisted difference between the transports — the first being
+  // the share-link origin above.
+  //
+  // The reason is not bundle size (the @strudel packages fit the isolate: +215
+  // KiB gzip, measured with `wrangler deploy --dry-run`). It is that Strudel's
+  // evaluate() runs the transpiled pattern through `new Function`, and workerd
+  // answers "EvalError: Code generation from strings disallowed for this
+  // context" — a platform rule with no flag. So the Worker says so instead of
+  // quietly returning a weaker receipt.
+  const textOf = (r: { content: unknown }) =>
+    (r.content as { type: string; text?: string }[])[0]!.text!;
+
+  it("the local server reports what the pattern does", async () => {
+    const res = await local.callTool({
+      name: "play-live-pattern",
+      arguments: {
+        code: 'setcps(0.5)\nstack(s("bd*4"), s("~ cp ~ cp").bank("RolandTR909"))',
+      },
+    });
+    expect(textOf(res)).toContain("parses OK: 2 layers, 6 events/cycle, cps 0.5");
+    expect(textOf(res)).toContain("sounds: RolandTR909:cp bd (all registered)");
+  });
+
+  it("the Worker says it could not check, rather than implying it did", async () => {
+    const res = await worker.callTool({
+      name: "play-live-pattern",
+      arguments: { code: 's("bd sd")' },
+    });
+    expect(res.isError).toBeUndefined();
+    expect(textOf(res)).toContain("Not verified:");
+    expect(textOf(res)).toContain("dynamic code generation");
+    expect(textOf(res)).not.toContain("parses OK");
+  });
+
+  it("only the local server can reject broken Strudel", async () => {
+    const args = { code: 'stack(\n  s("bd*4"),\n  s("hh*8"]\n)' };
+
+    const l = await local.callTool({ name: "play-live-pattern", arguments: args });
+    expect(l.isError, "code that does not evaluate must not read as ready").toBe(true);
+    expect(textOf(l)).toContain("failed to evaluate");
+    expect(textOf(l)).toContain("(3:10)");
+    // Unlike a broken SCORE, broken Strudel keeps its link: the page it opens
+    // is an editable REPL, which is where the fix happens.
+    expect(linkOf(l.content)?.uri).toContain("/play?c=");
+
+    // The Worker cannot know it is broken — but it never claimed otherwise.
+    const w = await worker.callTool({ name: "play-live-pattern", arguments: args });
+    expect(w.isError).toBeUndefined();
+    expect(textOf(w)).toContain("Not verified:");
   });
 
   // T5: the Worker used to return an unconditional "sheet music ready" receipt

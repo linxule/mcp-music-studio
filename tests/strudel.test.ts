@@ -25,10 +25,20 @@ describe("play-live-pattern handler", () => {
     expect(result.content[0]?.text).toContain("Strudel pattern ready");
   });
 
-  it("returns text result without title", async () => {
-    const result = await handlePlayLivePattern({
-      code: 's("bd sd")',
-    });
+  it("reports what the pattern actually does", async () => {
+    const result = await handlePlayLivePattern({ code: 's("bd sd")' });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toBe(
+      "Strudel pattern ready — parses OK: 2 events/cycle, sounds: bd sd (all registered).\n" +
+        "It plays in an editable REPL widget in MCP-app hosts " +
+        "(e.g. Claude Desktop, claude.ai). If you don't see a player here, this client can't play it " +
+        "inline, so nothing has played yet.",
+    );
+  });
+
+  it("falls back to the neutral receipt when validation is skipped", async () => {
+    const result = await handlePlayLivePattern({ code: 's("bd sd")' }, false);
 
     expect(result.content[0]?.text).toBe(
       "Strudel pattern ready. It plays in an editable REPL widget in MCP-app hosts " +
@@ -36,6 +46,16 @@ describe("play-live-pattern handler", () => {
         "inline, so nothing has played yet.",
     );
     expect(result.content[0]?.text).not.toContain('"');
+  });
+
+  it("marks code that does not evaluate as an error", async () => {
+    const result = await handlePlayLivePattern({ code: 's("bd sd"]' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("failed to evaluate");
+    // Still honest about playback, so attachPlayLink can swap that sentence
+    // for the click-to-play link.
+    expect(result.content[0]?.text).toContain("nothing has played yet");
   });
 });
 
