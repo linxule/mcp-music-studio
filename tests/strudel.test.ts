@@ -32,8 +32,8 @@ describe("play-live-pattern handler", () => {
     expect(result.content[0]?.text).toBe(
       "Strudel pattern ready — parses OK: 2 events/cycle, sounds: bd sd (all registered).\n" +
         "It plays in an editable REPL widget in MCP-app hosts " +
-        "(e.g. Claude Desktop, claude.ai). If you don't see a player here, this client can't play it " +
-        "inline, so nothing has played yet.",
+        "(e.g. Claude Desktop, claude.ai). The server cannot tell whether a player rendered: if the user " +
+        "reports no player, this client can't play it inline and nothing has played yet.",
     );
   });
 
@@ -42,8 +42,8 @@ describe("play-live-pattern handler", () => {
 
     expect(result.content[0]?.text).toBe(
       "Strudel pattern ready. It plays in an editable REPL widget in MCP-app hosts " +
-        "(e.g. Claude Desktop, claude.ai). If you don't see a player here, this client can't play it " +
-        "inline, so nothing has played yet.",
+        "(e.g. Claude Desktop, claude.ai). The server cannot tell whether a player rendered: if the user " +
+        "reports no player, this client can't play it inline and nothing has played yet.",
     );
     expect(result.content[0]?.text).not.toContain('"');
   });

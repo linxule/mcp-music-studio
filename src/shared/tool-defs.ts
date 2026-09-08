@@ -62,7 +62,7 @@ export const SERVER_INSTRUCTIONS =
   "Before composing, consult the reference tools: get-music-guide (ABC — start with " +
   "topic 'genres' for templates, 'styles' for accompaniment presets, 'instruments' for the list) " +
   "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'; 'visuals' for the animation layer). " +
-  "play-live-pattern can paint as well as play: pass visuals (a preset) and theme, or write " +
+  "play-live-pattern can paint as well as play: add .pianoroll() to a pattern, pass visuals (a preset) and theme, or write " +
   "`await initHydra()` shader code that follows the music via H(pattern) and a.fft — the " +
   "'visuals' topic has copy-ready recipes. Use search-music-docs only " +
   "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
@@ -236,10 +236,10 @@ export const PLAY_SHEET_FALLBACK_SUFFIX =
 // from a dead end into an instruction — see `attachPlayLink`.
 
 export const NO_INLINE_PLAYER_TAIL =
-  "If you don't see a player here, this client can't play it inline, so nothing has played yet.";
+  "The server cannot tell whether a player rendered: if the user reports no player, this client can't play it inline and nothing has played yet.";
 
 export const NO_INLINE_PLAYER_TAIL_WITH_LINK =
-  "If you don't see a player here, this client can't play it inline — click the link below to play it in your browser.";
+  "The server cannot tell whether a player rendered: if the user reports no player, this client can't play it inline — give them the link below to play it in the browser.";
 
 /** Prefix of the line carrying the hosted player URL. */
 export const PLAY_LINK_PREFIX = "\u25b6 Play in browser: ";
@@ -533,7 +533,7 @@ function summariseValidation(v: StrudelValidation): string {
   } else if (v.usesNotes) {
     parts.push("notes with no sound named (plays on the default triangle synth)");
   }
-  if (v.usesHydra) parts.push("Hydra background: yes");
+  if (v.usesHydra) parts.push("Hydra background: yes (parse-checked only — shader calls and a.fft are not executed here)");
   if (v.visuals?.length) parts.push(`visuals: ${v.visuals.join(", ")}`);
   return parts.join(", ");
 }

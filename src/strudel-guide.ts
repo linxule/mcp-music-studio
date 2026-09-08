@@ -708,6 +708,13 @@ from the network on first use. There may be a brief delay (~1-2 seconds)
 the first time a GM instrument plays. After that, it's cached.
 Built-in synths (sine, sawtooth, square) play instantly with no loading.
 
+### visuals / theme parameters
+visuals: a ready-made animation for code that has none (pianoroll | punchcard |
+scope | spectrum | hydra-kaleid | hydra-pulse | hydra-wash | hydra-feed); it
+fills the layer your code lacks. theme: the editor colour scheme, which also
+sets the ground the visuals sit on. Both are documented in full — with the
+Hydra and audio-reactive recipes — in topic "visuals".
+
 ## Each Call Renders a Fresh Widget
 Every play-live-pattern call creates a new independent widget. Sending
 a follow-up call doesn't update an existing pattern — it creates another.
@@ -766,6 +773,13 @@ rather than trying to "update" the previous one.
     JS string written with " fails at eval with \`[mini] parse error\`.
     WRONG:  await initHydra({ src: "https://unpkg.com/hydra-synth@1.4.0" })
     RIGHT:  await initHydra({ src: 'https://unpkg.com/hydra-synth@1.4.0' })
+
+12. The REPL plays the LAST expression
+    all(), setcps(), await initHydra(), const declarations and every other
+    helper go BEFORE the pattern. Put anything after it and the widget plays
+    silence while the status still reads "Playing".
+    WRONG:  s("bd*4"); all(p => p.pianoroll())
+    RIGHT:  all(p => p.pianoroll()); s("bd*4")
     WRONG:  samples("github:tidalcycles/dirt-samples")
     RIGHT:  samples('github:tidalcycles/dirt-samples')
     Keep " for real patterns: s("bd sd"), note("c3 e3"), H("1 0 0.6 0").
@@ -918,7 +932,9 @@ s("bd*2 [~ sd] hh*4").bank("RolandTR909")
 
 ### Recipe: pattern drives the shader with H()
 H(pattern) turns a Strudel pattern into a live value Hydra reads every frame,
-so the visual follows the SAME sequence the music plays.
+so the visual follows the SAME sequence the music plays. H(p) returns a
+FUNCTION: pass it bare where Hydra takes a parameter (shape(H(seq), …)), and
+call it — H(p)() — inside your own arrow when you remap the value.
 
 AVOID ~ RESTS IN AN H() PATTERN. H is
   o => () => reify(o).queryArc(getTime(), getTime())[0].value
@@ -1137,7 +1153,10 @@ Output:   .out(o0)
 - Nothing visible: you probably forgot .out(o0), or the colors are too dark.
 - Choppy audio: simplify the shader (fewer modulate/kaleid stages).
 - The pattern used Hydra before but not now: the widget stops the old shader
-  automatically; add initHydra() again to bring it back.`,
+  automatically; add initHydra() again to bring it back.
+- Iterating ("now make it react to the bass"): every tool call is a NEW
+  widget, not an update — send the whole revised pattern, and ask the user to
+  stop the previous player, or two will sound at once.`,
   advanced: `# Strudel Advanced Features
 
 ## Visualization
