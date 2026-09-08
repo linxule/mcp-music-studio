@@ -7,6 +7,10 @@
       "dependencies": {
         "@modelcontextprotocol/ext-apps": "^1.0.0",
         "@modelcontextprotocol/sdk": "^1.24.0",
+        "@strudel/core": "1.2.6",
+        "@strudel/mini": "1.2.6",
+        "@strudel/tonal": "1.2.6",
+        "@strudel/transpiler": "1.2.6",
         "abcjs": "^6.7.0",
         "cors": "^2.8.5",
         "express": "^5.1.0",
@@ -14,10 +18,6 @@
         "zod": "^4.1.13",
       },
       "devDependencies": {
-        "@strudel/core": "1.2.6",
-        "@strudel/mini": "1.2.6",
-        "@strudel/tonal": "1.2.6",
-        "@strudel/transpiler": "1.2.6",
         "@types/cors": "^2.8.19",
         "@types/express": "^5.0.0",
         "@types/node": "22.10.0",
