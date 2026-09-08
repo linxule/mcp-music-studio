@@ -72,13 +72,14 @@ describe("get-strudel-guide handler", () => {
     }
   });
 
-  it("covers all 8 topics", () => {
-    expect(STRUDEL_GUIDE_TOPICS).toHaveLength(8);
+  it("covers all 9 topics", () => {
+    expect(STRUDEL_GUIDE_TOPICS).toHaveLength(9);
     expect(STRUDEL_GUIDE_TOPICS).toContain("visuals");
+    expect(STRUDEL_GUIDE_TOPICS).toContain("hydra");
   });
 });
 
-describe("strudel visualization guidance (v0.4.1, moved to 'visuals' in v0.5)", () => {
+describe("strudel visualization guidance (v0.4.1, 'visuals' in v0.5, split into 'visuals' + 'hydra' in v0.5.5)", () => {
   const visuals = STRUDEL_GUIDES.visuals;
 
   it("encourages visualization with concrete methods", () => {
@@ -104,7 +105,7 @@ describe("strudel visualization guidance (v0.4.1, moved to 'visuals' in v0.5)", 
   it("nudges visualization + Hydra from the play-live tool description", () => {
     expect(PLAY_LIVE_BASE_DESCRIPTION).toContain("pianoroll");
     expect(PLAY_LIVE_BASE_DESCRIPTION).toContain("initHydra");
-    expect(PLAY_LIVE_BASE_DESCRIPTION).toContain("'visuals'");
+    expect(PLAY_LIVE_BASE_DESCRIPTION).toContain("'hydra'");
   });
 
   it("advertises the visuals + theme parameters and the audio-reactive path", () => {
@@ -116,19 +117,24 @@ describe("strudel visualization guidance (v0.4.1, moved to 'visuals' in v0.5)", 
     expect((PLAY_LIVE_BASE_DESCRIPTION + PLAY_LIVE_EXT_APPS_SUFFIX).length).toBeLessThan(2048);
   });
 
-  it("says the visuals topic covers audio-reactive shaders", () => {
-    expect(GET_STRUDEL_GUIDE_DESCRIPTION).toContain("audio-reactive shaders");
+  it("says the hydra topic covers audio-reactive shaders", () => {
+    expect(GET_STRUDEL_GUIDE_DESCRIPTION).toContain("audio-reactive a.fft");
   });
 });
 
 describe("visuals guide topic", () => {
-  const text = STRUDEL_GUIDES.visuals;
+  // The shader half moved to its own topic in v0.5.5 (the combined topic was
+  // 13 KB — an agent that wanted a piano roll paid for four shader recipes).
+  // These assertions read both, so the split cannot lose a rule.
+  const text = STRUDEL_GUIDES.visuals + "\n" + STRUDEL_GUIDES.hydra;
 
   it("teaches both layers: draw methods and Hydra", () => {
-    expect(text).toContain(".pianoroll()");
-    expect(text).toContain("await initHydra()");
-    expect(text).toContain("feedStrudel");
-    expect(text).toContain("H(");
+    expect(STRUDEL_GUIDES.visuals).toContain(".pianoroll()");
+    expect(STRUDEL_GUIDES.visuals).toContain('topic "hydra"');
+    expect(STRUDEL_GUIDES.hydra).toContain("await initHydra()");
+    expect(STRUDEL_GUIDES.hydra).toContain("feedStrudel");
+    expect(STRUDEL_GUIDES.hydra).toContain("H(");
+    expect(STRUDEL_GUIDES.hydra).toContain('topic "visuals"');
   });
 
   it("still tells the agent not to reach for the microphone", () => {

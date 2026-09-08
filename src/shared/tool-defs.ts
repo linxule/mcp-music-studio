@@ -61,10 +61,10 @@ export const SERVER_INSTRUCTIONS =
   "play-live-pattern (write Strudel/TidalCycles code → an editable live-coding REPL). " +
   "Before composing, consult the reference tools: get-music-guide (ABC — start with " +
   "topic 'genres' for templates, 'styles' for accompaniment presets, 'instruments' for the list) " +
-  "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'; 'visuals' for the animation layer). " +
+  "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'; 'visuals' and 'hydra' for the animation layers). " +
   "play-live-pattern can paint as well as play: add .pianoroll() to a pattern, pass visuals (a preset) and theme, or write " +
   "`await initHydra()` shader code that follows the music via H(pattern) and a.fft — the " +
-  "'visuals' topic has copy-ready recipes. Use search-music-docs only " +
+  "'hydra' topic has copy-ready recipes. Use search-music-docs only " +
   "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
   '("C", "Am7") above the notes and set a style. ' +
   "If unsure about chord spelling or the key, call analyze-harmony; " +
@@ -426,7 +426,7 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "(or .punchcard()/.scope()/.spectrum() — one draw method per pattern). " +
   "For a custom animated background, start the code with `await initHydra()` and write " +
   "Hydra shader code — H(pattern) locks it to the sequence, and `() => a.fft[0]` makes it " +
-  "react to the audio itself (Strudel's output, not the mic); see get-strudel-guide topic 'visuals'. " +
+  "react to the audio itself (Strudel's output, not the mic); see get-strudel-guide topic 'hydra'. " +
   "Rather not hand-write one? `visuals` picks a ready-made animation for code that has none " +
   "(pianoroll/punchcard/scope/spectrum, or hydra-kaleid/pulse/wash/feed). " +
   "`theme` sets the code-editor colour scheme, which also tints the visuals — match it to the mood " +
@@ -481,7 +481,7 @@ export const playLiveInputSchema = z.object({
         "are WebGL shader backgrounds. A preset fills the MISSING layer: a hydra preset is skipped only if the code already calls initHydra(), " +
         "a 2D preset only if the code already has a draw method — so hydra-wash layers happily under your own .pianoroll(). " +
         "Hydra presets are dropped for viewers who prefer reduced motion. " +
-        "Writing your own visual is still the better result (see get-strudel-guide topic 'visuals').",
+        "Writing your own visual is still the better result (draw methods: topic 'visuals'; shaders: topic 'hydra').",
     ),
   theme: z
     .enum(EDITOR_THEMES)
@@ -665,13 +665,13 @@ export const GET_STRUDEL_GUIDE_DESCRIPTION =
   "patterns (transformations, probability, euclidean, arrangement), " +
   "genres (complete templates: techno/house/dnb/ambient/jazz/lofi/synthwave), " +
   "tips (tempo, common mistakes, ABC↔Strudel crossover), " +
-  "visuals (pianoroll/scope draw methods, Hydra shader backgrounds, audio-reactive shaders, "
-  + "plus the visuals/theme parameters), " +
+  "visuals (pianoroll/scope draw methods, the visuals presets and the theme parameter), " +
+  "hydra (WebGL shader backgrounds: initHydra, H(pattern), the audio-reactive a.fft object, recipes, cheat-sheet), " +
   "advanced (sample loading, wavetables, ZZFX, continuous signals, chord voicings).";
 
 export const GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION =
   "Reference topic. Start with 'genres' for working templates, " +
-  "'sounds' for instruments, 'visuals' for animations and Hydra backgrounds, " +
+  "'sounds' for instruments, 'visuals' for draw methods and presets, 'hydra' for shader backgrounds, " +
   "'advanced' for sample loading.";
 
 // -----------------------------------------------------------------------------
@@ -1086,7 +1086,7 @@ export const MUSIC_PROMPTS: PromptDef[] = [
           `First call get-strudel-guide with topic "genres" for a working ${args.genre ?? "lofi"} template, then adapt it — ` +
           `use stack() to layer drums, bass, and melody, and set a fitting tempo with setcps(). ` +
           `Give it something to look at: the quickest reliable route is visuals: "hydra-wash" (or hydra-pulse for beats) plus a matching theme — ` +
-          `for a hand-written or audio-reactive shader, fetch get-strudel-guide topic "visuals" instead.`,
+          `for a hand-written or audio-reactive shader, fetch get-strudel-guide topic "hydra" instead.`,
       ),
   },
   {
