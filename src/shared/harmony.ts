@@ -583,6 +583,8 @@ export const CHORD_SCALE_NAMES = [
   "whole tone",
   "altered",
   "lydian dominant",
+  "lydian",
+  "lydian augmented",
   "mixolydian",
   "major",
   "minor",
@@ -640,7 +642,15 @@ function chordScaleFor(chordName: string): ChordScaleName {
   // Lydian dominant is the one #11 that isn't "altered".
   if (dominant && any("11A", "4A")) return "lydian dominant";
   if (dominant) return "mixolydian";
-  // Augmented triads and maj7#5.
+  // Major sevenths with an explicit alteration, BEFORE the generic branches:
+  // both of these used to fall through to a scale that omits a chord tone the
+  // symbol spells out. Cmaj7#11 got C major (no F#); Cmaj7#5 got C whole tone
+  // (no B, because tonal reads maj7#5 as an augmented seventh — a MAJOR 7th
+  // over an augmented triad, which whole tone cannot contain).
+  const majorSeventh = third === "major" && intervals.has("7M");
+  if (majorSeventh && any("11A", "4A")) return "lydian";
+  if (majorSeventh && intervals.has("5A")) return "lydian augmented";
+  // Augmented triads (no major 7th — those are handled just above).
   if (third === "major" && intervals.has("5A")) return "whole tone";
   if (third === "major") return "major";
   // A minor triad with a major 7th is melodic minor, not dorian.

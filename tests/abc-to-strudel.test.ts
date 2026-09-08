@@ -770,3 +770,88 @@ describe("every chord the converter prints is one Strudel can voice", () => {
     expect(seen).toBeGreaterThan(10);
   });
 });
+
+// =============================================================================
+// Codex review #13, #14, #15 — three ways the converter used to lie while
+// reporting "Lossless for this tune."
+// =============================================================================
+
+describe("multimeasure rests keep their bars (Codex #13)", () => {
+  it("expands Z4 into four rest bars instead of one", () => {
+    // abcjs collapses `Z4` into ONE element (rest.type "multimeasure",
+    // text 4). Emitting it as a single slot gave ["[c4]","~","[d4]"] — the D
+    // landed in bar 3 where abcjs's own sequencing puts it in bar 6.
+    const result = ok("X:1\nT:t\nM:4/4\nL:1/4\nK:C\nC4 | Z4 | D4 |");
+    expect(result.bars).toEqual(["[c4]", "~", "~", "~", "~", "[d4]"]);
+    expect(result.code).toContain('note("<[c4] ~ ~ ~ ~ [d4]>")');
+  });
+
+  it("keeps the chord track aligned across the expansion", () => {
+    const result = ok('X:1\nT:t\nM:4/4\nL:1/4\nK:C\n"C"C4 | "F"Z4 | "G"D4 |');
+    expect(result.bars).toHaveLength(6);
+    expect(result.chords).toEqual(["C", "F", "F", "F", "F", "G"]);
+  });
+
+  it("treats a bare Z as one bar", () => {
+    const result = ok("X:1\nT:t\nM:4/4\nL:1/4\nK:C\nC4 | Z | D4 |");
+    expect(result.bars).toEqual(["[c4]", "~", "[d4]"]);
+  });
+
+  it("counts a Z in a 3/4 bar as a 3/4 bar", () => {
+    const result = ok("X:1\nT:t\nM:3/4\nL:1/4\nK:C\nC3 | Z2 | D3 |");
+    expect(result.bars).toEqual(["[c4]", "~", "~", "[d4]"]);
+  });
+});
+
+describe("a tie across a bar line keeps its accidental (Codex #14)", () => {
+  it("re-articulates the tied note at its resolved pitch", () => {
+    // `^F4-| F3 F|` in C major: the continuation is still F#, and only the
+    // LATER untied F is natural. The bar's running accidentals are cleared at
+    // the barline, so the continuation used to come out `f4` — a semitone flat
+    // against abcjs's own sequencing, which keeps it at MIDI 66.
+    const result = ok("X:1\nT:t\nM:4/4\nL:1/4\nK:C\n^F4-| F3 F|");
+    expect(result.bars).toEqual(["[f#4]", "[f#4@3 f4]"]);
+  });
+
+  it("does not leak the tied accidental onto later notes of the new bar", () => {
+    // The tie's F# must not become a bar accidental for the untied F that
+    // follows it — that one is read from the key signature as usual.
+    expect(ok("X:1\nT:t\nM:4/4\nL:1/4\nK:C\n^F4-| F3 F|").bars[1]).toBe(
+      "[f#4@3 f4]",
+    );
+  });
+
+  it("still folds a tie that stays inside one bar", () => {
+    const result = ok("X:1\nT:t\nM:4/4\nL:1/4\nK:C\n^F2-F2 | G4|");
+    expect(result.bars[0]).toBe("[f#4]");
+    expect(result.dropped).not.toContain(
+      "ties across bar lines (the note is re-articulated)",
+    );
+  });
+
+  it("carries a flat across the bar line too", () => {
+    const result = ok("X:1\nT:t\nM:4/4\nL:1/4\nK:C\n_B4-| B4|");
+    expect(result.bars).toEqual(["[bb4]", "[bb4]"]);
+  });
+});
+
+describe("the first mid-bar chord stays where it was written (Codex #15)", () => {
+  it("pads the bar with silence rather than moving the symbol to beat 1", () => {
+    // `C D "G7"E F|` starts G7 halfway through the bar. With no previous chord
+    // to inherit, the padding branch was skipped and the bar became a whole
+    // cycle of G7 — two beats of accompaniment the score does not have.
+    const result = ok('X:1\nT:t\nM:4/4\nL:1/4\nK:C\nC D "G7"E F|');
+    expect(result.chords).toEqual(["[~ G7]"]);
+    expect(result.code).toContain('chord("<[~ G7]>")');
+  });
+
+  it("still inherits the previous bar's chord when there is one", () => {
+    const result = ok('X:1\nT:t\nM:4/4\nL:1/4\nK:C\n"C"C D E F| G A "G7"B c|');
+    expect(result.chords).toEqual(["C", "[C G7]"]);
+  });
+
+  it("leaves a downbeat chord alone", () => {
+    const result = ok('X:1\nT:t\nM:4/4\nL:1/4\nK:C\n"G7"C D E F|');
+    expect(result.chords).toEqual(["G7"]);
+  });
+});

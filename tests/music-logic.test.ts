@@ -10,6 +10,8 @@ import {
   buildSynthOptions,
   findInstrument,
   injectTempoHeader,
+  isSoundFontName,
+  isStyleName,
   normalizeDrumIntro,
   normalizeSwing,
   prepareToolInput,
@@ -337,5 +339,78 @@ describe("buildSynthOptions", () => {
     const opts = buildSynthOptions({ instrument: "Theremin" });
     expect(opts.program).toBe(0);
     expect(opts.soundFontUrl).toContain("FluidR3_GM");
+  });
+});
+
+// =============================================================================
+// Codex review #17 — a user-supplied string must never index an object through
+// its prototype.
+//
+// Repro before the fix: `INSTRUMENT_ALIASES["constructor"]` resolved through
+// Object.prototype to the `Object` constructor, and findInstrument returned it
+// as if it were an instrument name. resolveInvocationSettings then called
+// `.toLowerCase()` on a function and threw
+// `TypeError: instrument.toLowerCase is not a function` — a nonsense
+// instrument name became a crash instead of the honest "no such instrument".
+// `buildSynthOptions({instrument:"constructor"})` likewise handed abcjs a
+// FUNCTION as its GM `program`.
+// =============================================================================
+
+describe("prototype keys are not instruments (Codex #17)", () => {
+  const PROTOTYPE_KEYS = [
+    "constructor",
+    "Constructor",
+    "toString",
+    "hasOwnProperty",
+    "valueOf",
+    "isPrototypeOf",
+  ];
+
+  it("findInstrument never returns an inherited property", () => {
+    for (const key of PROTOTYPE_KEYS) {
+      const found = findInstrument(key);
+      expect(typeof found === "undefined" || typeof found === "string").toBe(
+        true,
+      );
+      if (typeof found === "string") {
+        expect(Object.hasOwn(INSTRUMENTS, found)).toBe(true);
+      }
+    }
+  });
+
+  it("resolveInvocationSettings survives them instead of throwing", () => {
+    for (const key of PROTOTYPE_KEYS) {
+      const settings = resolveInvocationSettings({ instrument: key });
+      expect(typeof settings.instrument).toBe("string");
+      expect(Object.hasOwn(INSTRUMENTS, settings.instrument)).toBe(true);
+    }
+  });
+
+  it("buildSynthOptions returns a numeric GM program for them", () => {
+    for (const key of PROTOTYPE_KEYS) {
+      const opts = buildSynthOptions({ instrument: key });
+      expect(typeof opts.program).toBe("number");
+      expect(opts.program).toBe(0);
+    }
+  });
+
+  it("isStyleName and isSoundFontName reject them", () => {
+    for (const key of PROTOTYPE_KEYS) {
+      expect(isStyleName(key)).toBe(false);
+      expect(isSoundFontName(key)).toBe(false);
+      // applyStyleToAbc must therefore leave the score alone rather than
+      // splicing an inherited value in after the K: line.
+      expect(applyStyleToAbc(BASE_ABC, key)).toBe(BASE_ABC);
+    }
+  });
+
+  it("prepareToolInput keeps a usable style/instrument for them", () => {
+    const prepared = prepareToolInput({
+      abcNotation: BASE_ABC,
+      instrument: "constructor",
+      style: "toString",
+    });
+    expect(Object.hasOwn(INSTRUMENTS, prepared.instrument)).toBe(true);
+    expect(prepared.style).toBe(DEFAULT_STYLE);
   });
 });

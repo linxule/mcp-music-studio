@@ -103,6 +103,42 @@ K:C
   it("reports zero bars for a header-only stub", () => {
     expect(describeAbc("X:1\nT:Nothing yet\nK:C\n").bars).toBe(0);
   });
+
+  // ===========================================================================
+  // Codex review #20 — describeAbc miscounted two ordinary shapes, and its
+  // number is the one the widget tells the model after every edit.
+  // ===========================================================================
+
+  it("expands a multimeasure rest into the bars it stands for", () => {
+    // `Z4` is FOUR whole bars in one token; counting it as one reported 2.
+    expect(describeAbc("X:1\nM:4/4\nK:C\nZ4 | C8 |").bars).toBe(5);
+    expect(describeAbc("X:1\nM:4/4\nK:C\nC8 | Z4 | D8 |").bars).toBe(6);
+    // A bare `Z` is a single bar.
+    expect(describeAbc("X:1\nM:4/4\nK:C\nC8 | Z | D8 |").bars).toBe(3);
+    // A lowercase `z` is an ordinary rest, not a multimeasure one.
+    expect(describeAbc("X:1\nM:4/4\nK:C\nz4 | C8 |").bars).toBe(2);
+  });
+
+  it("keeps per-voice counts across inline voice switches on ONE line", () => {
+    // Two one-bar voices on a single line: the tune is one bar long. Only a
+    // switch at the START of a line used to be honoured, so the second voice's
+    // bar landed on the first voice's counter and the answer was 2.
+    const oneLine = "X:1\nM:4/4\nK:C\n[V:1] C D E F | [V:2] C,4 |";
+    expect(describeAbc(oneLine).bars).toBe(1);
+
+    // Three bars each, interleaved twice on the same line — still three.
+    const interleaved =
+      "X:1\nM:4/4\nK:C\n" +
+      "[V:1] C D E F | G A B c |[V:2] C,4 | D,4 |" +
+      "[V:1] c4 |[V:2] E,4 |";
+    expect(describeAbc(interleaved).bars).toBe(3);
+  });
+
+  it("still counts a measure that continues past an inline voice switch", () => {
+    // Voice 1's bar is split by a detour through voice 2 and back — one bar.
+    const resumed = "X:1\nM:4/4\nK:C\n[V:1] C D[V:2] C,4 |[V:1] E F |";
+    expect(describeAbc(resumed).bars).toBe(1);
+  });
 });
 
 describe("editContextText", () => {

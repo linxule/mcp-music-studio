@@ -41,7 +41,8 @@ export interface AbcVoiceElement {
   startChar?: number;
   duration?: number;
   pitches?: AbcPitchElement[];
-  rest?: { type?: string };
+  /** `type: "multimeasure"` carries the bar COUNT in `text` (`Z4` → 4). */
+  rest?: { type?: string; text?: number | string };
   /**
    * Text attached above/below the note. `position: "default"` marks a real chord
    * symbol; anything else is a positioned annotation (`"^rit."`, `"_text"`).
@@ -396,6 +397,19 @@ interface BarChords {
   total: number;
 }
 
+/**
+ * Bars a multimeasure rest stands for, or `null` if this element isn't one.
+ *
+ * abcjs collapses `Z4` into ONE note element (`rest: {type: "multimeasure",
+ * text: 4}`, `duration: 4`), so treating it like any other rest lost three of
+ * its four bars and pulled the rest of the tune forward.
+ */
+export function multiMeasureBars(el: AbcVoiceElement): number | null {
+  if (el.rest?.type !== "multimeasure") return null;
+  const count = Math.round(Number(el.rest.text));
+  return Number.isFinite(count) && count > 0 ? count : 1;
+}
+
 /** Render one bar's chord events as mini-notation, in the requested spelling. */
 function renderChordBar(events: readonly ChordEvent[], total: number, ireal: boolean): string {
   const slots: Slot[] = [];
@@ -622,6 +636,30 @@ export function convertAbcToStrudel(
   let tripletSlots: Slot[] | null = null;
   let tripletMultiplier = 1;
 
+  /**
+   * Resolved Strudel spelling of every tie still open, keyed by written pitch.
+   *
+   * A tie that crosses a bar line has to be re-articulated (mini-notation's `_`
+   * needs a preceding step in the same group), and by then `ctx.measure` has
+   * been cleared — so the accidental that made the tied note what it is was
+   * gone. Remembering the note itself keeps the continuation in tune without
+   * making the accidental apply to the rest of the new bar.
+   */
+  const openTies = new Map<number, string>();
+
+  const rememberTies = (pitches: readonly AbcPitchElement[], tokens: readonly string[]) => {
+    pitches.forEach((p, i) => {
+      if (p.startTie && tokens[i]) openTies.set(p.pitch ?? 0, tokens[i]!);
+    });
+  };
+
+  /** A tie that ends here and does not continue is spent. */
+  const releaseTies = (pitches: readonly AbcPitchElement[]) => {
+    for (const p of pitches) {
+      if (p.endTie && !p.startTie) openTies.delete(p.pitch ?? 0);
+    }
+  };
+
   // --- sound + octave, gathered from %%MIDI and the clef ----------------------
   let clefOctave = 0;
   let transposeOctave = 0;
@@ -839,6 +877,34 @@ export function convertAbcToStrudel(
         dropped.add("ties inside chords");
       }
 
+      // `Z4` is ONE abcjs element standing for four whole bars. Emitting it as
+      // a single slot collapsed those bars into one cycle and pulled everything
+      // after it (4 - 1) bars earlier — `C4 | Z4 | D4 |` played its D in bar 3
+      // instead of bar 6, and the converter still called the run lossless.
+      const multiRest = multiMeasureBars(el);
+      if (multiRest !== null) {
+        closeTriplet();
+        // A chord symbol written on the Z belongs to the FIRST rest bar; any
+        // slots already open belong to the bar before it.
+        let pending: ChordEvent[] = [];
+        if (slots.length > 0) {
+          closeBar();
+        } else {
+          pending = chordEvents;
+          chordEvents = [];
+        }
+        const barWhole = meter.num / meter.den;
+        for (let i = 0; i < multiRest; i += 1) {
+          bars.push("~");
+          barChords.push(
+            i === 0 && pending.length > 0 ? { events: pending, total: barWhole } : null,
+          );
+          barDurations.push(barWhole);
+        }
+        ctx.measure.clear();
+        continue;
+      }
+
       if (el.startTriplet) {
         closeTriplet();
         tripletSlots = [];
@@ -856,6 +922,7 @@ export function convertAbcToStrudel(
         !el.rest && !!el.pitches?.length && el.pitches.every((p) => p.endTie);
       if (isTieContinuation && target.length > 0) {
         target[target.length - 1]!.dur += dur;
+        releaseTies(el.pitches!);
         if (el.endTriplet) closeTriplet();
         continue;
       }
@@ -867,8 +934,19 @@ export function convertAbcToStrudel(
       if (el.rest || !el.pitches || el.pitches.length === 0) {
         text = "~";
       } else {
-        const tokens = el.pitches.map((p) => pitchToStrudel(p, ctx));
+        // A tie that crosses a bar line is re-articulated, and the bar's running
+        // accidentals were cleared at the barline — so `^F4-| F3 F|` spelled the
+        // continuation `f4`, a semitone below the note it continues, while the
+        // LATER untied F in the same bar is genuinely natural. Reuse the tied
+        // note's resolved spelling, and deliberately do NOT write it into
+        // ctx.measure, so only the continuation keeps the accidental.
+        const tokens = el.pitches.map(
+          (p) => (isTieContinuation ? openTies.get(p.pitch ?? 0) : undefined) ??
+            pitchToStrudel(p, ctx),
+        );
         text = tokens.length > 1 ? `[${tokens.join(",")}]` : tokens[0]!;
+        rememberTies(el.pitches, tokens);
+        if (isTieContinuation) releaseTies(el.pitches);
       }
 
       target.push({ dur, text });
@@ -928,10 +1006,16 @@ export function convertAbcToStrudel(
       continue;
     }
     anyChord = true;
-    const events: ChordEvent[] =
-      bar.events[0]!.at > EPS && lastChord
-        ? [{ ...lastChord, at: 0 }, ...bar.events]
-        : bar.events;
+    // A bar whose first symbol starts partway through needs something in front
+    // of it, or the symbol slides to the downbeat: `C D "G7"E F|` emitted
+    // `chord("<G7>")` — a whole cycle of G7 where the score has two beats of
+    // nothing and then G7. The previous bar's chord fills that gap when there
+    // is one; the FIRST chord of the tune has no predecessor, so it gets a
+    // silent lead-in rather than being moved.
+    const needsLeadIn = bar.events[0]!.at > EPS;
+    const events: ChordEvent[] = needsLeadIn
+      ? [lastChord ? { ...lastChord, at: 0 } : { at: 0, abc: "~", ireal: null }, ...bar.events]
+      : bar.events;
     chords.push(renderChordBar(events, bar.total, false));
     voicingChords.push(renderChordBar(events, bar.total, true));
     lastChord = events[events.length - 1]!;

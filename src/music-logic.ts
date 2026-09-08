@@ -423,7 +423,7 @@ export const SOUNDFONTS: Record<SoundFontName, SoundFontOption> = {
 };
 
 export function isSoundFontName(name: string): name is SoundFontName {
-  return name in SOUNDFONTS;
+  return Object.hasOwn(SOUNDFONTS, name);
 }
 
 export function resolveSoundFont(name: string | undefined): SoundFontOption {
@@ -467,7 +467,7 @@ export interface PreparedToolInput extends InvocationSettings {
 }
 
 export function isStyleName(style: string): style is StyleName {
-  return style in STYLE_PRESETS;
+  return Object.hasOwn(STYLE_PRESETS, style);
 }
 
 /**
@@ -489,7 +489,7 @@ export function findInstrument(name: string): string | undefined {
   const query = name.trim().toLowerCase();
   if (query.length === 0) return undefined;
 
-  if (name in INSTRUMENTS) return name;
+  if (Object.hasOwn(INSTRUMENTS, name)) return name;
 
   const byProgram = (a: string, b: string) => INSTRUMENTS[a]! - INSTRUMENTS[b]!;
   const keys = Object.keys(INSTRUMENTS);
@@ -497,7 +497,9 @@ export function findInstrument(name: string): string | undefined {
   const exact = keys.filter((k) => k.toLowerCase() === query).sort(byProgram);
   if (exact.length > 0) return exact[0];
 
-  const alias = INSTRUMENT_ALIASES[query];
+  const alias = Object.hasOwn(INSTRUMENT_ALIASES, query)
+    ? INSTRUMENT_ALIASES[query]
+    : undefined;
   if (alias) return alias;
 
   // Whole word or prefix: "sax" matches "Alto Sax" but not "Saxophonist"-style
@@ -530,7 +532,7 @@ export function resolveInvocationSettings(
   const warning =
     requested && requested.toLowerCase() !== instrument.toLowerCase()
       ? matchedInstrument
-        ? `Instrument "${requested}" matched "${instrument}" (GM program ${INSTRUMENTS[instrument]}).`
+        ? `Instrument "${requested}" matched "${instrument}" (GM program ${INSTRUMENTS[instrument] ?? 0}).`
         : `Unknown instrument "${requested}" — using ${DEFAULT_INSTRUMENT}. ` +
           `Use get-music-guide with topic "instruments" for the GM list, or %%MIDI program N in the ABC.`
       : undefined;
@@ -603,7 +605,9 @@ export function buildSynthOptions(args: {
   toolSynthOptions?: Record<string, unknown>;
 }): Record<string, unknown> {
   return {
-    program: INSTRUMENTS[args.instrument] ?? 0,
+    program: Object.hasOwn(INSTRUMENTS, args.instrument)
+      ? (INSTRUMENTS[args.instrument] ?? 0)
+      : 0,
     ...soundFontSynthOptions(args.soundFont),
     ...(args.toolSynthOptions ?? {}),
   };
