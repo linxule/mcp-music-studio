@@ -5,9 +5,13 @@ import worker, {
   SHARE_RATE_LIMIT_MAX,
   SHARE_RATE_LIMIT_WINDOW_SECONDS,
   createMusicServer,
+  readBodyWithinLimit,
   shareRateLimitKey,
 } from "../worker/src/index";
-import { decodeShareParam } from "../src/shared/share-url";
+import {
+  SHARE_PARAM_MAX_BYTES,
+  decodeShareParam,
+} from "../src/shared/share-url";
 
 // =============================================================================
 // Hardening of the public share surface — F5 (rate limit) and F6/F7 on the
@@ -284,5 +288,177 @@ describe("the share link carries the visuals preset", () => {
     const link = content.find((c) => c.type === "resource_link");
     expect(link!.uri).not.toContain("theme");
     expect(link!.uri).not.toContain("sonicPink");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// F1 — POST /share buffered the whole body before checking its size
+// -----------------------------------------------------------------------------
+//
+// `await request.text()` ran BEFORE the 64 KiB check, so a chunked upload with
+// no Content-Length was read in full and only then answered 413.
+
+/** A body that never ends, reporting how much was pulled and whether it stopped. */
+function endlessBody(chunkBytes: number) {
+  const chunk = new Uint8Array(chunkBytes).fill(0x61); // "a"
+  const log = { chunks: 0, bytes: 0, cancelled: false };
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      log.chunks++;
+      log.bytes += chunkBytes;
+      controller.enqueue(chunk.slice());
+    },
+    cancel() {
+      log.cancelled = true;
+    },
+  });
+  return { log, stream };
+}
+
+/** Minimal Request stand-in: the helper reads only `.body`. */
+const streamingRequest = (stream: ReadableStream<Uint8Array>) =>
+  ({ body: stream }) as unknown as Request;
+
+describe("POST /share does not buffer an oversized body", () => {
+  it("cancels the stream as soon as the cap is passed", async () => {
+    // 16 KiB chunks: 4 fill the 64 KiB cap, the 5th trips it.
+    const CHUNK = 16 * 1024;
+    const { log, stream } = endlessBody(CHUNK);
+
+    await expect(
+      readBodyWithinLimit(streamingRequest(stream), SHARE_PARAM_MAX_BYTES),
+    ).rejects.toMatchObject({ name: "ShareParamError", status: 413 });
+
+    expect(log.cancelled).toBe(true);
+    // Anything past that means the body was still being drained after the
+    // decision had already been made.
+    const chunksToCap = SHARE_PARAM_MAX_BYTES / CHUNK;
+    expect(log.chunks).toBeLessThanOrEqual(chunksToCap + 2);
+    expect(log.bytes).toBeLessThanOrEqual(SHARE_PARAM_MAX_BYTES + 2 * CHUNK);
+  });
+
+  it("returns a body that fits, unchanged", async () => {
+    const text = JSON.stringify({ kind: "play", args: { code: 's("bd")' } });
+    const bytes = new TextEncoder().encode(text);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, 5));
+        controller.enqueue(bytes.slice(5));
+        controller.close();
+      },
+    });
+    await expect(
+      readBodyWithinLimit(streamingRequest(stream), SHARE_PARAM_MAX_BYTES),
+    ).resolves.toBe(text);
+  });
+
+  it("accepts a body sitting exactly on the cap", async () => {
+    const bytes = new Uint8Array(SHARE_PARAM_MAX_BYTES).fill(0x61);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    const out = await readBodyWithinLimit(
+      streamingRequest(stream),
+      SHARE_PARAM_MAX_BYTES,
+    );
+    expect(out.length).toBe(SHARE_PARAM_MAX_BYTES);
+  });
+
+  it("still 413s a declared oversize before the body is read at all", async () => {
+    const res = await worker.fetch(
+      new Request(`${ORIGIN}/share`, {
+        method: "POST",
+        headers: { "content-length": String(SHARE_PARAM_MAX_BYTES + 1) },
+      }),
+      { DOCS_CACHE: fakeKv().binding } as never,
+      CTX,
+    );
+    expect(res.status).toBe(413);
+  });
+
+  it("413s an oversized body through the route and stores nothing", async () => {
+    const kv = fakeKv();
+    const res = await call(
+      "/share",
+      {
+        method: "POST",
+        body: "x".repeat(SHARE_PARAM_MAX_BYTES + 100),
+        headers: { "CF-Connecting-IP": "203.0.113.55" },
+      },
+      { DOCS_CACHE: kv.binding },
+    );
+    expect(res.status).toBe(413);
+    expect(kv.puts.some((p) => p.key.startsWith("share:"))).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// F10 — a payload that stored fine but 413'd on read
+// -----------------------------------------------------------------------------
+//
+// The tool schemas cap code in CHARACTERS; /p/<id> validates BYTES. A multibyte
+// pattern could pass the schema, write to KV, and hand back a link that 413s.
+
+/** `n` characters of a 3-byte code point. */
+const multibyte = (chars: number) => "音".repeat(chars);
+
+describe("a stored share is always readable", () => {
+  it("omits the link rather than minting one /p/<id> would reject", async () => {
+    const kv = fakeKv();
+    // 23011 chars is inside the tool's character limit; x3 bytes is over the
+    // 64 KiB byte cap the reader applies.
+    const code = multibyte(23011);
+    expect(new TextEncoder().encode(code).length).toBeGreaterThan(
+      SHARE_PARAM_MAX_BYTES,
+    );
+
+    const content = await callPlayLive({ code }, { DOCS_CACHE: kv.binding });
+
+    // No link at all — the result keeps its honest "nothing has played" tail.
+    expect(content.some((c) => c.type === "resource_link")).toBe(false);
+    expect(content.some((c) => c.type === "text")).toBe(true);
+    // And nothing unreadable was written.
+    expect(kv.puts.some((p) => p.key.startsWith("share:"))).toBe(false);
+  });
+
+  it("round-trips a multibyte payload that sits just under the cap", async () => {
+    const kv = fakeKv();
+    // Long enough to miss the query-string form (so it goes through KV), short
+    // enough in BYTES to survive the reader.
+    const code = `s("bd") // ${multibyte(2000)}`;
+    expect(new TextEncoder().encode(code).length).toBeLessThan(
+      SHARE_PARAM_MAX_BYTES,
+    );
+
+    const content = await callPlayLive({ code }, { DOCS_CACHE: kv.binding });
+    const link = content.find((c) => c.type === "resource_link");
+    expect(link?.uri).toContain("/p/");
+
+    const page = await call(new URL(link!.uri!).pathname, undefined, {
+      DOCS_CACHE: kv.binding,
+    });
+    expect(page.status).toBe(200);
+    expect(strudelInit(await page.text()).code).toContain("音");
+  });
+
+  it("rejects an oversized score payload before writing it", async () => {
+    const kv = fakeKv();
+    const abcNotation = `X:1\nK:C\n% ${multibyte(23000)}\nCDEF|`;
+    const client = new Client({ name: "share-store", version: "0.0.0" });
+    const [c, s] = InMemoryTransport.createLinkedPair();
+    await Promise.all([
+      client.connect(c),
+      createMusicServer({ DOCS_CACHE: kv.binding } as never, ORIGIN).connect(s),
+    ]);
+    const res = await client.callTool({
+      name: "play-sheet-music",
+      arguments: { abcNotation },
+    });
+    const content = res.content as { type: string }[];
+    expect(content.some((b) => b.type === "resource_link")).toBe(false);
+    expect(kv.puts.some((p) => p.key.startsWith("share:"))).toBe(false);
   });
 });

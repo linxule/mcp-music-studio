@@ -274,6 +274,64 @@ function byteLength(value: string): number {
 }
 
 /**
+ * Read a request body, refusing it the moment it passes `maxBytes`.
+ *
+ * `await request.text()` buffered the WHOLE body before the size check, so the
+ * 64 KiB cap on POST /share only described what was accepted, not what was
+ * read: a chunked 2 MiB upload with no `Content-Length` was pulled into the
+ * isolate in full and only then answered with a 413. A `Content-Length` header
+ * over the cap is still rejected earlier and more cheaply — this is the floor
+ * for the case where the sender simply doesn't declare one.
+ *
+ * The stream is cancelled on the same iteration that crosses the cap, so the
+ * sender stops rather than being drained politely.
+ *
+ * Exported for tests/worker-share-hardening.test.ts, which drives it with a
+ * stream that records whether it was cancelled and how much it handed over.
+ */
+export async function readBodyWithinLimit(
+  request: Request,
+  maxBytes: number,
+): Promise<string> {
+  const body = request.body;
+  if (!body) return "";
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        // Don't await forever on a peer that won't acknowledge the cancel.
+        void reader.cancel().catch(() => {});
+        throw new ShareParamError("Share body is too large.", 413);
+      }
+      chunks.push(value as Uint8Array);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* already released by cancel() — nothing to undo */
+    }
+  }
+
+  const joined = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  // Non-fatal: mangled bytes become U+FFFD and JSON.parse then answers 400,
+  // which is the same outcome request.text() produced.
+  return new TextDecoder().decode(joined);
+}
+
+/**
  * Validate an untrusted share payload down to the exact fields the generators
  * read. Anything else is dropped rather than stored — a share must never become
  * a way to smuggle extra keys into a page generator.
@@ -448,14 +506,26 @@ async function enforceShareRateLimit(
   return null;
 }
 
-/** Store a payload under its content digest. Returns its /p/<id> URL. */
+/**
+ * Store a payload under its content digest. Returns its /p/<id> URL.
+ *
+ * The payload is put through `coerceSharePayload` FIRST — the very check
+ * `/p/<id>` applies on the way out. Without it, writer and reader disagreed:
+ * the tool schemas cap `code`/`abcNotation` in CHARACTERS, so a multibyte
+ * pattern of 23 011 chars is 69 011 bytes, sailed past the schema, wrote fine to
+ * KV, and then made `/p/<id>` answer 413 — the tool handed back a link that was
+ * dead the moment it was minted. Throwing here is what `shareUrlFor` turns into
+ * "no link at all", which leaves the result's honest tail standing instead of a
+ * broken URL.
+ */
 async function storeShare(
   env: Env,
   payload: SharePayload,
   origin: string,
 ): Promise<string> {
-  const id = await shareId(payload);
-  await env.DOCS_CACHE.put(shareKvKey(id), JSON.stringify(payload), {
+  const storable = coerceSharePayload(payload);
+  const id = await shareId(storable);
+  await env.DOCS_CACHE.put(shareKvKey(id), JSON.stringify(storable), {
     expirationTtl: SHARE_TTL_SECONDS,
   });
   return buildStoredShareUrl(id, origin);
@@ -818,8 +888,11 @@ export default {
           headers: { allow: "POST" },
         });
       }
+      // Cheapest rejection available: an honest sender declares its size.
+      // A missing or bogus header is not a pass — readBodyWithinLimit() below
+      // enforces the same cap against the bytes that actually arrive.
       const declared = Number(request.headers.get("content-length") ?? "0");
-      if (declared > SHARE_PARAM_MAX_BYTES) {
+      if (Number.isFinite(declared) && declared > SHARE_PARAM_MAX_BYTES) {
         return shareError(new ShareParamError("Share body is too large.", 413));
       }
       if (!env.DOCS_CACHE) {
@@ -830,10 +903,7 @@ export default {
       const limited = await enforceShareRateLimit(env, request);
       if (limited) return limited;
       try {
-        const body = await request.text();
-        if (byteLength(body) > SHARE_PARAM_MAX_BYTES) {
-          throw new ShareParamError("Share body is too large.", 413);
-        }
+        const body = await readBodyWithinLimit(request, SHARE_PARAM_MAX_BYTES);
         const payload = coerceSharePayload(JSON.parse(body));
         const shareUrl =
           buildShareQueryUrl(payload, url.origin) ??
