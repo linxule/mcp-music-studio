@@ -45,13 +45,34 @@ export interface CliOptions {
 }
 
 /**
+ * Split one token at each ` --flag` boundary inside it.
+ *
+ * `"--stdio --render-mode browser"` becomes `["--stdio", "--render-mode browser"]`
+ * — the value stays attached to its own flag, so the joined-value branch of
+ * {@link argValues} can read it. Spaces INSIDE a value survive: the lookahead
+ * only fires before `--` followed by a letter, so `"--output-dir /My Music"` is
+ * one token. A value that itself contains ` --something` is pathological and
+ * documented as unsupported.
+ */
+function splitJoinedToken(token: string): string[] {
+  return token.split(/ +(?=--[A-Za-z])/);
+}
+
+/**
  * One normalised token list for flags AND values.
  *
  * Every token is trimmed and blanks are dropped, so `"--stdio "` and `" --stdio"`
- * are the same flag as `"--stdio"`.
+ * are the same flag as `"--stdio"`. Joined tokens are then split at their flag
+ * boundaries: `hasFlag` could already see `--stdio` anywhere inside a joined
+ * token by splitting on whitespace, but VALUE lookup could not — a client that
+ * passed the documented `"--stdio --render-mode browser"` as one argv entry got
+ * `stdio: true` and `renderMode: "auto"`, silently losing the render mode.
  */
 export function normalizeArgv(argv: readonly string[]): string[] {
-  return argv.map((a) => a.trim()).filter((a) => a.length > 0);
+  return argv
+    .flatMap((a) => splitJoinedToken(a.trim()))
+    .map((a) => a.trim())
+    .filter((a) => a.length > 0);
 }
 
 /**

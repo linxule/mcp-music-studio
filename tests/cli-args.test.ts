@@ -38,6 +38,46 @@ describe("argv normalisation", () => {
     );
   });
 
+  // The joined spelling used to be half-parsed: `hasFlag` split on whitespace
+  // and saw `--stdio`, but VALUE lookup matched whole tokens, so the render mode
+  // silently stayed "auto". Splitting at flag boundaries makes both agree.
+  it("keeps every flag in a joined token, values included", () => {
+    const options = parseCliOptions(argv("--stdio --render-mode browser"));
+    expect(options.stdio).toBe(true);
+    expect(options.renderMode).toBe("browser");
+    expect(options.warnings).toEqual([]);
+  });
+
+  it("splits a joined token at each flag boundary", () => {
+    expect(normalizeArgv(["--stdio --render-mode html --host 0.0.0.0"])).toEqual(
+      ["--stdio", "--render-mode html", "--host 0.0.0.0"],
+    );
+  });
+
+  it("reads three joined flags out of one token", () => {
+    const options = parseCliOptions(
+      argv("--stdio --render-mode html --output-dir /tmp/out"),
+    );
+    expect(options.stdio).toBe(true);
+    expect(options.renderMode).toBe("html");
+    expect(options.outputDir).toBe("/tmp/out");
+  });
+
+  it("keeps spaces inside a joined value", () => {
+    expect(
+      parseCliOptions(argv("--stdio --output-dir /Users/me/My Music")).outputDir,
+    ).toBe("/Users/me/My Music");
+  });
+
+  it("does not split on a bare -- or a numeric lookalike", () => {
+    expect(normalizeArgv(["--output-dir /a --2b"])).toEqual([
+      "--output-dir /a --2b",
+    ]);
+    expect(normalizeArgv(["--output-dir /a -- b"])).toEqual([
+      "--output-dir /a -- b",
+    ]);
+  });
+
   it("does not fire on a lookalike flag", () => {
     expect(parseCliOptions(argv("--stdiox")).stdio).toBe(false);
     expect(hasFlag(["--stdio-mode"], "--stdio")).toBe(false);
