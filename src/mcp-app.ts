@@ -26,11 +26,12 @@ import {
   type SoundFontName,
 } from "./music-logic";
 import { resetSoundsCache, soundsCacheLooksLive } from "./abcjs-sound-cache";
-import { transposeAbc } from "./abc-transpose";
+import { transposeAbcDetailed } from "./abc-transpose";
 import {
   cleanAbcWarnings,
   editContextText,
   hasFatalAbcWarning,
+  staleControlAction,
 } from "./abc-edit";
 import { audioBufferToWavBase64 } from "./wav-encoder";
 import { bytesToBase64, sanitizeFileStem } from "./bytes-to-base64";
@@ -121,11 +122,48 @@ function destroySynthControl(control: ABCJS.SynthObjectController): void {
   }
 }
 
+/**
+ * Generation that last took ownership of `state.synthControl`.
+ *
+ * The controller outlives the render that built it — an edit REUSES it rather
+ * than rebuilding the transport — so "is this still the current controller?"
+ * is not enough to decide whether a superseded continuation may destroy it.
+ * See `staleControlAction()` in abc-edit.ts.
+ */
+let synthControlOwner = 0;
+
 /** Retire the widget's current controller, if any. */
 function retireSynthControl(): void {
   if (state.synthControl) destroySynthControl(state.synthControl);
   state.synthControl = null;
+  synthControlOwner = 0;
   clearHighlights();
+}
+
+/** Take ownership of the live controller for `generation`. */
+function ownSynthControl(
+  control: ABCJS.SynthObjectController,
+  generation: number,
+): void {
+  state.synthControl = control;
+  synthControlOwner = generation;
+}
+
+/**
+ * Clean up after a continuation that has been superseded — WITHOUT touching a
+ * controller a newer generation has taken over and is still playing.
+ */
+function releaseStaleControl(
+  control: ABCJS.SynthObjectController,
+  generation: number,
+): void {
+  const action = staleControlAction({
+    isCurrent: state.synthControl === control,
+    owner: synthControlOwner,
+    generation,
+  });
+  if (action === "retire") retireSynthControl();
+  else if (action === "destroy") destroySynthControl(control);
 }
 
 /**
@@ -526,6 +564,30 @@ function scheduleEditRender(): void {
   }, EDIT_DEBOUNCE_MS);
 }
 
+/**
+ * Set when a `transpose` argument could only be applied to the AUDIO — a
+ * keyless tune, or a notation rewrite that failed verification. Shown in the
+ * status line and reported to the model, so neither the user nor the agent is
+ * told the printed score moved when it did not.
+ */
+let transposeNote: string | null = null;
+
+function withTransposeNote(text: string): string {
+  return transposeNote ? `${text} ${transposeNote}` : text;
+}
+
+/** Tell the model the printed score was NOT transposed, only the playback. */
+function reportTransposeToModel(warning: string | null): void {
+  if (!warning || !contextUpdateSupported) return;
+  void app
+    .updateModelContext({
+      content: [{ type: "text", text: `Sheet-music widget: ${warning}` }],
+    })
+    .catch(() => {
+      /* context updates are best-effort */
+    });
+}
+
 /** Tell the model the score on screen is no longer the one it wrote. */
 function reportEditToModel(abc: string): void {
   if (!contextUpdateSupported || abc === lastEditReported) return;
@@ -585,6 +647,10 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
   // still queued from a stream. Everything after an await re-checks this.
   const generation = newGeneration();
   const synthControl = state.synthControl;
+  // The edit is now the controller's owner: a still-running continuation from
+  // the render that CREATED it must not destroy the transport we are about to
+  // re-prime and keep playing.
+  ownSynthControl(synthControl, generation);
   cancelPartialRender();
 
   try {
@@ -618,7 +684,7 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     // The controller we just re-primed may already have been retired; don't
     // wire it back up, and don't let it start playing.
     if (isStale(generation)) {
-      if (state.synthControl !== synthControl) destroySynthControl(synthControl);
+      releaseStaleControl(synthControl, generation);
       return;
     }
 
@@ -629,7 +695,7 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     if (wasPlaying || forcePlay) {
       await (synthControl.play() as unknown as Promise<unknown> | undefined);
       if (isStale(generation)) {
-        destroySynthControl(synthControl);
+        releaseStaleControl(synthControl, generation);
         return;
       }
       setStatus("Playing...");
@@ -973,8 +1039,14 @@ async function renderAbc(
     // transport (abcjs synth-controller.js).
     retireSynthControl();
 
+    // NOTE: the editor text is deliberately NOT synced here. renderAbc() runs
+    // for every Style / instrument / sound-bank change too, and those re-render
+    // `state.currentAbc` — so syncing here overwrote a draft the user was still
+    // typing (or one the validator had just rejected, which is exactly when it
+    // is least replaceable). The editor follows EXTERNAL replacement only:
+    // `ontoolinput` (a new tool call, transposition included) and
+    // `ontoolinputpartial` (streaming), both of which call syncEditor directly.
     state.currentAbc = abcNotation;
-    syncEditor(abcNotation);
     renderTitle();
     clearHighlights();
     sheetMusicEl.innerHTML = "";
@@ -996,7 +1068,7 @@ async function renderAbc(
     }
 
     const synthControl = new ABCJS.synth.SynthController();
-    state.synthControl = synthControl;
+    ownSynthControl(synthControl, generation);
     synthControl.load(audioControlsEl, cursorControl, {
       displayLoop: true,
       displayPlay: true,
@@ -1013,8 +1085,7 @@ async function renderAbc(
     // setTune awaited: a newer render (or a teardown) may have landed while we
     // were gone. Retire what we just built rather than wiring it up.
     if (isStale(generation)) {
-      if (state.synthControl === synthControl) retireSynthControl();
-      else destroySynthControl(synthControl);
+      releaseStaleControl(synthControl, generation);
       return;
     }
 
@@ -1038,15 +1109,19 @@ async function renderAbc(
       ?.then(() => {
         hasPrimedAudio = true;
         if (isStale(generation)) {
-          destroySynthControl(synthControl);
+          // NOT an unconditional destroy: an edit reuses this very controller
+          // while bumping the generation, so destroying it here left the score
+          // the user is now editing with `isLoaded: true, midiBuffer: null`
+          // and threw on the next ▶.
+          releaseStaleControl(synthControl, generation);
           return;
         }
-        setStatus("Playing...");
+        setStatus(withTransposeNote("Playing..."));
       })
       .catch((e) => {
         if (isStale(generation)) return;
         console.debug("Autoplay blocked:", e);
-        setStatus("Click ▶ to play");
+        setStatus(withTransposeNote("Click ▶ to play"));
       });
   } catch (error) {
     if (isStale(generation)) return;
@@ -1076,6 +1151,8 @@ app.ontoolinput = (params) => {
 
   const args = params.arguments ?? {};
   const preparedInput = prepareToolInput(args);
+  // A new tool call replaces the previous one's transposition caveat, if any.
+  transposeNote = null;
 
   state.currentInstrument = preparedInput.instrument;
   instrumentSelect.value = preparedInput.instrument;
@@ -1089,11 +1166,21 @@ app.ontoolinput = (params) => {
   if (preparedInput.abcNotation) {
     // Transpose the notation itself (score + key signature), not just the MIDI
     // stream, and do it once here so later style/instrument re-renders reuse
-    // the already-transposed ABC rather than shifting it again.
-    const abc = transposeAbc(preparedInput.abcNotation, preparedInput.transpose);
+    // the already-transposed ABC rather than shifting it again. When abcjs
+    // can't move the notation safely (a keyless tune, or a rewrite that failed
+    // verification) the shift rides in as `%%MIDI transpose` and `warning` says
+    // so, so nobody claims the printed score moved when it didn't.
+    const transposed = transposeAbcDetailed(
+      preparedInput.abcNotation,
+      preparedInput.transpose,
+    );
+    const abc = transposed.abc;
+    transposeNote = transposed.warning;
+    reportTransposeToModel(transposed.warning);
     // A fresh tool call supersedes anything in the editor, and resets the
     // edit bookkeeping so the next user edit is reported to the model.
     cancelEditRender();
+    syncEditor(abc);
     lastEditRendered = abc;
     lastEditReported = abc;
     setEditorMessage(null, "error");

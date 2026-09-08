@@ -172,6 +172,45 @@ export function describeAbc(abc: string): AbcShape {
   return { bars, key };
 }
 
+// =============================================================================
+// Stale-continuation cleanup
+// =============================================================================
+//
+// The widget builds ONE SynthController and hands it from generation to
+// generation: `renderAbc()` creates it, and an edit REUSES it (so the transport
+// doesn't flicker and the note cursor keeps working) while bumping the
+// generation. That combination had a hole. A `renderAbc()` autoplay resolving
+// after an edit found `isStale(generation)` true and ran
+// `destroySynthControl(control)` — on the very controller the edit had just
+// re-primed and was still driving. abcjs's `destroy()` stops the buffer and
+// resets the transport but leaves `isLoaded === true`, so the widget was left
+// with `isLoaded: true, midiBuffer: null` and the user's next ▶ threw.
+//
+// The fix is ownership, not merely identity: every render/edit records the
+// generation that took the controller over, and a stale continuation may only
+// clean up a controller no NEWER generation has claimed.
+
+/** What a superseded continuation may do with the controller it was using. */
+export type StaleControlAction =
+  /** Ours, and our generation is gone: shut it down and clear the widget slot. */
+  | "retire"
+  /** Nobody's — an orphan from a render that lost the race. Destroy it. */
+  | "destroy"
+  /** A newer generation is driving it. Hands off. */
+  | "keep";
+
+export function staleControlAction(state: {
+  /** Is this still the widget's live controller (`state.synthControl`)? */
+  isCurrent: boolean;
+  /** Generation that last took ownership of the live controller. */
+  owner: number;
+  /** Generation of the continuation asking. */
+  generation: number;
+}): StaleControlAction {
+  if (!state.isCurrent) return "destroy";
+  return state.owner === state.generation ? "retire" : "keep";
+}
+
 /**
  * One honest sentence for `ui/update-model-context` after an edit lands, so the
  * model knows the score it proposed is no longer the score on screen.
