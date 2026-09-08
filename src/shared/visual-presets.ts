@@ -114,7 +114,17 @@ export const VISUAL_PRESET_BLURBS: Record<VisualPreset, string> = {
   "hydra-feed": "Hydra: the piano roll itself, mirrored and trailed",
 };
 
-/** Strudel 2D draw methods, keyed by preset. */
+/**
+ * Strudel 2D draw methods, keyed by preset.
+ *
+ * These go BEFORE the pattern, never after it. The REPL plays whatever the
+ * LAST expression evaluates to; `all()` only records a transform and returns
+ * undefined, so `pattern; all(...)` evaluates to undefined and the REPL plays
+ * silence — with the status still reading "Playing…". `all(...); pattern`
+ * records the transform, then the pattern is the last expression and the
+ * transform is applied to it. (v0.5.0 shipped the appended form: every 2D
+ * preset, and hydra-feed on code without its own draw method, was silent.)
+ */
 const DRAW_CALLS: Partial<Record<VisualPreset, string>> = {
   pianoroll: "all(p => p.pianoroll({ fold: 1 }))",
   punchcard: "all(p => p.punchcard())",
@@ -220,16 +230,14 @@ export function applyVisualPreset(
     const recipe = HYDRA_RECIPES[preset];
     if (!recipe) return code;
     // feedStrudel textures the STRUDEL DRAW CANVAS. With no draw method there is
-    // nothing in s0 to mirror, so give it a piano roll to chew on.
+    // nothing in s0 to mirror, so give it a piano roll to chew on — placed
+    // before the pattern, like every draw call (see DRAW_CALLS).
     const needsRoll = preset === "hydra-feed" && !intent.strudelViz;
-    // Both joins are terminated: the recipe so the pattern below it is not read
-    // as a call on `.out(o0)`, and the pattern so the appended draw call is a
-    // statement of its own. See terminateStatement().
+    // The recipe is terminated so the code below it is not read as a call on
+    // `.out(o0)`. See terminateStatement().
     const body = code.trimStart();
-    const tail = needsRoll ? `\n\n${DRAW_CALLS.pianoroll}` : "";
-    return `${terminateStatement(recipe)}\n\n${
-      needsRoll ? terminateStatement(body) : body
-    }${tail}`;
+    const roll = needsRoll ? `${DRAW_CALLS.pianoroll};\n\n` : "";
+    return `${terminateStatement(recipe)}\n\n${roll}${body}`;
   }
 
   // Strudel draw methods all share the single 2D canvas, so a pattern that
@@ -237,5 +245,7 @@ export function applyVisualPreset(
   if (intent.strudelViz) return code;
   const call = DRAW_CALLS[preset];
   if (!call) return code;
-  return `${terminateStatement(code)}\n\n${call}`;
+  // Prepended, and the pattern stays the last expression. Nothing to terminate:
+  // the call ends in `)` and the model's code follows on its own line.
+  return `${call};\n\n${code.trimStart()}`;
 }

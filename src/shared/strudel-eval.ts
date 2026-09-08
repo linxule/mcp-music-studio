@@ -111,6 +111,44 @@ export function createTrace(opts: {
 /** The trace `runTraced` is currently filling, if any. */
 let active: StrudelTrace | undefined;
 
+/** Transforms recorded by all()/each() during the evaluation in progress. */
+let pendingAll: Array<(p: Any) => Any> = [];
+let pendingEach: ((p: Any) => Any) | undefined;
+
+function resetTransforms(): void {
+  pendingAll = [];
+  pendingEach = undefined;
+}
+
+/**
+ * What @strudel/core's repl() does after `_evaluate` returns: apply each(),
+ * then every all(), to the last expression's value. The REPL then substitutes
+ * `silence` for a non-Pattern; here that is reported as an error instead,
+ * because a pattern that plays silence is exactly what a validator exists to
+ * catch — the commonest cause being all()/setcps() written AFTER the pattern.
+ */
+function finishEvaluation(value: unknown): EvalResult {
+  const isPattern = (p: unknown): p is Any =>
+    !!p && typeof (p as Any).queryArc === "function";
+  const notAPattern = (): EvalResult => ({
+    pattern: undefined,
+    error: new Error(
+      "evaluated to a non-Pattern — the REPL plays the LAST expression, so the pattern must come last (all(), setcps() and the like go before it)",
+    ),
+  });
+  // Checked before the transforms run: `p => p.scope()` on undefined would
+  // throw a TypeError that names the symptom, not the cause.
+  if (!isPattern(value)) {
+    resetTransforms();
+    return notAPattern();
+  }
+  let pattern: Any = value;
+  if (pendingEach) pattern = pendingEach(pattern);
+  for (const transform of pendingAll) pattern = transform(pattern);
+  resetTransforms();
+  return isPattern(pattern) ? { pattern, error: undefined } : notAPattern();
+}
+
 // -----------------------------------------------------------------------------
 // The interrupt
 // -----------------------------------------------------------------------------
@@ -249,8 +287,16 @@ export function setupStrudel(): Promise<void> {
       setcpm: (v: unknown) => recordCps(v, 60),
       setCpm: (v: unknown) => recordCps(v, 60),
       hush: () => C.silence,
-      all: () => C.silence,
-      each: () => C.silence,
+      // Faithful to the REPL: all()/each() record a transform and return
+      // undefined; the transform is applied to the LAST expression's pattern
+      // by finishEvaluation(). Stubbing them as `silence` hid the v0.5.0
+      // preset bug (a trailing all() evaluates to undefined → silence).
+      all: (transform: (p: Any) => Any) => {
+        pendingAll.push(transform);
+      },
+      each: (transform: (p: Any) => Any) => {
+        pendingEach = transform;
+      },
       // Sample loading is a network + WebAudio concern. The URL is worth
       // recording though: it means unknown sound names are unverifiable rather
       // than wrong.
@@ -384,15 +430,14 @@ export async function evalStrudelSandboxed(
     // Verbatim from @strudel/core's safeEval (wrapExpression + wrapAsync),
     // re-nested inside an IIFE because a Script has no `return`.
     const source = `(function(){"use strict";return ((async ()=>{${output}})());})()`;
-    const pattern = await vm.runInContext(source, context, {
+    resetTransforms();
+    const value = await vm.runInContext(source, context, {
       filename: "strudel-pattern.js",
       timeout: timeoutMs,
     });
-    if (!pattern || typeof pattern.queryArc !== "function") {
-      return { pattern: undefined, error: new Error("evaluated to a non-Pattern") };
-    }
-    return { pattern, error: undefined };
+    return finishEvaluation(value);
   } catch (err) {
+    resetTransforms();
     return { pattern: undefined, error: err as Error };
   }
 }
@@ -407,12 +452,11 @@ export async function evalStrudelSandboxed(
 export async function evalStrudel(code: string): Promise<EvalResult> {
   await setupStrudel();
   try {
+    resetTransforms();
     const { pattern } = await C.evaluate(code, transpiler);
-    if (!pattern || typeof pattern.queryArc !== "function") {
-      return { pattern: undefined, error: new Error("evaluated to a non-Pattern") };
-    }
-    return { pattern, error: undefined };
+    return finishEvaluation(pattern);
   } catch (err) {
+    resetTransforms();
     return { pattern: undefined, error: err as Error };
   }
 }

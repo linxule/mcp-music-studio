@@ -1384,6 +1384,29 @@ function readEvalError(): Error | null {
   return err instanceof Error ? err : err ? new Error(String(err)) : null;
 }
 
+/**
+ * Whether the pattern the REPL just accepted produces NO events.
+ *
+ * "Playing…" with a pattern that is `silence` is the widget's most misleading
+ * state: evaluation succeeded, the scheduler runs, nothing sounds. The REPL
+ * plays the LAST expression, so `pattern; all(...)` or `pattern; setcps(...)`
+ * hands it undefined → silence, without an error. Query-time errors are
+ * swallowed by queryArc() the same way (an empty result), so both shapes land
+ * here. Bounded to a few cycles; a slow-building pattern (`<~ ~ ~ x>`) that
+ * genuinely rests through the window is a false positive we accept, which is
+ * why the wording is "produces no events", not "is broken".
+ */
+const SILENCE_CHECK_CYCLES = 4;
+function patternIsSilent(): boolean {
+  const pattern = getEditor()?.repl?.state?.pattern;
+  if (!pattern || typeof pattern.queryArc !== "function") return false;
+  try {
+    return pattern.queryArc(0, SILENCE_CHECK_CYCLES).length === 0;
+  } catch {
+    return true;
+  }
+}
+
 /** Whether the scheduler is actually running (not what we hoped it would do). */
 function isSchedulerStarted(): boolean {
   return getEditor()?.repl?.state?.started === true;
@@ -1488,6 +1511,16 @@ function reportEvaluation(
 
   updatePlayState(isSchedulerStarted());
   markReportedPlaying(isPlaying, null);
+  if (isPlaying && patternIsSilent()) {
+    setStatus("Playing — but the pattern produces no events (silent)", "error");
+    reportToModel(
+      "Strudel widget: the pattern evaluated and the scheduler is running, but it " +
+        `produces NO events in the first ${SILENCE_CHECK_CYCLES} cycles — nothing will sound. ` +
+        "The REPL plays the LAST expression: make sure the pattern is the final statement " +
+        "(all(), setcps() and helpers go before it), and that every layer yields events.",
+    );
+    return;
+  }
   if ((soundfontWarning || tempoAtRuntime) && isPlaying) {
     setStatus(`Playing...${soundfontNote}${tempoNote}`, "playing");
   }
