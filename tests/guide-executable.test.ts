@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { STRUDEL_GUIDES } from "../src/strudel-guide";
 import gmNames from "./fixtures/gm-sound-names.json";
-import strudelSounds from "./fixtures/strudel-sounds.json";
+import strudelSounds from "../src/shared/data/strudel-sounds.json";
 import { extractBlocks, parses, type GuideBlock } from "./guide-blocks";
 import { evalStrudel, queryHaps, setupStrudel } from "./strudel-eval";
 

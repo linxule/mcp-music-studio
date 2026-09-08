@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Vendors the set of sound names that @strudel/repl's prebake() actually
- * registers, into tests/fixtures/strudel-sounds.json.
+ * registers, into src/shared/data/strudel-sounds.json.
  *
  * Why: superdough throws "sound <name> not found" for an unregistered name and
  * silently mutes that layer. A guide that advertises a sound Strudel never
@@ -28,6 +28,10 @@ import { dirname, join } from "node:path";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES = join(ROOT, "tests", "fixtures");
+// The sound inventory is production data — src/shared/strudel-validate.ts checks
+// every pattern against it and the validation child bundles it — so it lives
+// under src/. gm-sound-names.json is still only read by tests, so it stays put.
+const SOUND_DATA = join(ROOT, "src", "shared", "data");
 
 /** Keep in sync with the @strudel/repl CDN pin used by the widget. */
 export const STRUDEL_REPL_VERSION = "1.3.0";
@@ -164,7 +168,7 @@ async function main() {
     synths: [...SYNTHS].sort(),
   };
 
-  const out = join(FIXTURES, "strudel-sounds.json");
+  const out = join(SOUND_DATA, "strudel-sounds.json");
   await writeFile(out, `${JSON.stringify(fixture, null, 2)}\n`);
   console.error(
     `\nwrote ${out}\n  samples ${fixture.samples.length}` +

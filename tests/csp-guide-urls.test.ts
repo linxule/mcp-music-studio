@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { STRUDEL_CSP, SHEET_CSP } from "../src/shared/tool-defs";
 import { STRUDEL_GUIDES } from "../src/strudel-guide";
 import { ABC_GUIDES } from "../src/abc-guide";
-import strudelSounds from "./fixtures/strudel-sounds.json";
+import strudelSounds from "../src/shared/data/strudel-sounds.json";
 
 /**
  * Inside the ext-apps widget the host enforces the CSP we declare in

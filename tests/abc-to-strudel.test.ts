@@ -684,7 +684,10 @@ describe("the GM program table matches the pinned Strudel bundle", () => {
   const bundled: Set<string> = new Set(
     (
       JSON.parse(
-        fs.readFileSync(path.join(FIXTURE_DIR, "..", "strudel-sounds.json"), "utf-8"),
+        fs.readFileSync(
+          fileURLToPath(new URL("../src/shared/data/strudel-sounds.json", import.meta.url)),
+          "utf-8",
+        ),
       ) as { gm: string[] }
     ).gm,
   );
