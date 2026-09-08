@@ -10,6 +10,7 @@ export const STRUDEL_GUIDE_TOPICS = [
   "genres",
   "tips",
   "visuals",
+  "hydra",
   "advanced",
 ] as const;
 
@@ -512,7 +513,7 @@ Each template notes which features it showcases.
 Every template here is silent VISUALLY. Give the widget something to look at:
 add ONE draw method (.pianoroll() on the melodic layer) or pass the visuals
 parameter (hydra-wash for ambient, hydra-pulse for beats) with a matching
-theme — see topic "visuals" for Hydra backgrounds and audio-reactive shaders.
+theme — topic "visuals" for draw methods and presets, topic "hydra" for shaders and audio-reactive visuals.
 
 ## Techno
 // Features: stack(), .bank(), .lpq() resonance, continuous signal panning
@@ -713,7 +714,7 @@ visuals: a ready-made animation for code that has none (pianoroll | punchcard |
 scope | spectrum | hydra-kaleid | hydra-pulse | hydra-wash | hydra-feed); it
 fills the layer your code lacks. theme: the editor colour scheme, which also
 sets the ground the visuals sit on. Both are documented in full — with the
-Hydra and audio-reactive recipes — in topic "visuals".
+presets — in topic "visuals"; shaders and audio-reactive recipes in topic "hydra".
 
 ## Each Call Renders a Fresh Widget
 Every play-live-pattern call creates a new independent widget. Sending
@@ -844,27 +845,25 @@ Latin:    s("[bd ~ ~ bd] [~ ~ bd ~]")
 Halftime: s("bd ~ ~ ~ [~ sd] ~ ~ ~")
 Fills:    .lastOf(8, () => s("bd sd [sd sd] [sd sd sd sd]"))   // a FUNCTION — every/lastOf take x => ...`,
 
-  visuals: `# Strudel Visuals (draw methods + Hydra shaders)
+  visuals: `# Strudel Visuals (draw methods, presets, theme)
 
-Two visual layers render BEHIND the code in the widget (native strudel.cc
-look), plus one audio-reactive input that can drive either. The layers appear
-automatically when your pattern uses them — the user can also toggle them with
-the "Visuals" button, and hide the code entirely with "Stage". Encourage
-visuals: they make the pattern legible and the widget feel alive.
+Visuals render BEHIND the code in the widget (native strudel.cc look). Two
+layers, and this topic covers the first plus the two parameters:
 
   Layer 1 — Strudel draw methods (2D canvas): .pianoroll(), .scope(), ...
-  Layer 2 — Hydra (WebGL shaders): await initHydra() then hydra code.
-  Input   — \`a\`, the live level of Strudel's OWN audio (never the microphone),
-            for making a shader move with the music.
+            — below.
+  Layer 2 — Hydra WebGL shaders (await initHydra(), H(), the audio-reactive
+            \`a\` object, the cheat-sheet) — topic "hydra".
 
-Use them together: Hydra paints a moving background, the pianoroll draws the
-notes on top of it.
+The layers appear automatically when your pattern uses them; the user can
+toggle them with "Visuals" and hide the code with "Stage". Encourage visuals:
+they make the pattern legible and the widget feel alive. Hydra + one draw
+method is the strongest look — the roll draws on top of the shader.
 
-No hand-written visual? Set the \`visuals\` parameter to a preset instead — and
-\`theme\` to a colour scheme that fits the mood. Both are documented at the
-bottom of this topic.
+No hand-written visual? Set the \`visuals\` parameter to a preset — and
+\`theme\` to a colour scheme that fits the mood. Both are documented below.
 
-## Layer 1: Strudel draw methods
+## Draw methods (Layer 1)
 Add ONE draw method to a pattern (all of them share the same 2D canvas, so two
 at once fight over it).
 
@@ -904,9 +903,65 @@ nothing — put it after your code and the whole pattern goes silent.
 .scope()/.spectrum() animate only while audio plays; .pianoroll()/.punchcard()
 animate from the note schedule, so they update live as the user edits (Ctrl+Enter).
 
-## Layer 2: Hydra shader backgrounds
-Hydra (hydra.ojack.xyz) is a live-coding video synth. It is bundled with the
-REPL: put \`await initHydra()\` on the FIRST line, write hydra code, then your
+## The \`visuals\` parameter (a floor, not a ceiling)
+Ready-made visual for code that has none of its own:
+  none | pianoroll | punchcard | scope | spectrum — prepends
+  all(p => p.<method>()) before your code, drawing every running pattern.
+  hydra-kaleid | hydra-pulse | hydra-wash | hydra-feed — prepends a pinned
+  await initHydra() shader before it (hydra-feed also adds a piano roll for
+  the shader to mirror, when your code has no draw method).
+A preset fills the MISSING layer: a hydra preset is skipped only when the code
+already calls initHydra(); a 2D preset only when the code already has a draw
+method. So hydra-wash under your own .pianoroll() is fine — and recommended.
+"none" leaves the code untouched. Hydra presets are dropped entirely under
+prefers-reduced-motion (the widget tells the model when that happened). Writing
+your own visual, as above, is still the better result.
+
+## The \`theme\` parameter (editor colour scheme)
+Sets the CodeMirror theme, and the widget derives the visuals stage and scrim
+from it — so the theme also decides whether the animation sits on a dark or a
+light ground. One of:
+
+  strudelTheme algoboy archBtw androidstudio atomone aura bbedit blackscreen
+  bluescreen bluescreenlight CutiePi darcula dracula duotoneDark eclipse
+  fruitDaw githubDark githubLight greenText gruvboxDark gruvboxLight sonicPink
+  materialDark materialLight monokai noctisLilac nord redText solarizedDark
+  solarizedLight sublime teletext tokyoNight tokyoNightDay tokyoNightStorm
+  vscodeDark vscodeLight whitescreen xcodeLight
+
+Mood pairings that work:
+  teletext            chiptune / 8-bit / breakcore
+  sonicPink           synthwave / vaporwave / italo
+  nord, tokyoNight    ambient / downtempo / drone
+  gruvboxDark         lofi / jazz-hop / dusty boom-bap
+The light themes (githubLight, solarizedLight, xcodeLight, tokyoNightDay) suit
+a bright room, but a light ground flattens a shader — the scrim compensates by
+going heavier, which mutes the visual further. Prefer a dark theme when the
+visual is the point.
+
+## Stage mode
+The user can press "Stage" to hide the code completely and ⛶ to go fullscreen,
+leaving only the animation — so make the visual worth watching on its own, not
+just as a backdrop for text.
+
+### Troubleshooting (draw methods)
+- Nothing visible: the pattern has no draw method and no visuals preset, or
+  .scope()/.spectrum() is waiting for audio (they draw only while sound plays).
+- Two draw methods flicker: they share one canvas — keep one per pattern, or
+  use all(p => p.<method>()) BEFORE the patterns to draw everything in one.
+- Iterating ("now add a shader"): every tool call is a NEW widget, not an
+  update — send the whole revised pattern and ask the user to stop the
+  previous player.`,
+  hydra: `# Strudel Hydra Shaders (Layer 2) and audio-reactive \`a\`
+
+Hydra (hydra.ojack.xyz) is a live-coding video synth bundled with the REPL: a
+WebGL shader that renders BEHIND the code. This topic is the shader layer;
+draw methods (.pianoroll() etc.), the \`visuals\` presets and \`theme\` are in
+topic "visuals". Use both together: Hydra paints the background, the piano
+roll draws the notes on top of it.
+
+## Writing a shader
+Put \`await initHydra()\` on the FIRST line, write hydra code, then your
 Strudel patterns. Hydra runs its own render loop, so it keeps animating between
 pattern re-evaluations.
 
@@ -1088,47 +1143,6 @@ Use ' for URLs, option strings, and labels:
 
 Keep " for actual patterns: s("bd sd"), note("c3 e3"), H("1 0 0.6 0").
 
-## The \`visuals\` parameter (a floor, not a ceiling)
-Ready-made visual for code that has none of its own:
-  none | pianoroll | punchcard | scope | spectrum — prepends
-  all(p => p.<method>()) before your code, drawing every running pattern.
-  hydra-kaleid | hydra-pulse | hydra-wash | hydra-feed — prepends a pinned
-  await initHydra() shader before it (hydra-feed also adds a piano roll for
-  the shader to mirror, when your code has no draw method).
-A preset fills the MISSING layer: a hydra preset is skipped only when the code
-already calls initHydra(); a 2D preset only when the code already has a draw
-method. So hydra-wash under your own .pianoroll() is fine — and recommended.
-"none" leaves the code untouched. Hydra presets are dropped entirely under
-prefers-reduced-motion (the widget tells the model when that happened). Writing
-your own visual, as above, is still the better result.
-
-## The \`theme\` parameter (editor colour scheme)
-Sets the CodeMirror theme, and the widget derives the visuals stage and scrim
-from it — so the theme also decides whether the animation sits on a dark or a
-light ground. One of:
-
-  strudelTheme algoboy archBtw androidstudio atomone aura bbedit blackscreen
-  bluescreen bluescreenlight CutiePi darcula dracula duotoneDark eclipse
-  fruitDaw githubDark githubLight greenText gruvboxDark gruvboxLight sonicPink
-  materialDark materialLight monokai noctisLilac nord redText solarizedDark
-  solarizedLight sublime teletext tokyoNight tokyoNightDay tokyoNightStorm
-  vscodeDark vscodeLight whitescreen xcodeLight
-
-Mood pairings that work:
-  teletext            chiptune / 8-bit / breakcore
-  sonicPink           synthwave / vaporwave / italo
-  nord, tokyoNight    ambient / downtempo / drone
-  gruvboxDark         lofi / jazz-hop / dusty boom-bap
-The light themes (githubLight, solarizedLight, xcodeLight, tokyoNightDay) suit
-a bright room, but a light ground flattens a shader — the scrim compensates by
-going heavier, which mutes the visual further. Prefer a dark theme when the
-visual is the point.
-
-## Stage mode
-The user can press "Stage" to hide the code completely and ⛶ to go fullscreen,
-leaving only the animation — so make the visual worth watching on its own, not
-just as a backdrop for text.
-
 ### Hydra cheat-sheet (the parts that matter here)
 Sources:  osc(freq, sync, offset) noise(scale, speed) voronoi(scale, speed)
           shape(sides, radius, smoothing) gradient(speed) solid(r, g, b) src(s0|o0)
@@ -1155,8 +1169,8 @@ Output:   .out(o0)
 - The pattern used Hydra before but not now: the widget stops the old shader
   automatically; add initHydra() again to bring it back.
 - Iterating ("now make it react to the bass"): every tool call is a NEW
-  widget, not an update — send the whole revised pattern, and ask the user to
-  stop the previous player, or two will sound at once.`,
+  widget — send the whole revised pattern and ask the user to stop the
+  previous player, or two will sound at once.`,
   advanced: `# Strudel Advanced Features
 
 ## Visualization

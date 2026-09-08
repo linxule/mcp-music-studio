@@ -136,11 +136,12 @@ describe("strudel guide method names exist", () => {
    * so a method that upstream simply does not have can sit in the guide
    * forever. (`.euclidInv` was exactly that: plausible, documented, absent.)
    *
-   * The `visuals` topic is excluded: its chains are Hydra's API (.kaleid(),
+   * The `hydra` topic is excluded: its chains are Hydra's API (.kaleid(),
    * .modulateRotate(), .colorama() ...), not Strudel's, and Hydra is a WebGL
-   * runtime this suite deliberately does not bring up.
+   * runtime this suite deliberately does not bring up. (`visuals` — draw
+   * methods, presets, theme — is Strudel's own API and IS checked.)
    */
-  const CHECKED = Object.entries(STRUDEL_GUIDES).filter(([topic]) => topic !== "visuals");
+  const CHECKED = Object.entries(STRUDEL_GUIDES).filter(([topic]) => topic !== "hydra");
 
   /** Method names the guides name in order to say they do NOT exist. */
   const COUNTEREXAMPLES = new Set([
