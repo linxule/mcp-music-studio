@@ -329,7 +329,81 @@ export interface EvalResult {
   readonly error: Error | undefined;
 }
 
-/** Evaluate one Strudel snippet through the real transpiler. */
+/**
+ * Evaluate one Strudel snippet inside a `node:vm` context.
+ *
+ * `@strudel/core`'s own `evaluate()` ends in `Function(body)()` — the model's
+ * code, compiled into the REAL global scope, where `process.env`, `fetch` and
+ * dynamic `import()` are all in reach. Fine in the browser iframe the widget
+ * runs in, where a CSP pins what the page may touch; not fine in a server
+ * process. So this reimplements `evaluate()` — same transpiler, same
+ * `safeEval` wrapping, verbatim from evaluate.mjs — but runs the result in a
+ * context whose global is `Object.create(null)` plus Strudel's own vocabulary.
+ *
+ * What that buys, verified on Node 20-26 and Bun by
+ * tests/strudel-validate-isolation.test.ts: `process`, `require`, `fetch` and
+ * `globalThis.process` are all `undefined` inside the pattern, and `import()`
+ * throws ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING because no
+ * `importModuleDynamically` is supplied.
+ *
+ * What it does NOT buy:
+ *
+ *  - Escape-proofing. A vm context is a scope boundary, not a security
+ *    boundary — Node says so explicitly, and the Strudel functions the context
+ *    is populated with are outer-realm closures, so anything reachable through
+ *    THEM is reachable. This is defence in depth; the process boundary in
+ *    strudel-validate-host.ts is what actually contains a hostile pattern.
+ *  - A hard deadline. `timeout` only interrupts SYNCHRONOUS execution, so
+ *    `while(true){}` is caught but `await x; while(true){}` is not. The host's
+ *    SIGKILL is the real deadline.
+ *
+ * The context is fresh per call so one pattern cannot leave state for the next.
+ */
+export async function evalStrudelSandboxed(
+  code: string,
+  { timeoutMs = 3000 }: { timeoutMs?: number } = {},
+): Promise<EvalResult> {
+  await setupStrudel();
+  const vm = await import("node:vm");
+  try {
+    // Parsing (acorn) happens out here, in normal module scope: it only ever
+    // reads the source string, and its SyntaxErrors carry the `loc` that
+    // strudel-validate turns into a line:column.
+    const { output } = transpiler(code);
+    // `strudelScope` is the same map `evalScope` fills while writing to
+    // globalThis, so it is the exact vocabulary Strudel's own REPL exposes —
+    // including everything setupStrudel() stubbed in (setcps, samples, stack,
+    // the Hydra no-ops). `console` is not a Strudel name but guide examples
+    // use it; route it to the outer one, which runTraced is capturing.
+    const sandbox = Object.assign(Object.create(null), C.strudelScope, {
+      console: { log: console.log, info: console.info, warn: console.warn, error: console.error },
+    });
+    const context = vm.createContext(sandbox, {
+      codeGeneration: { strings: false, wasm: false },
+    });
+    // Verbatim from @strudel/core's safeEval (wrapExpression + wrapAsync),
+    // re-nested inside an IIFE because a Script has no `return`.
+    const source = `(function(){"use strict";return ((async ()=>{${output}})());})()`;
+    const pattern = await vm.runInContext(source, context, {
+      filename: "strudel-pattern.js",
+      timeout: timeoutMs,
+    });
+    if (!pattern || typeof pattern.queryArc !== "function") {
+      return { pattern: undefined, error: new Error("evaluated to a non-Pattern") };
+    }
+    return { pattern, error: undefined };
+  } catch (err) {
+    return { pattern: undefined, error: err as Error };
+  }
+}
+
+/**
+ * Evaluate one Strudel snippet through the real transpiler, in this scope.
+ *
+ * Unsandboxed: the code runs with the module's own globals in reach. Kept for
+ * the guide tests, which evaluate code WE wrote and want the plain thing. The
+ * server must not use this — see evalStrudelSandboxed above.
+ */
 export async function evalStrudel(code: string): Promise<EvalResult> {
   await setupStrudel();
   try {

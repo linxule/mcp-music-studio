@@ -105,9 +105,14 @@ export async function handleGetMusicGuide({
  * Evaluate the pattern before answering.
  *
  * The REPL widget is the feedback in an MCP-app host, but a terminal client
- * gets only this text — so run the code headlessly and say what it does. The
- * validator never throws and bounds its own work (see
- * src/shared/strudel-validate.ts); `validation: false` opts out for callers
+ * gets only this text — so run the code headlessly and say what it does.
+ *
+ * "Run the code" means running what an LLM wrote, so it does NOT run here: the
+ * validator forks an env-stripped, heap-capped, SIGKILL-able child and
+ * evaluates inside a node:vm context there (src/shared/strudel-validate.ts and
+ * the threat model in src/shared/strudel-validate-host.ts). It never throws and
+ * always answers, so neither a hostile nor a non-terminating pattern can fail
+ * the tool call or wedge the server. `validate: false` opts out for callers
  * that only want the neutral receipt.
  */
 export async function handlePlayLivePattern(
