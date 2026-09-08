@@ -10,6 +10,7 @@ import {
 } from "../src/shared/visual-presets";
 import { detectViz } from "../src/shared/viz-detect";
 import { playLiveInputSchema } from "../src/shared/tool-defs";
+import { evalStrudel, queryHaps } from "./strudel-eval";
 
 const PLAIN = 's("bd*2 [~ sd]").bank("RolandTR909")';
 
@@ -104,6 +105,73 @@ describe("applyVisualPreset — hydra presets", () => {
   it("skips hydra presets under reduced motion but keeps draw presets", () => {
     expect(applyVisualPreset(PLAIN, "hydra-kaleid", { allowHydra: false })).toBe(PLAIN);
     expect(applyVisualPreset(PLAIN, "pianoroll", { allowHydra: false })).not.toBe(PLAIN);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Audit finding 11: concatenation must not fuse two statements into one.
+//
+// Every hydra recipe ends `.out(o0)` with NO semicolon, so a pattern beginning
+// with `(` or `[` was appended straight onto it: `.out(o0)(() => note(60))()`
+// parsed as a call on `.out()`'s return value and the music never ran. These
+// run the REAL Strudel transpiler + evaluator, so the assertion is "the notes
+// are still there", not "the string looks right".
+// -----------------------------------------------------------------------------
+describe("applyVisualPreset — the concatenated result still evaluates", () => {
+  const LEADING: [string, string][] = [
+    ["an IIFE", '(() => note("c3"))()'],
+    ["an arrow IIFE returning a stack", '(() => stack(note("c3"), note("e3")))()'],
+    ["an array literal", '[note("c3"), note("e3")][0]'],
+    ["a template tag", 'note(`c3`)'],
+  ];
+
+  for (const preset of VISUAL_PRESETS.filter(isHydraPreset)) {
+    for (const [label, code] of LEADING) {
+      it(`${preset} + ${label} keeps the pattern a statement of its own`, async () => {
+        const out = applyVisualPreset(code, preset);
+        // The exact corruption: the recipe's last call fused with the pattern.
+        expect(out).not.toContain(".out(o0)(");
+        expect(out).not.toContain(".out(o0)[");
+        expect(out).toContain(".out(o0);");
+
+        const { pattern, error } = await evalStrudel(out);
+        expect(error).toBeUndefined();
+        expect(pattern).toBeTruthy();
+        // hydra-feed appends `all(…)`, which the headless evaluator stubs as
+        // silence (the real REPL returns the pattern), so only the other
+        // presets can be asserted on their haps.
+        if (preset === "hydra-feed") return;
+        const { haps, error: queryError } = queryHaps(pattern!, 1);
+        expect(queryError).toBeUndefined();
+        expect(haps.length).toBeGreaterThan(0);
+      });
+    }
+  }
+
+  it("hydra-feed terminates the pattern before appending its piano roll", async () => {
+    const out = applyVisualPreset('(() => note("c3"))()', "hydra-feed");
+    expect(out).toContain("feedStrudel: true");
+    // …())();\n\nall(…) — without the `;` the draw call rode on the pattern.
+    expect(out).toMatch(/\)\(\);\n\nall\(p => p\.pianoroll/);
+    const { error } = await evalStrudel(out);
+    expect(error).toBeUndefined();
+  });
+
+  it("puts the terminator on its own line when the code ends in a comment", () => {
+    const out = applyVisualPreset('note("c3") // the tune', "pianoroll");
+    expect(out).toBe('note("c3") // the tune\n;\n\nall(p => p.pianoroll({ fold: 1 }))');
+  });
+
+  it("does not double up a terminator the code already has", () => {
+    expect(applyVisualPreset('note("c3");', "scope")).toBe(
+      'note("c3");\n\nall(p => p.scope())',
+    );
+  });
+
+  it("leaves the draw-preset append evaluable", async () => {
+    const out = applyVisualPreset('(() => note("c3"))()', "punchcard");
+    const { error } = await evalStrudel(out);
+    expect(error).toBeUndefined();
   });
 });
 

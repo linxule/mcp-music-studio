@@ -167,6 +167,26 @@ export function isHydraPreset(preset: VisualPreset): boolean {
   return preset.startsWith("hydra-");
 }
 
+/**
+ * Terminate a statement chunk so whatever is concatenated after it cannot be
+ * read as a continuation of it.
+ *
+ * The trap (audit finding 11): every Hydra recipe ends `.out(o0)` with no `;`,
+ * so `${recipe}\n\n(() => note(60))()` transpiles to `.out(o0)(() => …)()` — a
+ * call on `.out()`'s return value, with the music never evaluated. ASI does not
+ * save it, because `(`, `[`, `` ` `` and the binary operators all continue the
+ * expression across a blank line.
+ *
+ * A trailing `//` on the final line would swallow a `;` appended to it, so in
+ * that case the terminator goes on a line of its own.
+ */
+function terminateStatement(code: string): string {
+  const trimmed = code.trimEnd();
+  if (trimmed === "" || /[;}]$/.test(trimmed)) return trimmed;
+  const lastLine = trimmed.slice(trimmed.lastIndexOf("\n") + 1);
+  return lastLine.includes("//") ? `${trimmed}\n;` : `${trimmed};`;
+}
+
 export interface ApplyVisualPresetOptions {
   /**
    * false when the viewer asked for reduced motion — Hydra presets are skipped
@@ -202,8 +222,14 @@ export function applyVisualPreset(
     // feedStrudel textures the STRUDEL DRAW CANVAS. With no draw method there is
     // nothing in s0 to mirror, so give it a piano roll to chew on.
     const needsRoll = preset === "hydra-feed" && !intent.strudelViz;
+    // Both joins are terminated: the recipe so the pattern below it is not read
+    // as a call on `.out(o0)`, and the pattern so the appended draw call is a
+    // statement of its own. See terminateStatement().
+    const body = code.trimStart();
     const tail = needsRoll ? `\n\n${DRAW_CALLS.pianoroll}` : "";
-    return `${recipe}\n\n${code.trimStart()}${tail}`;
+    return `${terminateStatement(recipe)}\n\n${
+      needsRoll ? terminateStatement(body) : body
+    }${tail}`;
   }
 
   // Strudel draw methods all share the single 2D canvas, so a pattern that
@@ -211,5 +237,5 @@ export function applyVisualPreset(
   if (intent.strudelViz) return code;
   const call = DRAW_CALLS[preset];
   if (!call) return code;
-  return `${code.trimEnd()}\n\n${call}`;
+  return `${terminateStatement(code)}\n\n${call}`;
 }
