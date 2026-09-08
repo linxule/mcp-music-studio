@@ -1022,6 +1022,28 @@ osc(10, 0, () => a.fft[0] * 4)
   .modulateScale(osc(2), () => a.fft[1])
   .out(o0)
 
+### Recipe: the piano roll, reacting (feedStrudel + a.fft)
+The two inputs combine: feed the roll into the shader, then let the kick band
+choose the kaleidoscope and the low-mids warp it. The roll's .color() decides
+the palette. This is the strongest single look the widget has — use it for a
+peak section, and it fills the frame in Stage mode.
+
+await initHydra({ feedStrudel: true })
+src(s0)
+  .kaleid(() => 4 + Math.round(a.fft[0] * 4))
+  .modulate(noise(3, 0.2), () => 0.05 + a.fft[1] * 0.4)
+  .colorama(0.02)
+  .blend(o0, 0.65)
+  .out(o0)
+all(p => p.pianoroll({ fold: 1, cycles: 4 }))
+
+stack(
+  s("bd*4").bank("RolandTR909"),
+  s("~ cp").bank("RolandTR909").room(0.3),
+  note("<[a3 c4 e4 a4 c5 a4 e4 c4]!2 [f3 a3 c4 f4 a4 f4 c4 a3]!2>")
+    .s("gm_epiano1").room(0.5).delay(0.25).color("cyan")
+)
+
 ## Single quotes: plain strings in code, double quotes only for patterns
 Strudel's transpiler rewrites DOUBLE-quoted strings into mini-notation, so an
 ordinary JS string written with " dies at eval with \`[mini] parse error\`.
