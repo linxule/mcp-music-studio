@@ -8,6 +8,13 @@
 // lives in src/open-in-browser.ts.
 import { safeJsonForScript } from "./shared/safe-json.js";
 import { injectTempo } from "./shared/tempo.js";
+import {
+  HYDRA_INIT_RE,
+  VIZ_ALL_RE,
+  VIZ_METHOD_RE,
+  detectViz,
+} from "./shared/viz-detect.js";
+import { HYDRA_SYNTH_CDN } from "./shared/visual-presets.js";
 
 export interface StrudelPlayerOptions {
   code: string;
@@ -49,12 +56,28 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   // own innerHTML verbatim and never entity-decodes it, so an HTML-escaped
   // `sound(&quot;bd&quot;)` reached the evaluator literally and threw a
   // SyntaxError — every pattern containing a quote was dead on arrival.
+  // Which visual layers this pattern asks for, decided HERE (the full
+  // comment/string-aware scan from src/shared/viz-detect.ts) so the page opens
+  // in the right state instead of flashing an empty stage. The page re-checks
+  // after an edit with the same regexes, injected below.
+  const viz = detectViz(finalCode);
+
   const initData = safeJsonForScript({
     code: finalCode,
     autoplay,
     cps: tempo ? tempo.cps : null,
     tempoPolicy: tempo ? tempo.policy : null,
+    hydraCdn: HYDRA_SYNTH_CDN,
+    // Regex SOURCES, not literals: the method list lives in viz-detect.ts and
+    // must not be re-typed into a template string that can drift from it.
+    vizPatterns: [VIZ_METHOD_RE.source, VIZ_ALL_RE.source],
+    hydraPattern: HYDRA_INIT_RE.source,
   });
+
+  // Classes drive the whole visuals layer; both are re-applied client-side.
+  const bodyClass = [viz.any ? "viz-on" : "", viz.hydra ? "hydra-on" : ""]
+    .filter(Boolean)
+    .join(" ");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -102,11 +125,80 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   #status { font-size: 12px; color: #999; max-width: 46ch; }
   #status.playing { color: #10b981; }
   #status.error { color: #ef4444; }
-  main { flex: 1; display: flex; flex-direction: column; }
-  strudel-editor { display: block; width: 100%; min-height: 400px; }
+  main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  strudel-editor { display: block; width: 100%; }
+  main > div { min-height: 400px; width: 100%; }
+  .cm-editor { min-height: 400px; }
+
+  /* =========================================================================
+     Visuals — the same layering the ext-apps widget uses (src/strudel-app.css),
+     ported to a full page.
+
+     @strudel/draw's getDrawContext() CREATES its canvas when none exists by id:
+     it prepends a position:fixed, full-viewport canvas with NO z-index to
+     <body> — over the header and controls — while CodeMirror's opaque wrapper
+     hides it behind the code. Pre-creating #test-canvas here means
+     getDrawContext() reuses it (verified against the 1.2.6 source: with the
+     element present it only calls getContext, and registers no resize handler
+     of its own, so the sizing below is uncontested).
+
+     Three layers: the Hydra shader, then the 2D draw canvas over it, then the
+     page chrome above both.
+     ========================================================================= */
+
+  #test-canvas,
+  #hydra-canvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    pointer-events: none;
+  }
+  /* Prepended by getDrawContext(), so it is already behind #test-canvas in DOM
+     order; pixelated because @strudel/hydra renders it at pixelRatio 1. */
+  #hydra-canvas { image-rendering: pixelated; }
+
+  /* Hidden until a pattern actually draws — an empty dark stage over the page
+     is worse than no stage. NOT !important: initHydra({feedStrudel:true}) hides
+     this canvas with an inline style, and that has to keep winning. */
+  #test-canvas { display: none; background: #0d0b14; }
+  body.viz-on #test-canvas { display: block; }
+  /* With a shader running, the 2D stage must not paint its opaque ground over
+     it. Strudel's draw functions clearRect() each frame, so this is safe. */
+  body.hydra-on #test-canvas { background: transparent; }
+
+  header, main { position: relative; z-index: 1; }
+
+  /* THE occlusion fix (v0.4.2, ported). <strudel-editor> (StrudelMirror) wraps
+     its CodeMirror in an intermediate <div> whose background is set INLINE to
+     var(--background) — an opaque dark fill. That wrapper sits over the canvas
+     and fully hides it, so the visuals only ever peeked out BELOW the editor
+     box. Make the wrapper and the editor transparent and fill the height, and
+     keep the readability scrim on ONE layer (.cm-scroller) so it never
+     double-darkens. !important beats the inline style. */
+  body.viz-on main > div,
+  body.viz-on strudel-editor > div {
+    height: 100% !important;
+    background-color: transparent !important;
+  }
+  body.viz-on .cm-editor {
+    height: 100% !important;
+    background-color: transparent !important;
+  }
+  body.viz-on .cm-scroller {
+    height: 100% !important;
+    background-color: rgba(20, 17, 29, 0.5) !important;
+  }
+  body.viz-on .cm-gutters {
+    background-color: rgba(20, 17, 29, 0.6) !important;
+  }
+  /* Lift the code off the animation, the way strudel.cc does. */
+  body.viz-on .cm-content { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
 </style>
 </head>
-<body>
+<body class="${bodyClass}">
+<canvas id="test-canvas" aria-hidden="true"></canvas>
 <header>
   <div>
     <h1>${escapeHtml(displayTitle)}</h1>
@@ -126,7 +218,110 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
 <script src="https://unpkg.com/@strudel/repl@1.3.0"></script>
 <script>
   const INIT = JSON.parse(document.getElementById('init-data').textContent);
-  const editorEl = document.getElementById('editor');
+
+  // ===========================================================================
+  // Eval-scope hooks — pin hydra-synth, and stop H() dying on a rest
+  // ===========================================================================
+  //
+  // A plain 'globalThis.x = wrapper' does NOT hold here. The REPL publishes its
+  // eval scope with Object.assign(globalThis, module) across several async
+  // chunks, so a wrapper installed mid-publish is silently overwritten by a
+  // later one. An accessor turns every republish into a call to our setter,
+  // which re-wraps the incoming original instead of losing to it. Same
+  // technique as the ext-apps widget (installEvalScopeHooks in
+  // src/strudel-app.ts) — install it eagerly, before the globals exist.
+  var WRAPPED = '__musicStudioWrapped';
+
+  function defineWrappedGlobal(key, wrap) {
+    var apply = function (value) {
+      if (typeof value !== 'function' || value[WRAPPED] === true) return value;
+      var wrapped = wrap(value);
+      try {
+        Object.defineProperty(wrapped, WRAPPED, { value: true, configurable: true });
+      } catch (e) { /* exotic function — worst case it is wrapped again */ }
+      return wrapped;
+    };
+    var exposed = apply(globalThis[key]);
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      enumerable: true,
+      get: function () { return exposed; },
+      set: function (value) { exposed = apply(value); },
+    });
+  }
+
+  // @strudel/hydra loads hydra-synth from an UNVERSIONED specifier
+  // ('https://unpkg.com/hydra-synth' — i.e. whatever "latest" is today), so a
+  // page that works now can break on any upstream release. Pin it, unless the
+  // pattern names its own src.
+  defineWrappedGlobal('initHydra', function (original) {
+    return function (options) {
+      var merged = Object.assign({ src: INIT.hydraCdn }, options || {});
+      return original(merged);
+    };
+  });
+
+  // Upstream H is  p => () => reify(p).queryArc(t, t)[0].value  — a zero-width
+  // query. Under a REST there is no hap, so [0] is undefined and reading
+  // .value throws. Hydra calls this every frame, so one rest killed the shader
+  // while the audio kept going. Return 0 instead.
+  defineWrappedGlobal('H', function (original) {
+    return function (pattern) {
+      var sample = original(pattern);
+      return function () {
+        try {
+          var value = Number(sample());
+          return isFinite(value) ? value : 0;
+        } catch (e) {
+          return 0;
+        }
+      };
+    };
+  });
+
+  // ===========================================================================
+  // Visuals stage
+  // ===========================================================================
+  //
+  // The body class is set server-side from the code we shipped; re-derive it
+  // after an edit. The patterns come from src/shared/viz-detect.ts so the two
+  // cannot disagree about what counts as a draw method.
+  var VIZ_RES = INIT.vizPatterns.map(function (s) { return new RegExp(s); });
+  var HYDRA_RE = new RegExp(INIT.hydraPattern);
+  var vizCanvas = document.getElementById('test-canvas');
+
+  /** Cheap comment strip — the guide's examples comment out draw calls. */
+  function stripComments(code) {
+    return String(code)
+      .replace(/\\/\\*[\\s\\S]*?\\*\\//g, ' ')
+      .replace(/\\/\\/[^\\n]*/g, ' ');
+  }
+
+  function applyVizState(code) {
+    var scan = stripComments(code);
+    var hydra = HYDRA_RE.test(scan);
+    var any = hydra || VIZ_RES.some(function (re) { return re.test(scan); });
+    document.body.classList.toggle('viz-on', any);
+    document.body.classList.toggle('hydra-on', hydra);
+    if (any) sizeVizCanvas();
+  }
+
+  // getDrawContext() only sizes a canvas it CREATES; ours pre-exists, so its
+  // backing store is ours to maintain. Match the device pixel ratio or the
+  // piano roll draws blurry and off-scale.
+  function sizeVizCanvas() {
+    if (!vizCanvas) return;
+    var dpr = window.devicePixelRatio || 1;
+    var w = Math.round(window.innerWidth * dpr);
+    var h = Math.round(window.innerHeight * dpr);
+    if (vizCanvas.width !== w) vizCanvas.width = w;
+    if (vizCanvas.height !== h) vizCanvas.height = h;
+  }
+
+  window.addEventListener('resize', sizeVizCanvas);
+  sizeVizCanvas();
+
+  var editorEl = document.getElementById('editor');
   const playBtn = document.getElementById('play-btn');
   const stopBtn = document.getElementById('stop-btn');
   const retryBtn = document.getElementById('retry-btn');
@@ -145,6 +340,16 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   }
 
   function getEditor() { return editorEl?.editor || null; }
+
+  /** What is in the editor right now — the user may have edited it. */
+  function getLiveCode(ed) {
+    try {
+      var live = ed && (ed.code || (ed.repl && ed.repl.state && ed.repl.state.code));
+      return typeof live === 'string' && live.length > 0 ? live : INIT.code;
+    } catch (e) {
+      return INIT.code;
+    }
+  }
 
   function waitForEditor(timeoutMs) {
     return new Promise((resolve, reject) => {
@@ -196,6 +401,8 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     const ed = getEditor();
     if (!ed || !ready) { setStatus('Initializing...'); return; }
     playBtn.disabled = true;
+    // The user may have added (or removed) a draw method since the page loaded.
+    applyVizState(getLiveCode(ed));
     try {
       // StrudelMirror.evaluate() takes ONE boolean (shouldPlay) and always
       // evaluates its own buffer — passing the code as the first argument
@@ -251,6 +458,7 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
 
   waitForEditor(EDITOR_TIMEOUT_MS).then((ed) => {
     ed.setCode(INIT.code);
+    applyVizState(INIT.code);
     ready = true;
     retryBtn.hidden = true;
     setStatus('Click Play to start');
