@@ -4,6 +4,10 @@
 
 Two-mode creative music studio for AI: **scored composition** (ABC notation with sheet music) and **live performance** (Strudel live coding with TidalCycles). Interactive UI renders inline in Claude Desktop, claude.ai, and other MCP clients.
 
+<a href="https://github.com/linxule/mcp-music-studio/releases/download/v0.5.3/mcp-music-studio-v0.5-live-set-1080p60.mp4"><img src="https://github.com/linxule/mcp-music-studio/releases/download/v0.5.3/live-set-stage.gif" alt="A Strudel pattern with its piano roll fed into a Hydra shader, then Stage mode taking the whole frame" width="720"></a>
+
+*One continuous live set through the widget — every section a hot-swapped re-evaluation on the same clock. Full video: [16:9 1080p60](https://github.com/linxule/mcp-music-studio/releases/download/v0.5.3/mcp-music-studio-v0.5-live-set-1080p60.mp4) · [3:4 for phones](https://github.com/linxule/mcp-music-studio/releases/download/v0.5.3/mcp-music-studio-v0.5-live-set-3x4-1080x1440.mp4). Made with `dev/perform.html` and an OBS Browser Source (see `scripts/showcase/`).*
+
 ## Quick Start — No Install Required
 
 Paste this URL into any MCP client that supports remote servers:
