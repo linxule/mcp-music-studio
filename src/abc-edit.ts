@@ -21,8 +21,30 @@
 /** Barline tokens, longest first so `|:` never splits as `|` + `:`. */
 const BARLINE = /\[\||\|\]|\|\||::|:\||\|:|\|/;
 
-/** Anything that occupies time in a measure: pitches and rests. */
-const HAS_MUSIC = /[A-Ga-gxzZ]/;
+/** Anything that occupies time in a measure: pitches and ordinary rests. */
+const HAS_MUSIC = /[A-Ga-gxz]/;
+
+/**
+ * `Z4` is a MULTIMEASURE rest: one token standing for four whole bars. Counting
+ * it as one measure under-reported every tune that uses one (`Z4 | C8 |` is
+ * five bars, not two), so the count the widget reports to the model disagreed
+ * with the score on screen.
+ */
+const MULTIMEASURE = /Z(\d*)/g;
+
+/** Bars a segment spans: `Z`-rests expanded, plus one for any other music. */
+function measuresIn(part: string): number {
+  let rests = 0;
+  MULTIMEASURE.lastIndex = 0;
+  const rest = part.replace(MULTIMEASURE, (_m, digits: string) => {
+    rests += digits.length > 0 ? Number(digits) : 1;
+    return " ";
+  });
+  return rests + (HAS_MUSIC.test(rest) ? 1 : 0);
+}
+
+/** Split a body line at every inline `[V:n]`, tagging each part with its voice. */
+const INLINE_VOICE = /\[V:\s*([^\]\s]+)[^\]]*\]/g;
 
 /**
  * abcjs emits warnings as HTML fragments (`<span class="...">`). Flatten them
@@ -110,23 +132,38 @@ export function describeAbc(abc: string): AbcShape {
 
     if (!inBody) continue;
 
-    // A body line may open with an inline voice switch: [V:2] ...
-    let body = line;
-    const inlineVoice = /^\[V:\s*([^\]\s]+)[^\]]*\]/.exec(body);
-    if (inlineVoice) {
-      voice = inlineVoice[1];
-      body = body.slice(inlineVoice[0].length);
+    // A body line may switch voices inline, more than once:
+    // `[V:1] C D E F | [V:2] C,4 |`. Handling only a switch at the START of the
+    // line put the second voice's bars on the first voice's counter, so two
+    // one-bar voices on one line reported two bars instead of one.
+    const segments: { voice: string; text: string }[] = [];
+    let cursor = 0;
+    INLINE_VOICE.lastIndex = 0;
+    for (
+      let match = INLINE_VOICE.exec(line);
+      match;
+      match = INLINE_VOICE.exec(line)
+    ) {
+      segments.push({ voice, text: line.slice(cursor, match.index) });
+      voice = match[1]!;
+      cursor = match.index + match[0].length;
     }
+    segments.push({ voice, text: line.slice(cursor) });
 
-    const v = voiceState(voice);
-    const parts = stripNonMusic(body).split(BARLINE);
-    for (let i = 0; i < parts.length; i++) {
-      if (HAS_MUSIC.test(parts[i]) && !v.open) {
-        v.count++;
-        v.open = true;
+    for (const segment of segments) {
+      const v = voiceState(segment.voice);
+      const parts = stripNonMusic(segment.text).split(BARLINE);
+      for (let i = 0; i < parts.length; i++) {
+        const measures = measuresIn(parts[i]!);
+        if (measures > 0) {
+          // An already-open measure is the one this segment continues, so it is
+          // only counted once; every measure beyond the first is new.
+          v.count += v.open ? measures - 1 : measures;
+          v.open = true;
+        }
+        // A barline followed this segment, so its measure is closed.
+        if (i < parts.length - 1) v.open = false;
       }
-      // A barline followed this segment, so its measure is closed.
-      if (i < parts.length - 1) v.open = false;
     }
   }
 
