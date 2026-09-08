@@ -959,7 +959,13 @@ function syncVizTheme(): void {
 // cutoff/scale defaults were tuned for.
 // =============================================================================
 
-const ANALYSER_FFT_SIZE = 256;
+// 2048 → 1024 bins of ~23 Hz at 48 kHz, fine enough to give the kick its own
+// band. (256 gave 187 Hz bins, so "band 0" ran 0–6 kHz and "band 1" 6–12 kHz —
+// the guide's "bass band" was listening to hi-hats.)
+const ANALYSER_FFT_SIZE = 2048;
+/** Bands are log-spaced between these, like ears (and hydra's bark bands). */
+const BAND_LOW_HZ = 20;
+const BAND_HIGH_HZ = 12_000;
 const ANALYSER_SMOOTHING = 0.8;
 /** Musical range. The -100..-30 dB default squashes Strudel's output flat. */
 const ANALYSER_MIN_DB = -90;
@@ -1131,12 +1137,17 @@ function createAudioApi(): StrudelAudioApi {
       if (!node || !bytes) return;
       node.getByteFrequencyData(bytes);
       const count = api.bins.length;
-      const spacing = Math.max(1, Math.floor(bytes.length / count));
+      // Log-spaced band edges in bin indices, so fft[0] is the kick/sub band
+      // and fft[3] the hats — not four equal slices of a linear spectrum.
+      const hzPerBin = node.context.sampleRate / node.fftSize;
+      const ratio = Math.pow(BAND_HIGH_HZ / BAND_LOW_HZ, 1 / count);
       api.prevBins = api.bins.slice(0);
       let total = 0;
       for (let i = 0; i < count; i++) {
-        const start = i * spacing;
-        const end = Math.min(start + spacing, bytes.length);
+        const lo = BAND_LOW_HZ * Math.pow(ratio, i);
+        const hi = lo * ratio;
+        const start = Math.min(bytes.length - 1, Math.floor(lo / hzPerBin));
+        const end = Math.min(bytes.length, Math.max(start + 1, Math.ceil(hi / hzPerBin)));
         let sum = 0;
         for (let j = start; j < end; j++) sum += bytes[j];
         // Mean magnitude 0..1, then into hydra's loudness units via `max`.
@@ -1407,6 +1418,9 @@ function patternIsSilent(): boolean {
   }
 }
 
+/** Set when a hydra `visuals` preset was dropped for prefers-reduced-motion. */
+let hydraPresetSkippedForMotion = false;
+
 /** Whether the scheduler is actually running (not what we hoped it would do). */
 function isSchedulerStarted(): boolean {
   return getEditor()?.repl?.state?.started === true;
@@ -1529,9 +1543,12 @@ function reportEvaluation(
     intent.hydra ? "hydra shader" : null,
     intent.strudelViz ? "strudel draw canvas" : null,
   ].filter(Boolean);
+  const motionNote = hydraPresetSkippedForMotion
+    ? " — hydra preset skipped: this viewer prefers reduced motion"
+    : "";
   reportToModel(
     `Strudel widget: ${isPlaying ? "playing" : "loaded, not playing"}` +
-      ` (visuals: ${layers.length ? layers.join(" + ") : "none"})${soundfontNote}${tempoNote}`,
+      ` (visuals: ${layers.length ? layers.join(" + ") : "none"}${motionNote})${soundfontNote}${tempoNote}`,
   );
 }
 
@@ -1974,9 +1991,10 @@ async function renderPattern(args: Record<string, unknown>) {
     // keeps `await initHydra()` on the first line where the engine expects it.
     // Reduced motion drops the Hydra presets (a WebGL shader is exactly the
     // continuous animation that setting is asking us not to start).
-    finalCode = applyVisualPreset(finalCode, args.visuals, {
-      allowHydra: !prefersReducedMotion(),
-    });
+    const reduced = prefersReducedMotion();
+    hydraPresetSkippedForMotion =
+      reduced && typeof args.visuals === "string" && args.visuals.startsWith("hydra-");
+    finalCode = applyVisualPreset(finalCode, args.visuals, { allowHydra: !reduced });
     currentCode = finalCode;
     pendingPartialCode = "";
 

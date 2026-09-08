@@ -431,6 +431,7 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "(pianoroll/punchcard/scope/spectrum, or hydra-kaleid/pulse/wash/feed). " +
   "`theme` sets the code-editor colour scheme, which also tints the visuals — match it to the mood " +
   "(teletext chiptune, sonicPink synthwave, nord ambient, gruvboxDark lofi). " +
+  "Each call creates a NEW player rather than updating the last one — for a tweak, send the whole revised pattern and ask the user to stop the previous one. " +
   "Use get-strudel-guide for genre templates, sound references, and advanced features " +
   "like arrangement and sample loading.";
 
@@ -448,7 +449,10 @@ export const playLiveInputSchema = z.object({
     .describe(
       "Strudel pattern code. Uses TidalCycles mini-notation in JavaScript. " +
         "Use stack() to layer drums, bass, and melody. " +
-        "Set tempo with setcps(bpm/60/4) or use the bpm parameter.",
+        "Set tempo with setcps(bpm/60/4) or use the bpm parameter. " +
+        "The REPL plays the LAST expression: setup lines (await initHydra(), all(), setcps()) go BEFORE the pattern. " +
+        "Double quotes are mini-notation — use single quotes for plain strings and URLs. " +
+        "One draw method per pattern; pass a.fft values as functions (() => a.fft[0]).",
     ),
   title: z
     .string()
@@ -474,14 +478,18 @@ export const playLiveInputSchema = z.object({
         "pianoroll/punchcard/scope/spectrum draw onto the 2D canvas behind the code; " +
         "hydra-kaleid (rotating kaleidoscope), hydra-pulse (shape driven by a rhythm), " +
         "hydra-wash (slow ambient noise) and hydra-feed (the piano roll mirrored and trailed) " +
-        "are WebGL shader backgrounds. Ignored if the code already visualises itself — " +
-        "writing your own .pianoroll() or initHydra() shader is still the better result " +
-        "(see get-strudel-guide topic 'visuals').",
+        "are WebGL shader backgrounds. A preset fills the MISSING layer: a hydra preset is skipped only if the code already calls initHydra(), " +
+        "a 2D preset only if the code already has a draw method — so hydra-wash layers happily under your own .pianoroll(). " +
+        "Hydra presets are dropped for viewers who prefer reduced motion. " +
+        "Writing your own visual is still the better result (see get-strudel-guide topic 'visuals').",
     ),
   theme: z
     .enum(EDITOR_THEMES)
     .optional()
-    .describe("Editor colour theme — pick to match the mood (e.g. 'nord', 'sonicPink', 'githubLight')."),
+    .describe(
+      "Editor colour theme; the visuals stage and its readability scrim are derived from it, so it also decides whether a shader sits on a dark or light ground — " +
+        "prefer a dark one when the visual is the point (e.g. 'nord', 'sonicPink', 'tokyoNight'). Not carried into share links or the browser fallback.",
+    ),
 });
 
 /**
@@ -530,6 +538,25 @@ function summariseValidation(v: StrudelValidation): string {
   return parts.join(", ");
 }
 
+/**
+ * What the `visuals` / `theme` parameters will do. The preset is folded into
+ * the code by the WIDGET (applyVisualPreset), after validation, so nothing in
+ * the validation summary can vouch for it — say so, or a terminal client that
+ * passed visuals: "hydra-kaleid" reads "parses OK: 3 layers" and cannot tell
+ * whether the parameter did anything.
+ */
+function presetNotes(args: { visuals?: string; theme?: string }): string[] {
+  const notes: string[] = [];
+  if (args.visuals && args.visuals !== "none") {
+    notes.push(
+      `Visual preset ${args.visuals}: applied in the widget on top of the code above` +
+        (args.visuals.startsWith("hydra-") ? " (skipped for viewers who prefer reduced motion)." : "."),
+    );
+  }
+  if (args.theme) notes.push(`Theme: ${args.theme}.`);
+  return notes;
+}
+
 /** Lines that qualify an otherwise-OK result. */
 function validationWarnings(v: StrudelValidation): string[] {
   const warnings: string[] = [];
@@ -558,7 +585,7 @@ function validationWarnings(v: StrudelValidation): string[] {
  * is the only feedback there is.
  */
 export function buildPlayLiveResult(
-  args: { code: string; title?: string },
+  args: { code: string; title?: string; visuals?: string; theme?: string },
   validation?: StrudelValidation,
   /**
    * Why no validation ran, when a transport cannot run one at all. A complete
@@ -608,7 +635,7 @@ export function buildPlayLiveResult(
     content: [
       {
         type: "text",
-        text: [head, ...validationWarnings(validation), PLAY_LIVE_PLAYBACK_TAIL].join(
+        text: [head, ...presetNotes(args), ...validationWarnings(validation), PLAY_LIVE_PLAYBACK_TAIL].join(
           "\n",
         ),
       },
@@ -1058,7 +1085,8 @@ export const MUSIC_PROMPTS: PromptDef[] = [
         `Compose a ${args.mood ? `${args.mood} ` : ""}${args.genre ?? "lofi"} pattern and play it with the play-live-pattern tool. ` +
           `First call get-strudel-guide with topic "genres" for a working ${args.genre ?? "lofi"} template, then adapt it — ` +
           `use stack() to layer drums, bass, and melody, and set a fitting tempo with setcps(). ` +
-          `For a living widget, add a visual — see get-strudel-guide topic "visuals".`,
+          `Give it something to look at: the quickest reliable route is visuals: "hydra-wash" (or hydra-pulse for beats) plus a matching theme — ` +
+          `for a hand-written or audio-reactive shader, fetch get-strudel-guide topic "visuals" instead.`,
       ),
   },
   {
