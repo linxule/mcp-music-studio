@@ -261,7 +261,26 @@ instrumentSelect.addEventListener("change", () => {
  * fib: every caller of this function is a real user gesture (a selector change
  * or ⌘↵ in the editor).
  */
-async function applySettings(): Promise<void> {
+/**
+ * Serialises {@link applySettings}. `setTune()` pauses, rewinds and re-primes
+ * the transport, so two of them overlapping (a user flicking through the
+ * instrument selector, where every change fires one) interleave a rewind with
+ * another prime and can leave the primed buffer disagreeing with the selector.
+ * Each call waits for the one in flight and then re-reads the CURRENT selector
+ * values, so a burst collapses to "prime whatever was chosen last" instead of
+ * priming every intermediate choice.
+ */
+let applySettingsChain: Promise<void> = Promise.resolve();
+
+function applySettings(): Promise<void> {
+  const next = applySettingsChain.then(applySettingsNow);
+  // Keep the chain alive even if a link rejects — applySettingsNow already
+  // swallows its own errors, so this is only belt and braces.
+  applySettingsChain = next.catch(() => {});
+  return next;
+}
+
+async function applySettingsNow(): Promise<void> {
   if (!state.synthControl || !state.visualObj?.[0]) return;
   try {
     await state.synthControl.setTune(
@@ -647,10 +666,48 @@ fullscreenBtn.className = "toolbar-btn";
 fullscreenBtn.textContent = "⛶";
 fullscreenBtn.title = "Toggle fullscreen";
 fullscreenBtn.setAttribute("aria-label", "Toggle fullscreen");
+fullscreenBtn.setAttribute("aria-pressed", "false");
+
+// The call used to be fire-and-forget, asking only ever for "fullscreen": a
+// host that declined (or doesn't implement the method — it answers -32601)
+// produced an unhandled rejection and no feedback, and there was no way back to
+// the inline layout. Mirrors toggleDisplayMode() in src/strudel-app.ts: await
+// it, trust the mode the host GRANTED rather than the one we asked for, toggle
+// both ways, and say so when the host says no.
 fullscreenBtn.addEventListener("click", () => {
-  appInstance?.requestDisplayMode({ mode: "fullscreen" });
+  void toggleDisplayMode();
 });
 toolbarEl.appendChild(fullscreenBtn);
+
+/** The mode the host says we are in; drives the toggle and the button state. */
+let displayMode: "inline" | "fullscreen" | "pip" = "inline";
+let availableDisplayModes: readonly string[] | null = null;
+
+function syncFullscreenButton(): void {
+  const isFullscreen = displayMode === "fullscreen";
+  fullscreenBtn.setAttribute("aria-pressed", String(isFullscreen));
+  fullscreenBtn.title = isFullscreen ? "Leave fullscreen" : "Toggle fullscreen";
+}
+
+async function toggleDisplayMode(): Promise<void> {
+  const app = appInstance;
+  if (!app) return;
+  const wanted = displayMode === "fullscreen" ? "inline" : "fullscreen";
+  if (availableDisplayModes && !availableDisplayModes.includes(wanted)) {
+    setStatus(`This host doesn't offer ${wanted} mode — using the inline layout`);
+    return;
+  }
+  try {
+    const result = await app.requestDisplayMode({ mode: wanted });
+    if (result?.mode) displayMode = result.mode;
+    syncFullscreenButton();
+    // The score reflows on its own: renderAbc runs with responsive: "resize",
+    // so abcjs's own window-resize handler re-lays the SVG to the new frame.
+  } catch {
+    setStatus("Fullscreen isn't available here — using the inline layout");
+    syncFullscreenButton();
+  }
+}
 
 // =============================================================================
 // Download Button
@@ -1175,6 +1232,15 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
   // Follow the host-driven theme (which may differ from the OS preference).
   if (ctx.theme) {
     applyDocumentTheme(ctx.theme);
+  }
+  // The host is the authority on the display mode — it can put us in or out of
+  // fullscreen without our asking — so follow it rather than tracking our own.
+  if (ctx.displayMode) {
+    displayMode = ctx.displayMode;
+    syncFullscreenButton();
+  }
+  if (ctx.availableDisplayModes) {
+    availableDisplayModes = ctx.availableDisplayModes;
   }
   // Apply host-provided CSS variable tokens, if any.
   if (ctx.styles?.variables) {
