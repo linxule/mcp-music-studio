@@ -15,7 +15,7 @@ import { evalStrudel, queryHaps } from "./strudel-eval";
 const PLAIN = 's("bd*2 [~ sd]").bank("RolandTR909")';
 
 describe("applyVisualPreset — draw presets", () => {
-  it("appends an all(...) draw call to a pattern with no visual", () => {
+  it("prepends an all(...) draw call to a pattern with no visual", () => {
     const out = applyVisualPreset(PLAIN, "pianoroll");
     expect(out).toContain(PLAIN);
     expect(out).toContain("all(p => p.pianoroll({ fold: 1 }))");
@@ -137,10 +137,6 @@ describe("applyVisualPreset — the concatenated result still evaluates", () => 
         const { pattern, error } = await evalStrudel(out);
         expect(error).toBeUndefined();
         expect(pattern).toBeTruthy();
-        // hydra-feed appends `all(…)`, which the headless evaluator stubs as
-        // silence (the real REPL returns the pattern), so only the other
-        // presets can be asserted on their haps.
-        if (preset === "hydra-feed") return;
         const { haps, error: queryError } = queryHaps(pattern!, 1);
         expect(queryError).toBeUndefined();
         expect(haps.length).toBeGreaterThan(0);
@@ -148,23 +144,43 @@ describe("applyVisualPreset — the concatenated result still evaluates", () => 
     }
   }
 
-  it("hydra-feed terminates the pattern before appending its piano roll", async () => {
+  it("hydra-feed puts its piano roll between the shader and the pattern", async () => {
     const out = applyVisualPreset('(() => note("c3"))()', "hydra-feed");
     expect(out).toContain("feedStrudel: true");
-    // …())();\n\nall(…) — without the `;` the draw call rode on the pattern.
-    expect(out).toMatch(/\)\(\);\n\nall\(p => p\.pianoroll/);
-    const { error } = await evalStrudel(out);
+    expect(out).toMatch(/\.out\(o0\);\n\nall\(p => p\.pianoroll\(\{ fold: 1 \}\)\);\n\n\(\(\) => note/);
+    const { pattern, error } = await evalStrudel(out);
     expect(error).toBeUndefined();
+    expect(queryHaps(pattern!, 1).haps.length).toBeGreaterThan(0);
+  });
+
+  // The v0.5.0 regression: every 2D preset was appended AFTER the pattern, so
+  // the REPL's last expression was all()'s undefined and it played silence
+  // while the status read "Playing…". The evaluator is faithful to the REPL's
+  // all() semantics precisely so this test can see it.
+  it("keeps the pattern as the last expression, so every draw preset stays audible", async () => {
+    for (const preset of ["pianoroll", "punchcard", "scope", "spectrum"] as const) {
+      const out = applyVisualPreset(PLAIN, preset);
+      expect(out.trimEnd().endsWith(PLAIN)).toBe(true);
+      const { pattern, error } = await evalStrudel(out);
+      expect(error, preset).toBeUndefined();
+      expect(queryHaps(pattern!, 1).haps.length, preset).toBeGreaterThan(0);
+    }
+  });
+
+  it("the appended form (what 0.5.0 emitted) evaluates to no pattern at all", async () => {
+    const { pattern, error } = await evalStrudel(`${PLAIN};\n\nall(p => p.scope())`);
+    expect(pattern).toBeUndefined();
+    expect(error?.message).toMatch(/LAST expression/);
   });
 
   it("puts the terminator on its own line when the code ends in a comment", () => {
     const out = applyVisualPreset('note("c3") // the tune', "pianoroll");
-    expect(out).toBe('note("c3") // the tune\n;\n\nall(p => p.pianoroll({ fold: 1 }))');
+    expect(out).toBe('all(p => p.pianoroll({ fold: 1 }));\n\nnote("c3") // the tune');
   });
 
   it("does not double up a terminator the code already has", () => {
     expect(applyVisualPreset('note("c3");', "scope")).toBe(
-      'note("c3");\n\nall(p => p.scope())',
+      'all(p => p.scope());\n\nnote("c3");',
     );
   });
 

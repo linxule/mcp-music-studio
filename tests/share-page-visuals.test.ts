@@ -128,7 +128,7 @@ describe("the stage is revealed only for code that draws", () => {
   it.each([
     ["a plain pattern", PLAIN, ""],
     ["a draw method", ROLL, "viz-on"],
-    ["all(pianoroll)", `${PLAIN}\nall(pianoroll)`, "viz-on"],
+    ["all(pianoroll)", `all(pianoroll)\n${PLAIN}`, "viz-on"],
     ["initHydra", HYDRA, "viz-on hydra-on"],
   ])("%s → body class %o", (_label, code, expected) => {
     expect(bodyClass(generateStrudelPlayerHtml({ code }))).toBe(expected);

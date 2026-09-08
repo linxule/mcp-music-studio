@@ -878,7 +878,9 @@ note("c3 e3 g3 c4").s("sawtooth").lpf(2000).pianoroll()
 .color("cyan") / .color("#ff7aa2") tints that pattern's notes in the pianoroll
 and its highlight in the code. Pattern it for movement: .color("<cyan magenta>").
 
-To draw ALL running patterns in one roll: all(pianoroll) on its own line.
+To draw ALL running patterns in one roll: all(pianoroll) on its own line
+BEFORE the patterns. The REPL plays the LAST expression, and all() returns
+nothing — put it after your code and the whole pattern goes silent.
 .scope()/.spectrum() animate only while audio plays; .pianoroll()/.punchcard()
 animate from the note schedule, so they update live as the user edits (Ctrl+Enter).
 
@@ -1032,8 +1034,8 @@ Keep " for actual patterns: s("bd sd"), note("c3 e3"), H("1 0 0.6 0").
 
 ## The \`visuals\` parameter (a floor, not a ceiling)
 Ready-made visual for code that has none of its own:
-  none | pianoroll | punchcard | scope | spectrum — appends
-  all(p => p.<method>()) after your code, drawing every running pattern.
+  none | pianoroll | punchcard | scope | spectrum — prepends
+  all(p => p.<method>()) before your code, drawing every running pattern.
   hydra-kaleid | hydra-pulse | hydra-wash | hydra-feed — prepends a pinned
   await initHydra() shader before it (hydra-feed also adds a piano roll for
   the shader to mirror, when your code has no draw method).
