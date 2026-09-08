@@ -61,7 +61,10 @@ export const SERVER_INSTRUCTIONS =
   "play-live-pattern (write Strudel/TidalCycles code → an editable live-coding REPL). " +
   "Before composing, consult the reference tools: get-music-guide (ABC — start with " +
   "topic 'genres' for templates, 'styles' for accompaniment presets, 'instruments' for the list) " +
-  "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'). Use search-music-docs only " +
+  "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'; 'visuals' for the animation layer). " +
+  "play-live-pattern can paint as well as play: pass visuals (a preset) and theme, or write " +
+  "`await initHydra()` shader code that follows the music via H(pattern) and a.fft — the " +
+  "'visuals' topic has copy-ready recipes. Use search-music-docs only " +
   "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
   '("C", "Am7") above the notes and set a style. ' +
   "If unsure about chord spelling or the key, call analyze-harmony; " +

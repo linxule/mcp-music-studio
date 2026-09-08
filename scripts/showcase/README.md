@@ -39,3 +39,27 @@ non-obvious details:
 The video timestamps run from context creation; the manifest stores the
 recorder start (`audioOffset`) and when the widget first reported playing
 (`start`), which `assemble.mjs` uses for `adelay` and the trim.
+
+## The live-set route (OBS, 1080p60, one continuous piece)
+
+`dev/perform.html` + `dev/perform.ts` is a self-driving performance page: it
+mounts both widgets through the real `AppBridge`, then runs a cue list that
+re-sends `tool-input` into the SAME Strudel widget — each section is a
+hot-swapped re-evaluation on the running clock (`scheduler.now` keeps
+climbing), Hydra evolves with it, captions are DOM over the visuals, and the
+piece opens and closes on the ABC score. Capture it with an OBS Browser Source
+(the route documented in `~/Documents/Apps/llm-world/recording/README.md`):
+
+```bash
+bunx vite --config dev/vite.config.ts --port 5210 &
+# OBS: scene "music-studio-perform", browser_source "perform-page"
+#   url http://localhost:5210/perform.html?autoplay=0, 1920×1080, fps 60, reroute_audio
+# start_record → wait outputActive → set url …?autoplay=1 → ~216 s → stop_record
+```
+
+Gotchas measured on OBS 32 / CEF: CSS `zoom` on the iframes is ignored (use
+`transform: scale()`); WebGL and WebAudio autoplay both work; the take's audio
+peaks ~+0.9 dBFS on two hits, so encode with a limiter. `?speed=6` rehearses
+the cue list faster, but the widgets don't load faster, so only real time is
+representative. Never poke abcjs's transport mid-piece — its button toggles and
+would restart the tune.
