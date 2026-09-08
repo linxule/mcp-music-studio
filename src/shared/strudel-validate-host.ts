@@ -33,6 +33,10 @@
  *     Assume a determined escape reads files as the server's user.
  *   - The kill is per-request. A pattern that spawns detached work before
  *     hanging is not tracked.
+ *   - `--max-old-space-size` is a V8 flag. A Bun child accepts it without
+ *     obviously enforcing it (measured: `Array(1e9).fill(0)` aborts a Node
+ *     child and does not abort a Bun one), so on the Bun paths the heap cap is
+ *     not the containment — the vm's synchronous ceiling and the SIGKILL are.
  *   - Requests are serialised, so one slow pattern delays the next by up to its
  *     timeout. Validation is single-digit milliseconds in practice.
  * What it does buy is the two things that actually matter for an MCP server:

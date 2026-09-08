@@ -106,15 +106,26 @@ describe("F2: a synchronous busy loop cannot wedge the server", () => {
 });
 
 describe("an out-of-memory pattern kills the child, not the server", () => {
-  it("reports a crash and recovers", async () => {
-    const v = await validateStrudelCode("Array(1e9).fill(0); note('c4')", { timeoutMs: 8000 });
+  it("is contained, and the next pattern still validates", async () => {
+    const started = Date.now();
+    const v = await validateStrudelCode("Array(1e9).fill(0); note('c4')", { timeoutMs: 4000 });
+    const elapsed = Date.now() - started;
+
+    // Which of the three ceilings catches this depends on the child runtime,
+    // and the point of the test is that it does not matter:
+    //   - a Node child hits --max-old-space-size=512 and aborts   -> "crashed"
+    //   - a Bun child survives the allocation and hits the vm's
+    //     synchronous ceiling                                     -> "evaluation timed out"
+    //   - anything slower than both is SIGKILLed by the host      -> "validation timed out"
+    // All three are containment. None of them is `ok`, none of them throws,
+    // and all of them come back inside the budget.
     expect(v.ok).toBe(false);
-    // Either the allocation aborts the child (crash) or it is still going when
-    // the deadline lands (timeout). Both are contained; neither is `ok`.
-    expect(v.error?.message).toMatch(/validation (crashed|timed out)/);
+    expect(v.error?.message).toMatch(/crashed|timed out/);
+    expect(elapsed).toBeLessThan(4000 + 2000);
 
     const after = await validateStrudelCode('s("hh*4")');
     expect(after.ok).toBe(true);
+    expect(after.sounds).toEqual(["hh"]);
   }, 40_000);
 });
 
