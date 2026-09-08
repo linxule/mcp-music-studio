@@ -228,8 +228,21 @@ describe("generateStrudelPlayerHtml (Strudel browser fallback)", () => {
 
   it("omits the autoplay click handler when autoplay is false", () => {
     const html = generateStrudelPlayerHtml({ code: CODE, autoplay: false });
-    expect(html).not.toContain("autoStart");
+    // `autoStartHandler` / consumeAutoStart() are emitted unconditionally (the
+    // transport calls them either way); what must not exist is the handler and
+    // its document listener.
+    expect(html).not.toContain("function autoStart(ev)");
+    expect(html).not.toContain("document.addEventListener('click'");
     expect(readInit(html).autoplay).toBe(false);
+  });
+
+  it("consumes the autoplay listener the moment the user takes over", () => {
+    // Audit finding 8: Play → Stop used to leave it armed, so the next click in
+    // the editor restarted the pattern. See tests/strudel-fallback-autoplay.ts
+    // for the executed proof; these pin the two call sites.
+    const html = generateStrudelPlayerHtml({ code: CODE, autoplay: true });
+    expect(html).toMatch(/function togglePlay\(\) \{[\s\S]{0,200}?consumeAutoStart\(\);/);
+    expect(html).toMatch(/function stopPattern\(\) \{[\s\S]{0,300}?consumeAutoStart\(\);/);
   });
 
   it("loads the Strudel REPL from its CDN", () => {

@@ -554,6 +554,18 @@ const CLOBBERED_GLOBALS = ["time", "speed", "shape", "hush"] as const;
 
 let evalScopeHooked = false;
 let hydraInstance: any = null;
+
+/**
+ * Bumped every time the Hydra layer is struck — a pattern that no longer uses
+ * it, or the host tearing the widget down.
+ *
+ * The initHydra() wrapper reads its own value back after `await original(...)`.
+ * That await imports hydra-synth from a CDN, so a teardown lands inside it
+ * routinely; the renderer that resolves afterwards belongs to a lifetime that
+ * has already ended, and adopting it restarted rendering on a widget the host
+ * had let go of. Same discipline as renderGeneration, for a different resource.
+ */
+let hydraGeneration = 0;
 let strudelGlobals: Record<string, unknown> | null = null;
 // Set the first time a pattern initialises Hydra: after that, the clobbered
 // globals hold Hydra's values and are no longer worth snapshotting.
@@ -649,7 +661,34 @@ function installEvalScopeHooks(): void {
       ...HYDRA_OWNED_LOOP,
       ...options,
     };
+    // Read back after the await (see hydraGeneration) — hydra-synth is fetched
+    // from a CDN, so this await is long enough for a teardown to land inside it.
+    const generation = hydraGeneration;
+    const previous = hydraInstance;
     const instance = await original(merged);
+
+    if (generation !== hydraGeneration) {
+      // The Hydra layer was struck while this init was in flight: the host tore
+      // the widget down, or the next pattern doesn't use Hydra. The renderer
+      // that just arrived belongs to nobody. Dispose it and touch NOTHING else —
+      // retaining it, starting the owned tick loop, or re-applying the
+      // feedStrudel canvas hide would all resurrect a layer that is meant to be
+      // gone (the audit's "instanceRetained, ticks:1, pendingRafs:1").
+      disposeHydraInstance(instance);
+      // With feedStrudel, upstream hides #test-canvas from INSIDE the call we
+      // just awaited — a hide belonging to a lifetime that has already ended.
+      // Undo it unless a newer init has since taken ownership of the layer,
+      // or the next `.pianoroll()` pattern draws into a hidden canvas.
+      if (!hydraInstance) applyHydraFeedMode(false);
+      return instance;
+    }
+
+    // Upstream returns a DIFFERENT renderer when the options changed. It removes
+    // the old canvas but never destroys the old regl context, so switching e.g.
+    // feedStrudel on leaked a live WebGL context. clearHydra() is NOT the tool
+    // here — it would remove the canvas the NEW renderer just created.
+    if (instance && previous && previous !== instance) disposeHydraInstance(previous);
+
     if (instance) hydraInstance = instance;
     // The MutationObserver has normally adopted and sized the canvas already
     // (it fires during getDrawContext, before initHydra's `await import`, which
@@ -723,16 +762,14 @@ function restoreStrudelGlobals(): void {
 }
 
 /**
- * Release the HydraRenderer. clearHydra() only hushes it and drops the canvas;
- * the regl context (and the render loop driving it) survives, so destroy it.
- * The next initHydra() builds a fresh renderer, having found no #hydra-canvas.
+ * Release ONE HydraRenderer, whoever owns it.
+ *
+ * clearHydra() only hushes the renderer and drops its canvas; the regl context
+ * (and everything the GPU is holding for it) survives, so destroy it explicitly.
+ * Deliberately does not touch `hydraInstance` — this is also how a superseded
+ * renderer is disposed while a newer one is being installed.
  */
-function stopHydraInstance(): void {
-  // Ours to cancel — upstream's autoLoop is off (see HYDRA_OWNED_LOOP). Stop it
-  // BEFORE regl goes away so no frame renders into a destroyed context.
-  stopHydraTickLoop();
-  const instance = hydraInstance;
-  hydraInstance = null;
+function disposeHydraInstance(instance: any): void {
   if (!instance) return;
   try {
     instance.hush?.();
@@ -740,6 +777,19 @@ function stopHydraInstance(): void {
   try {
     instance.regl?.destroy?.();
   } catch { /* regl may already be gone */ }
+}
+
+/**
+ * Release the current HydraRenderer and give up ownership.
+ * The next initHydra() builds a fresh one, having found no #hydra-canvas.
+ */
+function stopHydraInstance(): void {
+  // Ours to cancel — upstream's autoLoop is off (see HYDRA_OWNED_LOOP). Stop it
+  // BEFORE regl goes away so no frame renders into a destroyed context.
+  stopHydraTickLoop();
+  const instance = hydraInstance;
+  hydraInstance = null;
+  disposeHydraInstance(instance);
 }
 
 /** Stage or strike the Hydra layer for the pattern about to run. */
@@ -754,6 +804,10 @@ function setHydraActive(active: boolean): void {
   // fresh one, which is the part upstream gets wrong.
   vizCanvas.style.removeProperty("display");
   if (active) return;
+
+  // Striking the layer ends the current Hydra lifetime: an initHydra() still
+  // awaiting its CDN import must NOT install what it eventually resolves to.
+  hydraGeneration++;
 
   // Pattern no longer uses Hydra: stop its render loop so a stale shader doesn't
   // keep the GPU busy under the code. Leave NO #hydra-canvas behind — its
