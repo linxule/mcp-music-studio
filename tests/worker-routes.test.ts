@@ -65,6 +65,13 @@ function scoreInit(html: string): { abc: string; style: string } {
   return JSON.parse(match[1]!);
 }
 
+/**
+ * The share writes only — POST /share also writes the rate limiter's bucket
+ * (`ratelimit:share:<ip>`) into the same namespace, which is not a stored share.
+ */
+const shares = (kv: ReturnType<typeof fakeKv>) =>
+  kv.puts.filter((p) => p.key.startsWith("share:"));
+
 /** Query string for /play, with the code base64url-encoded like a real link. */
 function playQuery(code: string, extra: Record<string, string> = {}): string {
   return new URLSearchParams({ c: encodeShareParam(code), ...extra }).toString();
@@ -364,10 +371,12 @@ describe("POST /share", () => {
     const { url } = (await res.json()) as { url: string };
     expect(url).toMatch(new RegExp(`^${ORIGIN}/p/[0-9a-f]{32}$`));
 
-    // Stored under the share: prefix with a 30-day TTL, in the existing namespace.
-    expect(kv.puts).toHaveLength(1);
-    expect(kv.puts[0]!.key).toBe(`share:${url.split("/p/")[1]}`);
-    expect(kv.puts[0]!.options?.expirationTtl).toBe(30 * 24 * 60 * 60);
+    // Stored under the share: prefix with a 30-day TTL, in the existing
+    // namespace. (`shares()` filters out the rate-limiter's own bucket, which
+    // lives under ratelimit:share: in the same namespace.)
+    expect(shares(kv)).toHaveLength(1);
+    expect(shares(kv)[0]!.key).toBe(`share:${url.split("/p/")[1]}`);
+    expect(shares(kv)[0]!.options?.expirationTtl).toBe(30 * 24 * 60 * 60);
 
     // ...and it renders.
     const page = await get(new URL(url).pathname, undefined, {
@@ -385,7 +394,7 @@ describe("POST /share", () => {
     );
     const { url } = (await res.json()) as { url: string };
     expect(url).toContain("/play?c=");
-    expect(kv.puts).toHaveLength(0);
+    expect(shares(kv)).toHaveLength(0);
   });
 
   it("is content-addressed: posting twice rewrites one key", async () => {
@@ -397,7 +406,7 @@ describe("POST /share", () => {
     const first = await get("/share", { method: "POST", body }, { DOCS_CACHE: kv.binding });
     const second = await get("/share", { method: "POST", body }, { DOCS_CACHE: kv.binding });
     expect((await first.json()).url).toBe((await second.json()).url);
-    expect(kv.store.size).toBe(1);
+    expect([...kv.store.keys()].filter((k) => k.startsWith("share:"))).toHaveLength(1);
   });
 
   it("drops fields the generators don't read instead of storing them", async () => {

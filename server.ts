@@ -73,7 +73,7 @@ import {
   uiToolMeta,
   attachPlayLink,
 } from "./src/shared/tool-defs.js";
-import { buildShareQueryUrl } from "./src/shared/share-url.js";
+import { buildShareQueryUrl, toPlayShareArgs } from "./src/shared/share-url.js";
 import { validateStrudelCode } from "./src/shared/strudel-validate.js";
 
 const DIST_DIR = import.meta.filename.endsWith(".ts")
@@ -381,9 +381,13 @@ export function createServer(options?: ServerOptions): McpServer {
     if (defaultRenderMode === "auto") {
       // Broken Strudel still gets the link: it opens the same code in an
       // editable REPL, which is where a fix happens.
-      return attachPlayLink(result, buildShareQueryUrl({ kind: "play", args }), {
-        keepOnError: true,
-      });
+      // toPlayShareArgs folds the `visuals` preset into the code, so the linked
+      // page shows the same animation the widget would.
+      return attachPlayLink(
+        result,
+        buildShareQueryUrl({ kind: "play", args: toPlayShareArgs(args) }),
+        { keepOnError: true },
+      );
     }
 
     const playerOpts = {

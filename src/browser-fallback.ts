@@ -17,6 +17,9 @@ import {
 } from "./music-logic.js";
 import { transposeAbc } from "./abc-transpose.js";
 import { ABCJS_CDN_BASE } from "./abcjs-version.js";
+// One implementation, shared with the Strudel page: this file used to carry a
+// byte-identical private copy, which is exactly how the two drift apart.
+import { safeJsonForScript } from "./shared/safe-json.js";
 
 export interface BrowserPlayerOptions {
   abcNotation: string;
@@ -47,15 +50,6 @@ function escapeHtml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-// JSON.stringify doesn't escape <, >, & — if embedded in <script>, a payload
-// like </script><script>alert(1) would break out. Unicode-escape them.
-function safeJsonForScript(value: unknown): string {
-  return JSON.stringify(value)
-    .replace(/</g, "\\u003c")
-    .replace(/>/g, "\\u003e")
-    .replace(/&/g, "\\u0026");
 }
 
 function extractMeta(abc: string) {

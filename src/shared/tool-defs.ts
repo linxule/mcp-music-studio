@@ -266,6 +266,13 @@ export const PLAY_SHEET_NEUTRAL_TEXT =
  * `keepOnError` is the one exception, and it exists for play-live-pattern:
  * broken ABC renders as a broken score, but broken Strudel lands in an EDITABLE
  * REPL, so the link is where the user goes to fix it.
+ *
+ * Not every result ends on the honest tail — `createPlaySheetMusicResult`'s
+ * "parsed with warnings" branch does not — and when the swap finds nowhere to
+ * land, the `resource_link` used to be appended alone: a bare link block that no
+ * prose in the result mentions or explains. So when nothing was swapped, the
+ * link line is appended as its own text block first, and the `resource_link`
+ * always has something introducing it.
  */
 export function attachPlayLink(
   result: CallToolResult,
@@ -295,6 +302,11 @@ export function attachPlayLink(
     ...result,
     content: [
       ...content,
+      // No tail to swap → the link has not been named anywhere yet. Say it in
+      // text before handing over a link block on its own.
+      ...(linked
+        ? []
+        : [{ type: "text" as const, text: `${PLAY_LINK_PREFIX}${url}` }]),
       {
         type: "resource_link" as const,
         uri: url,

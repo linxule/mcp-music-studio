@@ -16,6 +16,10 @@
 // imported by the Worker, by the local stdio server, and by the tests.
 // =============================================================================
 
+// Pure and DOM-free, like everything else here — it is the same transform the
+// widget runs client-side, so the hosted page shows the preset the tool asked for.
+import { applyVisualPreset } from "./visual-presets.js";
+
 /** Largest payload a share param may decode to. Anything bigger is a 413. */
 export const SHARE_PARAM_MAX_BYTES = 64 * 1024;
 
@@ -38,6 +42,62 @@ export const DEFAULT_SHARE_ORIGIN = "https://mcp-music-studio.linxule.workers.de
 
 /** Titles are cosmetic; cap them so a link can't carry a payload in the label. */
 export const SHARE_TITLE_MAX_CHARS = 200;
+
+// -----------------------------------------------------------------------------
+// Numeric bounds
+// -----------------------------------------------------------------------------
+//
+// A share link is an UNAUTHENTICATED path into the same page generators the
+// tools use, and its numbers were only checked for finiteness. `?bpm=1e9` baked
+// `setcps(4166666)` into a pattern; `?bpm=-120` baked a negative cps; `?tempo=1e9`
+// wrote a Q: header no renderer copes with. The tool schemas in tool-defs.ts
+// bound each of these, so the hosted pages have to as well.
+//
+// Duplicated rather than imported because this module is deliberately
+// dependency-free (no zod, no guide data) — it is loaded by the Worker on every
+// /play and /score hit. tests/share-url.test.ts pins the two lists together, so
+// a schema change that isn't mirrored here fails the build.
+
+export interface ShareNumberBound {
+  readonly min: number;
+  readonly max: number;
+  /** Values are rounded to an integer before clamping (matches z.number().int()). */
+  readonly int?: boolean;
+}
+
+export const SHARE_NUMBER_BOUNDS = {
+  /** play-live-pattern: bpm 40–300. */
+  bpm: { min: 40, max: 300 },
+  /** play-sheet-music: tempo 40–240. */
+  tempo: { min: 40, max: 240 },
+  /** play-sheet-music: swing 0–75. */
+  swing: { min: 0, max: 75 },
+  /** play-sheet-music: drumIntro 0–8 bars, integral. */
+  drumIntro: { min: 0, max: 8, int: true },
+  /** play-sheet-music: transpose −12–12 semitones, integral. */
+  transpose: { min: -12, max: 12, int: true },
+} as const satisfies Record<string, ShareNumberBound>;
+
+export type ShareNumberKey = keyof typeof SHARE_NUMBER_BOUNDS;
+
+/**
+ * Clamp a share number into its tool-schema range.
+ *
+ * Clamps rather than rejects: a link is a convenience, and a silently sane
+ * tempo beats a 400 for someone who hand-edited a URL. Non-finite input (NaN,
+ * ±Infinity) becomes `undefined` — there is no sensible value to clamp it to,
+ * and dropping it lets the page fall back to its own default.
+ */
+export function clampShareNumber(
+  key: ShareNumberKey,
+  value: number | undefined,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value)) return undefined;
+  const bound = SHARE_NUMBER_BOUNDS[key] as ShareNumberBound;
+  const rounded = bound.int ? Math.round(value) : value;
+  return Math.min(bound.max, Math.max(bound.min, rounded));
+}
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -172,6 +232,40 @@ export interface ScoreShareArgs {
 
 export type ShareKind = "play" | "score";
 
+/**
+ * The raw play-live-pattern arguments, before they are reduced to a share.
+ *
+ * `visuals` and `theme` exist on the tool but not on the page: the share URL
+ * carries only `code`, so a call with `visuals: "hydra-kaleid"` used to produce
+ * a widget with a shader and a LINK TO A PAGE WITH NOTHING — the preset never
+ * reached the hosted player. `theme` is deliberately dropped instead (it colours
+ * the CodeMirror chrome, which the standalone page renders its own way).
+ */
+export interface PlayToolArgs {
+  code: string;
+  bpm?: number;
+  title?: string;
+  autoplay?: boolean;
+  visuals?: unknown;
+  theme?: unknown;
+}
+
+/**
+ * Reduce play-live-pattern's arguments to the share payload, folding the
+ * `visuals` preset into the code the way the widget does client-side.
+ *
+ * `applyVisualPreset` is a no-op for "none", an unknown value, and for code
+ * that already visualises itself, so this is safe to run unconditionally.
+ */
+export function toPlayShareArgs(args: PlayToolArgs): PlayShareArgs {
+  return {
+    code: applyVisualPreset(args.code, args.visuals),
+    bpm: clampShareNumber("bpm", args.bpm),
+    title: args.title,
+    autoplay: args.autoplay,
+  };
+}
+
 export type SharePayload =
   | { kind: "play"; args: PlayShareArgs }
   | { kind: "score"; args: ScoreShareArgs };
@@ -185,10 +279,18 @@ export type SharePayload =
 // options travel as plain readable values (URLSearchParams percent-escapes the
 // title), which keeps a share link legible and hand-editable.
 
-function putNumber(q: URLSearchParams, key: string, value: number | undefined) {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    q.set(key, String(value));
-  }
+function putNumber(
+  q: URLSearchParams,
+  key: ShareNumberKey,
+  value: number | undefined,
+) {
+  // Clamped on the way OUT as well as the way in, so a link minted from an
+  // out-of-range argument never carries the bad value in the first place.
+  const clamped = clampShareNumber(
+    key,
+    typeof value === "number" ? value : undefined,
+  );
+  if (clamped !== undefined) q.set(key, String(clamped));
 }
 
 function putTitle(q: URLSearchParams, title: string | undefined) {
@@ -220,14 +322,19 @@ export function scoreSearchParams(args: ScoreShareArgs): URLSearchParams {
   return q;
 }
 
-function parseNumber(q: URLSearchParams, key: string): number | undefined {
+function parseNumber(
+  q: URLSearchParams,
+  key: ShareNumberKey,
+): number | undefined {
   const raw = q.get(key);
   if (raw === null || raw.trim() === "") return undefined;
   const n = Number(raw);
   if (!Number.isFinite(n)) {
     throw new ShareParamError(`Query parameter "${key}" must be a number.`, 400);
   }
-  return n;
+  // Finite but absurd is the real hazard here, not non-numeric: `?bpm=1e9` used
+  // to reach injectTempo() intact. Clamp to the tool schema's range.
+  return clampShareNumber(key, n);
 }
 
 function requiredPayload(q: URLSearchParams, key: string): string {

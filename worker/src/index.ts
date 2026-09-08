@@ -73,6 +73,8 @@ import {
   SHARE_PARAM_MAX_BYTES,
   SHARE_TTL_SECONDS,
   ShareParamError,
+  clampShareNumber,
+  type ShareNumberKey,
   buildPlayerCsp,
   buildShareQueryUrl,
   buildStoredShareUrl,
@@ -81,6 +83,7 @@ import {
   parseScoreSearchParams,
   shareId,
   shareKvKey,
+  toPlayShareArgs,
   type SharePayload,
 } from "../../src/shared/share-url.js";
 import { ABCJS_CDN_BASE } from "../../src/abcjs-version.js";
@@ -296,12 +299,15 @@ function coerceSharePayload(raw: unknown): SharePayload {
     }
     return v;
   };
-  const num = (v: unknown, field: string): number | undefined => {
+  // Finiteness was the only check here, so a stored share could carry
+  // `bpm: 1e9` (baked as setcps(4166666)) or `tempo: -1e9`. Clamp to the same
+  // ranges the tool schemas declare — see SHARE_NUMBER_BOUNDS.
+  const num = (v: unknown, field: ShareNumberKey): number | undefined => {
     if (v === undefined || v === null) return undefined;
     if (typeof v !== "number" || !Number.isFinite(v)) {
       throw new ShareParamError(`"${field}" must be a number.`, 400);
     }
-    return v;
+    return clampShareNumber(field, v);
   };
 
   if (body?.kind === "play") {
@@ -331,6 +337,115 @@ function coerceSharePayload(raw: unknown): SharePayload {
     };
   }
   throw new ShareParamError('"kind" must be "play" or "score".', 400);
+}
+
+// -----------------------------------------------------------------------------
+// Rate limiting the public POST /share route
+// -----------------------------------------------------------------------------
+//
+// /share is unauthenticated and each accepted request can write a 30-day KV
+// entry. The per-request caps (64 KiB body, coerced fields) bound the SIZE of
+// one share but not the NUMBER of them, so one address could fill the namespace
+// at whatever rate it liked.
+//
+// A fixed window per IP is enough here: this is anti-flood, not a quota system,
+// and the ids are content digests, so the same pattern posted repeatedly
+// rewrites one key rather than consuming the budget's worth of storage. The
+// limiter is deliberately best-effort — if KV can't answer, the request goes
+// through rather than the route going down.
+//
+// The tool handlers reach the same logic IN-PROCESS via shareUrlFor(), which
+// never passes through here: they are not the public route, and their rate is
+// already bounded by whatever is calling the MCP server.
+
+/** Accepted POST /share requests per IP per window. */
+export const SHARE_RATE_LIMIT_MAX = 30;
+
+/** Length of the fixed window, in seconds. */
+export const SHARE_RATE_LIMIT_WINDOW_SECONDS = 60 * 60;
+
+/** KV key for one address's bucket. Namespaced alongside `share:` and the docs cache. */
+export function shareRateLimitKey(ip: string): string {
+  return `ratelimit:share:${ip}`;
+}
+
+interface ShareRateBucket {
+  /** Requests counted so far in this window. */
+  n: number;
+  /** Unix seconds at which the window ends. */
+  reset: number;
+}
+
+function parseBucket(raw: string | null, now: number): ShareRateBucket | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<ShareRateBucket>;
+    if (typeof parsed?.n !== "number" || typeof parsed?.reset !== "number") {
+      return null;
+    }
+    // Expired windows are treated as absent — KV's own TTL is the backstop,
+    // not the source of truth, so a clock skew can't lock anyone out.
+    return parsed.reset <= now ? null : { n: parsed.n, reset: parsed.reset };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Count this request against the caller's bucket.
+ *
+ * Returns a 429 when the window is already full, `null` when the request may
+ * proceed. The counter is NOT incremented once the limit is hit, so the window
+ * expires on schedule instead of sliding forward under a sustained flood.
+ */
+async function enforceShareRateLimit(
+  env: Env,
+  request: Request,
+): Promise<Response | null> {
+  const kv = env.DOCS_CACHE;
+  if (!kv) return null;
+
+  // Cloudflare sets CF-Connecting-IP on every edge request; the fallback bucket
+  // only matters for local `wrangler dev` and tests.
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  const key = shareRateLimitKey(ip);
+  const now = Math.floor(Date.now() / 1000);
+
+  let bucket: ShareRateBucket | null;
+  try {
+    bucket = parseBucket(await kv.get(key), now);
+  } catch {
+    return null; // KV is unwell — don't take the route down with it.
+  }
+
+  if (bucket && bucket.n >= SHARE_RATE_LIMIT_MAX) {
+    const retryAfter = Math.max(1, bucket.reset - now);
+    return new Response(
+      "Too many share links from this address. Try again later.",
+      {
+        status: 429,
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+          "retry-after": String(retryAfter),
+          "x-robots-tag": "noindex",
+        },
+      },
+    );
+  }
+
+  const next: ShareRateBucket = bucket
+    ? { n: bucket.n + 1, reset: bucket.reset }
+    : { n: 1, reset: now + SHARE_RATE_LIMIT_WINDOW_SECONDS };
+  try {
+    await kv.put(key, JSON.stringify(next), {
+      // TTL tracks the window, so a bucket never outlives the limit it encodes.
+      // KV's floor is 60s; the window is an hour, so the max() is belt and braces.
+      expirationTtl: Math.max(60, next.reset - now),
+    });
+  } catch {
+    /* best effort — a lost increment costs one extra request, not correctness */
+  }
+  return null;
 }
 
 /** Store a payload under its content digest. Returns its /p/<id> URL. */
@@ -491,7 +606,13 @@ export function createMusicServer(
     async (args) =>
       attachPlayLink(
         buildPlayLiveResult(args, undefined, PLAY_LIVE_UNVALIDATED_REMOTE),
-        await shareUrlFor(env, origin, { kind: "play", args }),
+        // toPlayShareArgs folds the `visuals` preset into the code (and drops
+        // `theme`, which is editor chrome the standalone page doesn't have), so
+        // the linked page shows the animation the tool call asked for.
+        await shareUrlFor(env, origin, {
+          kind: "play",
+          args: toPlayShareArgs(args),
+        }),
       ),
   );
 
@@ -704,6 +825,10 @@ export default {
       if (!env.DOCS_CACHE) {
         return new Response("Share storage unavailable.", { status: 503 });
       }
+      // Before the body is read: the cheapest place to shed a flood. Only the
+      // public route is limited — the tool handlers call shareUrlFor() directly.
+      const limited = await enforceShareRateLimit(env, request);
+      if (limited) return limited;
       try {
         const body = await request.text();
         if (byteLength(body) > SHARE_PARAM_MAX_BYTES) {
