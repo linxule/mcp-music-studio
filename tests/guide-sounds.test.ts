@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { STRUDEL_GUIDES } from "../src/strudel-guide";
 import { ABC_GUIDES } from "../src/abc-guide";
 import gmNames from "./fixtures/gm-sound-names.json";
-import strudelSounds from "./fixtures/strudel-sounds.json";
+import strudelSounds from "../src/shared/data/strudel-sounds.json";
 
 /**
  * Every sound and bank name the guides tell an agent to use must actually be
@@ -11,7 +11,7 @@ import strudelSounds from "./fixtures/strudel-sounds.json";
  * layer — so a wrong name in the guide is a pattern that renders and plays
  * nothing, with no error the agent can see.
  *
- * Fixtures: tests/fixtures/strudel-sounds.json (regenerate with
+ * Data: src/shared/data/strudel-sounds.json (regenerate with
  * `bun scripts/sync-strudel-sounds.mjs`) and gm-sound-names.json.
  *
  * Escape hatch: a guide line containing the literal text "needs samples()" is

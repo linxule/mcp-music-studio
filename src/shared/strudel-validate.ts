@@ -18,11 +18,12 @@
  * What it does NOT: how it sounds.
  */
 // The sound inventory is generated from @strudel/repl's prebake() by
-// scripts/sync-strudel-sounds.mjs and has always lived with the tests that
-// consume it. It is plain data and there is exactly one copy on purpose — a
-// second copy under src/ would drift from the one the guide tests assert
-// against, which is the whole point of having it.
-import strudelSounds from "../../tests/fixtures/strudel-sounds.json" with { type: "json" };
+// scripts/sync-strudel-sounds.mjs. It used to live in tests/fixtures/ because
+// only the guide tests read it; it is production data now (this module checks
+// every pattern against it, and the validation child bundles it), so it lives
+// under src/. There is exactly one copy on purpose — a second would drift from
+// the one the guide tests assert against, which is the whole point of having it.
+import strudelSounds from "./data/strudel-sounds.json" with { type: "json" };
 
 export interface StrudelValidationError {
   message: string;
