@@ -377,6 +377,40 @@ describe("injectTempo — insertion placement", () => {
     const out = injectTempo('"bd hh".split(" ")', 120);
     expect(out.code).toBe('setcps(0.5);\n"bd hh".split(" ")');
   });
+
+  // Audit finding 12. A newline after a directive-LOOKING string is not a
+  // terminator when the next token continues the expression — the old code
+  // emitted `'use strict'\nsetcps(0.5);\n.trim();…`, a SyntaxError.
+  describe("a directive-looking string that is really part of an expression", () => {
+    const CONTINUATIONS: [string, string][] = [
+      ["member access", "'use strict'\n.trim();\nnote(\"c3\")"],
+      ["a call", "'use strict'\n(0);\nnote(\"c3\")"],
+      ["an index", "'use strict'\n[0];\nnote(\"c3\")"],
+      ["a binary operator", "'use strict'\n+ 'ish';\nnote(\"c3\")"],
+      ["a ternary", "'use strict'\n? note(\"c3\") : note(\"e3\")"],
+    ];
+
+    for (const [label, code] of CONTINUATIONS) {
+      it(`inserts before the whole expression when the next line is ${label}`, () => {
+        expect(parses(code)).toBe(true); // the input was valid to begin with
+        const out = injectTempo(code, 120);
+        expect(out.code).toBe(`setcps(0.5);\n${code}`);
+        expect(parses(out.code)).toBe(true);
+      });
+    }
+
+    it("still treats a real newline-terminated prologue as a prologue", () => {
+      const out = injectTempo("'use strict'\nnote(\"c3\")", 120);
+      expect(out.code).toBe("'use strict'\nsetcps(0.5);\nnote(\"c3\")");
+      expect(parses(out.code)).toBe(true);
+    });
+
+    it("still handles a semicolon-terminated \"use strict\" prologue", () => {
+      const out = injectTempo('"use strict";\n(() => note("c3"))()', 120);
+      expect(out.code).toBe('"use strict";\nsetcps(0.5);\n(() => note("c3"))()');
+      expect(parses(out.code)).toBe(true);
+    });
+  });
 });
 
 describe("injectTempo — guards", () => {

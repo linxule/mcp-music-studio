@@ -499,6 +499,36 @@ function isPureNumeric(argument: string): boolean {
 }
 
 /**
+ * Characters that CONTINUE the expression above rather than beginning a new
+ * statement, even across a newline: member access, a call, an index, a tagged
+ * template, and every binary/ternary operator that can lead a continuation line.
+ *
+ * `!`, `~` and `{` are deliberately absent — each can only *start* something,
+ * so a newline before one is a real statement boundary (ASI inserts there).
+ */
+const EXPRESSION_CONTINUATION_STARTS = new Set([
+  ".", "(", "[", "`", ",", "?", ":", "=",
+  "+", "-", "*", "/", "%", "<", ">", "&", "|", "^",
+]);
+
+/** Word operators that can only appear mid-expression. */
+const CONTINUATION_WORD_RE = /^(?:instanceof|in)\b/;
+
+/**
+ * Is the token at `i` a continuation of the expression before it?
+ *
+ * A directive prologue ends at a newline ONLY when what follows starts a new
+ * statement. `'use strict'\n.trim();` is a single member expression the newline
+ * does not terminate, and inserting `setcps(…);` into the middle of it was a
+ * SyntaxError (the audit's case: `'use strict'\nsetcps(0.5);\n.trim();`).
+ */
+function continuesExpression(code: string, i: number): boolean {
+  if (i >= code.length) return false;
+  if (EXPRESSION_CONTINUATION_STARTS.has(code[i])) return true;
+  return CONTINUATION_WORD_RE.test(code.slice(i, i + 11));
+}
+
+/**
  * Where a prepended `setcps(...)` line must go: after a `#!` shebang line and
  * after a `"use strict"`-style directive prologue, otherwise index 0.
  */
@@ -521,8 +551,13 @@ function insertionIndex(code: string): number {
     if (!content.startsWith("use ")) return at;
     const next = skipTrivia(code, end);
     if (code[next] === ";") at = next + 1;
-    else if (next >= code.length || code.lastIndexOf("\n", next) >= end) at = end;
-    else return at; // string is part of a larger expression
+    else if (next >= code.length) at = end;
+    // A newline ends the directive only if the next significant token starts a
+    // statement of its own. `.`/`(`/`[`/an operator carries the expression over
+    // the break, and splitting THAT is a SyntaxError.
+    else if (code.lastIndexOf("\n", next) >= end && !continuesExpression(code, next)) {
+      at = end;
+    } else return at; // string is part of a larger expression
   }
 }
 

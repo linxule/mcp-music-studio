@@ -168,6 +168,29 @@ async function mountFrame(): Promise<void> {
   frame.src = WIDGET_SRC[widgetSel.value];
 }
 
+/**
+ * Resolve once the widget in the frame has completed its ext-apps handshake.
+ *
+ * mountFrame() resolves as soon as the transport is connected and the src is
+ * assigned; `ready` only flips in `oninitialized`, which is what sendToolInput()
+ * actually requires. Anything that remounts must wait for THIS, not for
+ * mountFrame().
+ */
+function waitForReady(timeoutMs = 15000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const check = () => {
+      if (ready) { resolve(); return; }
+      if (Date.now() - start > timeoutMs) {
+        reject(new Error("widget did not initialize within " + timeoutMs + "ms"));
+        return;
+      }
+      setTimeout(check, 25);
+    };
+    check();
+  });
+}
+
 function wireBridge(b: AppBridge): void {
   b.oninitialized = () => {
     ready = true;
@@ -299,12 +322,28 @@ void mountFrame();
   setArgs(args: Record<string, unknown>) {
     argsTa.value = JSON.stringify(args, null, 2);
   },
-  usePreset(id: string) {
+  get ready() { return ready; },
+  waitForReady,
+  /**
+   * Select a preset the way the UI does — INCLUDING the remount.
+   *
+   * The <select> change event is what normally mounts the matching widget, and
+   * setting `.value` from script does not fire it. Without the remount, picking
+   * an ABC preset from a Strudel frame left the Strudel widget mounted and
+   * `send()` posted ABC arguments into the Strudel bridge. Async so callers can
+   * await the new widget's handshake before sending anything.
+   */
+  async usePreset(id: string) {
     const p = PRESETS.find((x: Preset) => x.id === id);
     if (!p) throw new Error(`no preset ${id}`);
+    const remount = widgetSel.value !== p.widget;
     widgetSel.value = p.widget;
     fillPresets();
     presetSel.value = id;
     applyPreset();
+    if (remount) {
+      await mountFrame();
+      await waitForReady();
+    }
   },
 };

@@ -191,16 +191,24 @@ function loadGetDrawContext(document: unknown, window: unknown) {
 
 // -----------------------------------------------------------------------------
 
+interface FakeHydraLike {
+  hushes: number;
+  reglDestroys: number;
+  regl: { destroy(): void };
+}
+
 describe("@strudel/hydra initHydra() contract", () => {
   let dom: ReturnType<typeof makeDom>;
   let imported: string[];
   let constructed: Record<string, unknown>[];
+  let instances: FakeHydraLike[];
   let getDrawContext: (id?: string, opts?: unknown) => { canvas: StubCanvas };
 
   beforeEach(() => {
     dom = makeDom();
     imported = [];
     constructed = [];
+    instances = [];
     getDrawContext = loadGetDrawContext(dom.document, dom.window);
   });
 
@@ -209,11 +217,18 @@ describe("@strudel/hydra initHydra() contract", () => {
       config: Record<string, unknown>;
       // feedStrudel calls hydra.synth.s0.init({ src: canvas }).
       synth = { s0: { init() {} } };
+      // A HydraRenderer owns a regl context. Upstream never destroys it — the
+      // counters below are what proves that, and therefore why the widget has
+      // to (see disposeHydraInstance in src/strudel-app.ts).
+      hushes = 0;
+      reglDestroys = 0;
+      regl = { destroy: () => { this.reglDestroys++; } };
       constructor(config: Record<string, unknown>) {
         this.config = config;
         constructed.push(config);
+        instances.push(this as unknown as FakeHydraLike);
       }
-      hush() {}
+      hush() { this.hushes++; }
     }
     return loadHydraModule({
       getDrawContext: getDrawContext as never,
@@ -330,5 +345,94 @@ describe("@strudel/hydra initHydra() contract", () => {
     // Different options ⇒ the old canvas is removed and the engine rebuilt.
     expect(constructed).toHaveLength(2);
     expect(imported[1]).toBe("https://unpkg.com/hydra-synth@1.4.0");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Audit finding 7 — the two upstream facts the widget's replacement path is
+  // built on. If a hydra version bump changes either, this fails here rather
+  // than as a leaked WebGL context in the widget.
+  // ---------------------------------------------------------------------------
+  it("ABANDONS the superseded renderer on an options change — no hush, no regl.destroy", async () => {
+    const { initHydra } = load();
+    const first = await initHydra();
+    const second = await initHydra({ feedStrudel: true });
+
+    expect(second).not.toBe(first);
+    // The whole point: upstream drops the OLD canvas but leaves the old
+    // renderer (and its regl context) running. Nobody but the widget can
+    // release it — see the initHydra wrapper in src/strudel-app.ts.
+    expect(first.hushes).toBe(0);
+    expect(first.reglDestroys).toBe(0);
+    expect(instances).toHaveLength(2);
+  });
+
+  it("clearHydra() would remove the NEW canvas, so it cannot be the disposal tool", async () => {
+    // Why the replacement path calls hush()/regl.destroy() on the previous
+    // instance directly instead of reaching for clearHydra(): clearHydra()
+    // hushes whatever `hydra` currently is (the NEW renderer) and removes the
+    // NEW canvas, leaving the visible layer blank.
+    const { initHydra, clearHydra } = load();
+    const first = await initHydra();
+    const second = await initHydra({ feedStrudel: true });
+    expect(dom.document.getElementById("hydra-canvas")).not.toBeNull();
+
+    clearHydra();
+    expect(dom.document.getElementById("hydra-canvas")).toBeNull();
+    expect(second.hushes).toBe(1); // the new one got hushed…
+    expect(first.hushes).toBe(0); // …and the old one still was not.
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Audit finding 6 — a refactor guard, not a behaviour test.
+//
+// The behaviour was verified in the dev harness with Playwright (teardown during
+// a route-throttled hydra-synth import: 31 ticks after teardown before the fix,
+// 0 after, and #test-canvas left display:none before, cleared after). That needs
+// a real browser, a real WebGL context and a real CDN, so what is pinned here is
+// the shape the fix depends on: a generation captured BEFORE the await and read
+// back after it, and a stale result that returns before anything is installed.
+// -----------------------------------------------------------------------------
+describe("the widget's initHydra wrapper is generation-guarded", () => {
+  const WIDGET = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "src", "strudel-app.ts"),
+    "utf8",
+  );
+  const WRAPPER = /defineWrappedGlobal\("initHydra"[\s\S]*?\n  \}\);/.exec(WIDGET)?.[0];
+
+  it("captures the generation before awaiting and bails on a stale result", () => {
+    expect(WRAPPER).toBeTruthy();
+    const capture = WRAPPER!.indexOf("const generation = hydraGeneration;");
+    const await_ = WRAPPER!.indexOf("await original(merged)");
+    const compare = WRAPPER!.indexOf("generation !== hydraGeneration");
+    const retain = WRAPPER!.indexOf("hydraInstance = instance");
+    const startLoop = WRAPPER!.indexOf("startHydraTickLoop()");
+
+    expect(capture).toBeGreaterThan(-1);
+    expect(capture).toBeLessThan(await_); // read BEFORE the await, or it is useless
+    expect(compare).toBeGreaterThan(await_);
+    // Nothing is installed until the staleness check has passed.
+    expect(compare).toBeLessThan(retain);
+    expect(compare).toBeLessThan(startLoop);
+  });
+
+  it("ends the Hydra lifetime when the layer is struck", () => {
+    // setHydraActive(false) is the single teardown funnel (app.onteardown calls
+    // it too), so the bump belongs there.
+    const strike = /function setHydraActive\(active: boolean\): void \{[\s\S]*?\n\}/
+      .exec(WIDGET)?.[0];
+    expect(strike).toBeTruthy();
+    expect(strike).toContain("hydraGeneration++");
+    expect(strike!.indexOf("if (active) return;")).toBeLessThan(
+      strike!.indexOf("hydraGeneration++"),
+    );
+  });
+
+  it("disposes a superseded renderer without reaching for clearHydra()", () => {
+    expect(WRAPPER).toContain("disposeHydraInstance(previous)");
+    // clearHydra() would remove the canvas the NEW renderer just created — the
+    // fact pinned by the contract test above. (Comments stripped: the code says
+    // so in prose, and that mention is the point.)
+    expect(WRAPPER!.replace(/\/\/[^\n]*/g, "")).not.toContain("clearHydra");
   });
 });
