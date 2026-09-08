@@ -127,7 +127,11 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   #status.error { color: #ef4444; }
   main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   strudel-editor { display: block; width: 100%; }
-  main > div { min-height: 400px; width: 100%; }
+  /* StrudelMirror puts its CodeMirror in a div that is a SIBLING of
+     <strudel-editor>, so it is this wrapper — not the custom element — that has
+     to fill the frame. Without the flex it stopped at its content height and
+     left a seam of bare body below it. */
+  main > div { flex: 1; min-height: 400px; width: 100%; }
   .cm-editor { min-height: 400px; }
 
   /* =========================================================================
