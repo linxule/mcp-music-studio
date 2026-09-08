@@ -509,6 +509,11 @@ note("c3 [e3 g3] a3 g3")
 Complete, working examples. Copy and modify.
 Each template notes which features it showcases.
 
+Every template here is silent VISUALLY. Give the widget something to look at:
+add ONE draw method (.pianoroll() on the melodic layer) or pass the visuals
+parameter (hydra-wash for ambient, hydra-pulse for beats) with a matching
+theme — see topic "visuals" for Hydra backgrounds and audio-reactive shaders.
+
 ## Techno
 // Features: stack(), .bank(), .lpq() resonance, continuous signal panning
 setcps(0.5416)
@@ -677,7 +682,8 @@ The bpm parameter auto-converts to setcps() for you:
 - If code already has setcps(), bpm REPLACES it
 - Best practice: use the bpm parameter and omit setcps() from code
 - Or: write setcps() in code and omit the bpm parameter
-- Don't use both — bpm always wins
+- Don't use both. bpm replaces one simple numeric setcps(); a computed or
+  repeated setter in the code can still win — then omit bpm and trust the code
 
 ### autoplay parameter
 Due to browser autoplay policies, AudioContext starts suspended until
@@ -900,7 +906,8 @@ Rules:
   detectAudio: true — that is hydra's own microphone capture, and it prompts.
 - Quote plain strings with ' not " (see "Single quotes" below).
 - The hydra-synth version is pinned for you, so a bare await initHydra() is
-  reproducible; pass \`src\` only to override it.
+  reproducible. Do NOT pass \`src\` — it is a remote-code-load switch and the
+  pinned version is the tested one.
 - Hydra + one Strudel draw method is fine; the roll draws on top of the shader.
 
 ### Recipe: minimal moving background
@@ -936,7 +943,7 @@ Drive a parameter from a rhythm pattern (values 0–1). Wrap H() in an arrow
 function when you want to remap it.
 
 await initHydra()
-const pulse = "1 0 0.6 0 1 0 0.3 0.3"
+const pulse = "1 0.8 0 1 0.8 0.8 0 1"   // one value per eighth, 1 on each kick
 shape(6, () => 0.15 + 0.35 * H(pulse)(), 0.3)
   .repeat(3, 3)
   .modulateRotate(osc(4, 0.1), 0.4)
@@ -979,8 +986,11 @@ the speakers get. No getUserMedia, no permission prompt — it reacts to the
 pattern that is playing. It is live once Hydra is up; before that the bands
 simply read 0, so a shader never crashes on it.
 
-  a.fft[0..3]      band levels, low → high. fft[0] is the kick band.
+  a.fft[0..3]      band levels, low → high, on log-spaced MUSICAL bands:
+                   fft[0] 20–100 Hz (kick, sub)   fft[1] 100–490 Hz (bass)
+                   fft[2] 490–2400 Hz (mids)      fft[3] 2.4–12 kHz (hats, air)
                    ~0 in silence, ~1 on a loud hit (can go past 1).
+                   setBins(n) re-spaces the bands logarithmically over 20 Hz–12 kHz.
   a.bins           the smoothed band values fft is derived from
   a.vol            mean of bins — overall loudness
   a0(scale, off)   … a3(scale, off): shorthand for
@@ -996,6 +1006,14 @@ simply read 0, so a shader never crashes on it.
 Same formula and defaults as hydra-synth, so hydra tutorials that read a.fft[0]
 or a0() work here verbatim. Barely moving? Lower setCutoff or setScale.
 Twitchy? Raise setSmooth toward 0.8.
+
+Share links and the browser fallback page have no live \`a\` — there it reads
+0 everywhere (the shader still runs, it just does not react). For a visual that
+must work on the share page too, drive it with H(pattern) instead.
+
+Photosensitivity: the reactive recipes flash on every hit. Keep full-frame
+brightness changes under ~3 per second and prefer colour/scale modulation over
+hard strobing; the user may be showing this on a big screen.
 
 PASS IT AS A FUNCTION. \`osc(10, 0, a.fft[0])\` reads the value once, at
 evaluation time, and freezes; \`osc(10, 0, () => a.fft[0])\` is re-read every
@@ -1061,9 +1079,12 @@ Ready-made visual for code that has none of its own:
   hydra-kaleid | hydra-pulse | hydra-wash | hydra-feed — prepends a pinned
   await initHydra() shader before it (hydra-feed also adds a piano roll for
   the shader to mirror, when your code has no draw method).
-Skipped when the code already has a draw method or calls initHydra(), and the
-hydra presets are skipped entirely under prefers-reduced-motion. Writing your
-own visual, as above, is still the better result.
+A preset fills the MISSING layer: a hydra preset is skipped only when the code
+already calls initHydra(); a 2D preset only when the code already has a draw
+method. So hydra-wash under your own .pianoroll() is fine — and recommended.
+"none" leaves the code untouched. Hydra presets are dropped entirely under
+prefers-reduced-motion (the widget tells the model when that happened). Writing
+your own visual, as above, is still the better result.
 
 ## The \`theme\` parameter (editor colour scheme)
 Sets the CodeMirror theme, and the widget derives the visuals stage and scrim

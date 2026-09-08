@@ -116,7 +116,7 @@ export async function handleGetMusicGuide({
  * that only want the neutral receipt.
  */
 export async function handlePlayLivePattern(
-  args: { code: string; title?: string },
+  args: { code: string; title?: string; visuals?: string; theme?: string },
   validate = true,
 ): Promise<CallToolResult> {
   const validation = validate ? await validateStrudelCode(args.code) : undefined;

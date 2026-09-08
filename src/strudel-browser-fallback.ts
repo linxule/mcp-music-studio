@@ -265,6 +265,22 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     };
   });
 
+  // The widget publishes an audio-reactive \`a\` (hydra's audio object over
+  // Strudel's master bus). This page has no such tap, so give the recipes a
+  // silent stand-in: every band reads 0 and the setters are no-ops. The shader
+  // runs; it just does not react — the guide says so.
+  (function () {
+    var zeros = [0, 0, 0, 0];
+    var noop = function () {};
+    var stub = { fft: zeros, bins: zeros, vol: 0, setBins: function (n) { zeros.length = 0; for (var i = 0; i < (n || 4); i++) zeros.push(0); }, setSmooth: noop, setCutoff: noop, setScale: noop, show: noop, hide: noop };
+    var zeroFn = function () { return function () { return 0; }; };
+    var define = function (key, value) {
+      Object.defineProperty(globalThis, key, { configurable: true, enumerable: true, get: function () { return value; }, set: function () {} });
+    };
+    if (typeof globalThis.a === 'undefined') define('a', stub);
+    ['a0', 'a1', 'a2', 'a3'].forEach(function (k) { if (typeof globalThis[k] === 'undefined') define(k, zeroFn); });
+  })();
+
   // Upstream H is  p => () => reify(p).queryArc(t, t)[0].value  — a zero-width
   // query. Under a REST there is no hap, so [0] is undefined and reading
   // .value throws. Hydra calls this every frame, so one rest killed the shader
