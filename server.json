@@ -2,13 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.linxule/mcp-music-studio",
   "title": "Music Studio",
-  "description": "Music studio: ABC notation composition and Strudel live coding with ext-apps UI.",
+  "description": "Music studio: ABC notation composition and Strudel live coding, with interactive ext-apps widgets, harmony analysis, and click-to-play share links.",
   "repository": {
     "url": "https://github.com/linxule/mcp-music-studio",
     "source": "github",
     "id": "1185354744"
   },
-  "version": "0.4.3",
+  "version": "0.5.0",
   "websiteUrl": "https://mcp-music-studio.linxule.workers.dev",
   "icons": [
     {
@@ -21,7 +21,7 @@
     {
       "registryType": "npm",
       "identifier": "mcp-music-studio",
-      "version": "0.4.3",
+      "version": "0.5.0",
       "transport": {
         "type": "stdio"
       }

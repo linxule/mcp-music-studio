@@ -13,7 +13,17 @@
     "skipLibCheck": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    // @strudel/core statically imports @kabelsalat/web, whose package.json is
+    // `"type": "module"` with `main` pointing at an IIFE bundle and only
+    // `module` pointing at real ESM. `bun build --target node` follows `main`
+    // and fails the build with "No matching export ... for import SalatRepl".
+    // Bun's bundler honours tsconfig paths, so pin the ESM entry here — the
+    // same upstream packaging bug vitest.config.ts already aliases around, and
+    // the same fix. (The Worker's esbuild picks `module` on its own.)
+    "paths": {
+      "@kabelsalat/web": ["./node_modules/@kabelsalat/web/dist/index.mjs"]
+    }
   },
   "include": ["src", "server.ts", "main.ts"]
 }

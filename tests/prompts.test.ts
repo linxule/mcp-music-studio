@@ -45,6 +45,8 @@ describe("music prompts", () => {
     expect(text).toContain("dark");
     expect(text).toContain("play-live-pattern");
     expect(text).toContain("get-strudel-guide");
+    // A pattern with no visual renders as a bare code box; point at the topic.
+    expect(text).toContain('topic "visuals"');
   });
 
   it("harmonize-melody embeds the melody and targets play-sheet-music", async () => {

@@ -12,31 +12,33 @@ import {
   registerAppResource,
   registerAppTool,
 } from "@modelcontextprotocol/ext-apps/server";
+import ABCJS from "abcjs";
 import {
   createPlaySheetMusicResult,
   type ParseOnlyFn,
 } from "./src/server-logic.js";
-import {
-  openPlayerInBrowser,
-  generatePlayerHtml,
-} from "./src/browser-fallback.js";
+import type { ParseOnlyFn as AbcParseOnlyFn } from "./src/shared/abc-to-strudel.js";
+import { generatePlayerHtml } from "./src/browser-fallback.js";
 import {
   STRUDEL_GUIDE_TOPICS,
   STRUDEL_GUIDES,
   type StrudelGuideTopic,
 } from "./src/strudel-guide.js";
 import { ABC_GUIDE_TOPICS, ABC_GUIDES } from "./src/abc-guide.js";
+import { generateStrudelPlayerHtml } from "./src/strudel-browser-fallback.js";
+// The disk-writing/browser-launching half now lives in its own module so the
+// two generators above stay node-free (the Worker imports them for /play, /score).
 import {
-  generateStrudelPlayerHtml,
+  openPlayerInBrowser,
   openStrudelInBrowser,
-} from "./src/strudel-browser-fallback.js";
+} from "./src/open-in-browser.js";
 import { VERSION } from "./src/version.js";
 import {
   SHEET_RESOURCE_URI,
   STRUDEL_RESOURCE_URI,
   SERVER_INSTRUCTIONS,
   advertiseUiExtension,
-  PLAY_TOOL_ANNOTATIONS,
+  playToolAnnotations,
   GUIDE_TOOL_ANNOTATIONS,
   SEARCH_TOOL_ANNOTATIONS,
   SHEET_CSP,
@@ -57,10 +59,22 @@ import {
   SEARCH_DOCS_DESCRIPTION,
   searchDocsInputSchema,
   searchMusicDocs,
+  ANALYZE_HARMONY_ANNOTATIONS,
+  ANALYZE_HARMONY_DESCRIPTION,
+  analyzeHarmonyInputSchema,
+  buildAnalyzeHarmonyResult,
+  CONVERT_ABC_ANNOTATIONS,
+  CONVERT_ABC_DESCRIPTION,
+  convertAbcInputSchema,
+  buildConvertAbcResult,
   registerMusicPrompts,
   SERVER_ICONS,
   WEBSITE_URL,
+  uiToolMeta,
+  attachPlayLink,
 } from "./src/shared/tool-defs.js";
+import { buildShareQueryUrl, toPlayShareArgs } from "./src/shared/share-url.js";
+import { validateStrudelCode } from "./src/shared/strudel-validate.js";
 
 const DIST_DIR = import.meta.filename.endsWith(".ts")
   ? path.join(import.meta.dirname, "dist")
@@ -71,10 +85,12 @@ const DIST_DIR = import.meta.filename.endsWith(".ts")
 // =============================================================================
 
 export async function handlePlaySheetMusic(
-  { abcNotation }: { abcNotation: string },
+  args: { abcNotation: string; instrument?: string },
   parseOnly?: ParseOnlyFn,
 ): Promise<CallToolResult> {
-  return createPlaySheetMusicResult(abcNotation, parseOnly);
+  // `instrument` rides along so the result text can say which GM program the
+  // requested name actually resolved to (or that it didn't).
+  return createPlaySheetMusicResult(args, parseOnly);
 }
 
 export async function handleGetMusicGuide({
@@ -85,11 +101,39 @@ export async function handleGetMusicGuide({
   return { content: [{ type: "text", text: ABC_GUIDES[topic] }] };
 }
 
-export async function handlePlayLivePattern(args: {
-  code: string;
-  title?: string;
-}): Promise<CallToolResult> {
-  return buildPlayLiveResult(args);
+/**
+ * Evaluate the pattern before answering.
+ *
+ * The REPL widget is the feedback in an MCP-app host, but a terminal client
+ * gets only this text — so run the code headlessly and say what it does.
+ *
+ * "Run the code" means running what an LLM wrote, so it does NOT run here: the
+ * validator forks an env-stripped, heap-capped, SIGKILL-able child and
+ * evaluates inside a node:vm context there (src/shared/strudel-validate.ts and
+ * the threat model in src/shared/strudel-validate-host.ts). It never throws and
+ * always answers, so neither a hostile nor a non-terminating pattern can fail
+ * the tool call or wedge the server. `validate: false` opts out for callers
+ * that only want the neutral receipt.
+ */
+export async function handlePlayLivePattern(
+  args: { code: string; title?: string },
+  validate = true,
+): Promise<CallToolResult> {
+  const validation = validate ? await validateStrudelCode(args.code) : undefined;
+  return buildPlayLiveResult(args, validation);
+}
+
+export async function handleAnalyzeHarmony(
+  args: z.infer<typeof analyzeHarmonyInputSchema>,
+): Promise<CallToolResult> {
+  return buildAnalyzeHarmonyResult(args);
+}
+
+export async function handleConvertAbcToStrudel(
+  args: z.infer<typeof convertAbcInputSchema>,
+  parseOnly: AbcParseOnlyFn = ABCJS.parseOnly as unknown as AbcParseOnlyFn,
+): Promise<CallToolResult> {
+  return buildConvertAbcResult(args, parseOnly);
 }
 
 export async function handleGetStrudelGuide({
@@ -139,6 +183,48 @@ export function createServer(options?: ServerOptions): McpServer {
   // and could never fire before tools/list in stateless HTTP anyway.
   const inlineMode = defaultRenderMode === "auto";
 
+  // Hints follow the mode: only --render-mode browser writes a file and opens
+  // an app, and only then is the tool not read-only. See playToolAnnotations.
+  const playAnnotations = playToolAnnotations(defaultRenderMode);
+
+  /**
+   * Register a play tool, with its ext-apps widget only in "auto" mode.
+   *
+   * `--render-mode html|browser` exists precisely because the operator knows the
+   * client can't render a widget. Advertising `_meta.ui.resourceUri` anyway let
+   * a *capable* host render the inline widget **as well as** receiving the HTML
+   * blob / opening a browser window — two players for one call. In the explicit
+   * modes the tool is registered plainly, with no UI metadata at all, so there
+   * is exactly one rendering path.
+   */
+  const registerPlayTool = (
+    name: string,
+    config: {
+      title: string;
+      description: string;
+      inputSchema: z.ZodTypeAny;
+      resourceUri: string;
+    },
+    handler: (args: never) => Promise<CallToolResult>,
+  ) => {
+    const base = {
+      title: config.title,
+      description: config.description,
+      inputSchema: config.inputSchema,
+      annotations: playAnnotations,
+    };
+    if (inlineMode) {
+      registerAppTool(
+        server,
+        name,
+        { ...base, _meta: uiToolMeta(config.resourceUri) },
+        handler as never,
+      );
+    } else {
+      server.registerTool(name, base as never, handler as never);
+    }
+  };
+
   // ---------------------------------------------------------------------------
   // Tool: play-sheet-music
   // ---------------------------------------------------------------------------
@@ -150,14 +236,25 @@ export function createServer(options?: ServerOptions): McpServer {
     if (result.isError) return result;
 
     // Explicit --render-mode flag delivers HTML / opens a browser file.
-    if (defaultRenderMode === "auto") return result;
+    if (defaultRenderMode === "auto") {
+      // No KV here, so only the stateless query-string form is available; a
+      // score too long for a URL simply gets no link (and the honest tail
+      // stays honest). The page is served by the hosted worker, which is the
+      // only origin a stdio server can offer.
+      return attachPlayLink(
+        result,
+        buildShareQueryUrl({ kind: "score", args }),
+      );
+    }
 
     const playerOpts = {
       abcNotation: args.abcNotation,
+      title: args.title,
       style: args.style,
       instrument: args.instrument,
       tempo: args.tempo,
       swing: args.swing,
+      drumIntro: args.drumIntro,
       transpose: args.transpose,
     };
 
@@ -206,8 +303,7 @@ export function createServer(options?: ServerOptions): McpServer {
     return result;
   };
 
-  registerAppTool(
-    server,
+  registerPlayTool(
     "play-sheet-music",
     {
       title: "Play Sheet Music",
@@ -215,10 +311,9 @@ export function createServer(options?: ServerOptions): McpServer {
         PLAY_SHEET_BASE_DESCRIPTION +
         (inlineMode ? PLAY_SHEET_EXT_APPS_SUFFIX : PLAY_SHEET_FALLBACK_SUFFIX),
       inputSchema: playSheetInputSchema,
-      annotations: PLAY_TOOL_ANNOTATIONS,
-      _meta: { ui: { resourceUri: SHEET_RESOURCE_URI } },
+      resourceUri: SHEET_RESOURCE_URI,
     },
-    playHandler,
+    playHandler as never,
   );
 
   // ---------------------------------------------------------------------------
@@ -288,12 +383,32 @@ export function createServer(options?: ServerOptions): McpServer {
   ): Promise<CallToolResult> => {
     const result = await handlePlayLivePattern(args);
 
-    if (defaultRenderMode === "auto") return result;
+    if (defaultRenderMode === "auto") {
+      // Broken Strudel still gets the link: it opens the same code in an
+      // editable REPL, which is where a fix happens.
+      // toPlayShareArgs folds the `visuals` preset into the code, so the linked
+      // page shows the same animation the widget would.
+      return attachPlayLink(
+        result,
+        buildShareQueryUrl({ kind: "play", args: toPlayShareArgs(args) }),
+        { keepOnError: true },
+      );
+    }
 
+    // The standalone page gets the SAME reduction the share link gets, so all
+    // three paths (widget, share URL, fallback page) agree on what was asked
+    // for: `visuals` is folded into the code by applyVisualPreset and `bpm` is
+    // clamped to the tool's range. `theme` is dropped here as it is everywhere
+    // else — it colours the widget's CodeMirror chrome, and the standalone page
+    // renders its own, with no theme switch to hand it to.
+    const shareArgs = toPlayShareArgs(args);
     const playerOpts = {
-      code: args.code,
-      bpm: args.bpm,
-      autoplay: args.autoplay,
+      code: shareArgs.code,
+      bpm: shareArgs.bpm,
+      autoplay: shareArgs.autoplay,
+      // The generator gained an optional `title`; spread so this compiles
+      // whether or not that option is present in the signature yet.
+      ...(shareArgs.title ? { title: shareArgs.title } : {}),
     };
 
     if (defaultRenderMode === "html") {
@@ -341,8 +456,7 @@ export function createServer(options?: ServerOptions): McpServer {
     return result;
   };
 
-  registerAppTool(
-    server,
+  registerPlayTool(
     "play-live-pattern",
     {
       title: "Play Live Pattern",
@@ -350,10 +464,9 @@ export function createServer(options?: ServerOptions): McpServer {
         PLAY_LIVE_BASE_DESCRIPTION +
         (inlineMode ? PLAY_LIVE_EXT_APPS_SUFFIX : PLAY_LIVE_FALLBACK_SUFFIX),
       inputSchema: playLiveInputSchema,
-      annotations: PLAY_TOOL_ANNOTATIONS,
-      _meta: { ui: { resourceUri: STRUDEL_RESOURCE_URI } },
+      resourceUri: STRUDEL_RESOURCE_URI,
     },
-    strudelPlayHandler,
+    strudelPlayHandler as never,
   );
 
   // ---------------------------------------------------------------------------
@@ -389,6 +502,34 @@ export function createServer(options?: ServerOptions): McpServer {
       searchMusicDocs(query, library, {
         apiKey: process.env.CONTEXT7_API_KEY,
       }),
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: analyze-harmony (pure music theory, no UI)
+  // ---------------------------------------------------------------------------
+  server.registerTool(
+    "analyze-harmony",
+    {
+      title: "Analyze Harmony",
+      description: ANALYZE_HARMONY_DESCRIPTION,
+      inputSchema: analyzeHarmonyInputSchema,
+      annotations: ANALYZE_HARMONY_ANNOTATIONS,
+    },
+    handleAnalyzeHarmony,
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: convert-abc-to-strudel (scored composition → live pattern)
+  // ---------------------------------------------------------------------------
+  server.registerTool(
+    "convert-abc-to-strudel",
+    {
+      title: "Convert ABC to Strudel",
+      description: CONVERT_ABC_DESCRIPTION,
+      inputSchema: convertAbcInputSchema,
+      annotations: CONVERT_ABC_ANNOTATIONS,
+    },
+    async (args) => handleConvertAbcToStrudel(args),
   );
 
   // ---------------------------------------------------------------------------

@@ -9,15 +9,37 @@
 <body>
   <main class="main">
     <header class="header">
+      <span id="piece-title" class="piece-title" hidden></span>
       <div id="audio-controls" class="audio-controls">
         <!-- SynthController will inject audio controls here -->
       </div>
       <div id="toolbar" class="toolbar">
         <div id="style-selector" class="toolbar-group"></div>
         <div id="instrument-selector" class="toolbar-group"></div>
+        <div id="soundfont-selector" class="toolbar-group"></div>
       </div>
       <span id="status" class="status" role="status" aria-live="polite">Loading score…</span>
     </header>
+
+    <!-- Collapsible ABC source editor. Hidden until the toolbar's "Edit"
+         button is pressed; edits re-render the score below it. -->
+    <section id="editor-pane" class="editor-pane" hidden>
+      <label class="control-label" for="abc-editor">ABC source</label>
+      <textarea
+        id="abc-editor"
+        class="abc-editor"
+        rows="6"
+        spellcheck="false"
+        autocomplete="off"
+        autocapitalize="off"
+        autocorrect="off"
+        aria-describedby="editor-hint"
+      ></textarea>
+      <p id="editor-message" class="editor-message" role="status" aria-live="polite" hidden></p>
+      <p id="editor-hint" class="editor-hint">
+        Re-renders as you type. ⌘/Ctrl+Enter to re-render and play.
+      </p>
+    </section>
 
     <section class="sheet-section">
       <div id="sheet-music" class="sheet-music-container">

@@ -18,6 +18,15 @@
   "rules": [
     { "type": "Text", "globs": ["**/*.html"], "fallthrough": true }
   ],
+  // The Worker has its own node_modules, so `abcjs` imported from worker/src
+  // and `abcjs` imported from ../src (abc-transpose, reached through the
+  // browser-fallback generators the /score route renders) resolve to two
+  // physical copies of the same 6.7.0 package — esbuild bundled both, for
+  // +1.1 MB raw / +217 KiB gzip of exact duplicate. Pinning the specifier
+  // collapses them back to one.
+  "alias": {
+    "abcjs": "./node_modules/abcjs"
+  },
   "observability": {
     "enabled": true
   },

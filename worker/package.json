@@ -9,7 +9,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.0",
+    "abcjs": "~6.7.0",
     "agents": "^0.4.1",
+    "tonal": "^6.4.3",
     "zod": "^4.1.13"
   },
   "devDependencies": {

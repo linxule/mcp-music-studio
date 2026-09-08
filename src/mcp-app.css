@@ -72,12 +72,29 @@ body {
   gap: 6px;
 }
 
+/* Piece title — the tool's `title` argument, else the ABC's T: header.
+   Hidden (via the `hidden` attribute) when the piece has neither. */
+.piece-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
 #audio-controls:empty {
   display: none;
 }
 
 #audio-controls:not(:empty) ~ #status {
   display: none;
+}
+
+/* …but never swallow an error. Once the transport is loaded this rule used to
+   hide every failure message (a rejected download, an edit that wouldn't
+   parse) behind the play controls. */
+#audio-controls:not(:empty) ~ #status.error {
+  display: block;
 }
 
 .audio-controls {
@@ -157,6 +174,15 @@ body {
   line-height: 1;
 }
 
+/* Text-label buttons (MIDI) sit next to the single-glyph ones without
+   towering over them. */
+.toolbar-btn.toolbar-btn-text {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 6px 10px;
+}
+
 .toolbar-btn:hover {
   background: var(--color-border);
 }
@@ -168,6 +194,81 @@ body {
 
 .toolbar-btn:disabled:hover {
   background: var(--color-card-bg);
+}
+
+/* Toggle buttons (Edit) read as pressed rather than merely hovered. */
+.toolbar-btn[aria-pressed="true"] {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #ffffff;
+}
+
+.toolbar-btn[aria-pressed="true"]:hover {
+  background: var(--color-primary);
+}
+
+/* ABC source editor (collapsible pane between the toolbar and the score) */
+.editor-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* `display: flex` above would otherwise defeat the `hidden` attribute. */
+.editor-pane[hidden] {
+  display: none;
+}
+
+.abc-editor {
+  width: 100%;
+  box-sizing: border-box;
+  /* ~6 rows; `rows="6"` is the no-CSS floor, this is the visual one. */
+  min-height: 9.5rem;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-card-bg);
+  color: var(--color-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  tab-size: 2;
+  /* Soft-wrap rather than scroll horizontally. ABC is line-oriented and
+     `white-space: pre` would read better, but the widget iframe is often only
+     ~400px wide: a long tune line then runs off to the right with no visible
+     affordance, and the box looks empty. Wrapping keeps every character
+     reachable; newlines and leading spaces still survive verbatim. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
+}
+
+.abc-editor:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -1px;
+}
+
+/* Inline parse feedback, directly under the textarea. */
+.editor-message {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--color-danger);
+}
+
+/* Non-fatal abcjs warnings — the score still rendered, so don't shout. */
+.editor-message.warn {
+  color: var(--color-text-muted);
+}
+
+.editor-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
 }
 
 /* Loading skeleton / spinner (pre-render and streaming states) */

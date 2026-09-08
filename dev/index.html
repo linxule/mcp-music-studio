@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP Music Studio — dev host harness</title>
+  <link rel="stylesheet" href="./host.css">
+</head>
+<body>
+  <header class="bar">
+    <strong>ext-apps dev host</strong>
+    <label>widget
+      <select id="widget">
+        <option value="strudel">strudel-app</option>
+        <option value="abc">mcp-app (ABC)</option>
+      </select>
+    </label>
+    <label>frame width
+      <select id="frame-width">
+        <option value="">full</option>
+        <option value="820">820px</option>
+        <option value="560">560px</option>
+        <option value="380">380px</option>
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" id="sandboxed"> sandbox iframe</label>
+    <button id="reload">Reload frame</button>
+    <button id="teardown">Send teardown</button>
+    <span id="state" class="state">idle</span>
+  </header>
+
+  <main class="cols">
+    <section class="left">
+      <label class="field">preset
+        <select id="preset"></select>
+      </label>
+      <textarea id="args" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="send" class="primary">Send tool input</button>
+        <button id="send-partial">Send partial</button>
+        <button id="cancel">Send cancelled</button>
+        <button id="clear-log">Clear log</button>
+      </div>
+      <pre id="log" class="log"></pre>
+    </section>
+    <section class="right">
+      <div id="frame-wrap" class="frame-wrap"></div>
+    </section>
+  </main>
+
+  <script type="module" src="./host.ts"></script>
+</body>
+</html>

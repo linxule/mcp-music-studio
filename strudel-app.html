@@ -15,7 +15,10 @@
         <button id="download-btn" class="control-btn" title="Download recording" aria-label="Download recording" disabled>↓</button>
         <button id="send-btn" class="control-btn" title="Send current pattern to chat" aria-label="Send current pattern to chat" hidden>Send to chat</button>
         <button id="viz-btn" class="control-btn" title="Toggle visuals" aria-label="Toggle visuals" aria-pressed="false">Visuals</button>
+        <button id="stage-btn" class="control-btn" title="Stage mode — hide the code and let the visuals fill the frame" aria-label="Stage mode" aria-pressed="false">Stage</button>
         <button id="fullscreen-btn" class="control-btn" title="Toggle fullscreen" aria-label="Toggle fullscreen">⛶</button>
+        <!-- args.title, rendered by the widget; doubles as the WAV filename stem. -->
+        <span id="pattern-title" class="pattern-title" hidden></span>
         <span id="status" class="status" role="status" aria-live="polite">Ready</span>
       </div>
     </header>
@@ -28,6 +31,20 @@
         until a pattern includes a viz method (.pianoroll() etc.) or the user
         toggles "Visuals"; the code editor sits on top with a translucent scrim.
         JS owns the DPR-correct backing size.
+      -->
+      <!--
+        NOTE: there is deliberately NO static #hydra-canvas here, unlike
+        #test-canvas above. @strudel/hydra's initHydra() uses the EXISTENCE of
+        #hydra-canvas as its own "already initialised" flag:
+
+            if (!document.getElementById("hydra-canvas")) { ...create + init... }
+
+        so pre-creating it makes initHydra() a silent no-op and the pattern dies
+        on "osc is not defined". Instead the widget lets Hydra create the canvas
+        (as a position:fixed child of <body>) and adopts it into .repl-section
+        immediately via a MutationObserver — see adoptHydraCanvas() in
+        src/strudel-app.ts. Agents enable it with `await initHydra()` at the top
+        of a pattern; see guide topic "visuals".
       -->
       <canvas id="test-canvas" class="viz-canvas"></canvas>
       <div id="strudel-container" class="strudel-container">

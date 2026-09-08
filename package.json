@@ -1,8 +1,8 @@
 {
   "name": "mcp-music-studio",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "type": "module",
-  "description": "Two-mode MCP music studio: scored composition (ABC notation) and live performance (Strudel). Interactive ext-apps UI with sheet music rendering, 30+ instruments, style presets, and live coding REPL.",
+  "description": "Two-mode MCP music studio: scored composition (ABC notation) and live performance (Strudel live coding). Interactive ext-apps widgets with sheet music rendering, in-place editing and MIDI/WAV export, all 128 General MIDI instruments, style presets, and a live REPL with Hydra shader visuals.",
   "keywords": [
     "mcp",
     "model-context-protocol",
@@ -33,7 +33,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun scripts/sync-version.mjs && tsc --noEmit && cross-env INPUT=mcp-app.html vite build && cross-env INPUT=strudel-app.html vite build && tsc -p tsconfig.server.json && bun build server.ts --outdir dist --target node && bun build main.ts --outfile dist/index.js --target node --external \"./server.js\" --banner \"#!/usr/bin/env node\"",
+    "build": "bun scripts/sync-version.mjs && tsc --noEmit && cross-env INPUT=mcp-app.html vite build && cross-env INPUT=strudel-app.html vite build && tsc -p tsconfig.server.json && bun build server.ts --outdir dist --target node && bun build src/shared/strudel-validate-child.ts --outdir dist --target node && bun build main.ts --outfile dist/index.js --target node --external \"./server.js\" --banner \"#!/usr/bin/env node\"",
     "test": "bunx vitest run",
     "test:watch": "bunx vitest",
     "watch": "cross-env INPUT=mcp-app.html vite build --watch",
@@ -46,14 +46,20 @@
     "deploy": "bun run build && wrangler deploy",
     "preview": "bun run build && wrangler dev"
   },
+  "engines": {
+    "node": ">=20.11"
+  },
   "dependencies": {
-    "@cloudflare/vite-plugin": "^1.30.0",
     "@modelcontextprotocol/ext-apps": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.24.0",
-    "abcjs": "^6.4.4",
+    "@strudel/core": "1.2.6",
+    "@strudel/mini": "1.2.6",
+    "@strudel/tonal": "1.2.6",
+    "@strudel/transpiler": "1.2.6",
+    "abcjs": "^6.7.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
-    "wrangler": "^4.76.0",
+    "tonal": "^6.4.3",
     "zod": "^4.1.13"
   },
   "devDependencies": {
@@ -65,7 +71,8 @@
     "typescript": "^5.9.3",
     "vite": "^6.0.0",
     "vite-plugin-singlefile": "^2.3.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "wrangler": "^4.76.0"
   },
   "types": "dist/server.d.ts",
   "exports": {

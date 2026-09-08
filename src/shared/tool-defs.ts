@@ -14,6 +14,21 @@ import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { STYLE_NAMES } from "../music-logic.js";
 import { DEFAULT_ABC_NOTATION } from "../abc-guide.js";
+import { analyzeHarmony, HARMONY_TASKS } from "./harmony.js";
+import {
+  convertAbcToStrudel,
+  DEFAULT_STRUDEL_SOUND,
+  type AbcToStrudelArgs,
+  type ParseOnlyFn,
+} from "./abc-to-strudel.js";
+import { EDITOR_THEMES, VISUAL_PRESETS } from "./visual-presets.js";
+// Type-only: the validator itself (and the ~200 KiB of Strudel behind it) is
+// imported by each transport's handler, not by this module. The shape comes
+// from the types leaf rather than from strudel-validate.ts on purpose: this
+// module is shared with the Cloudflare Worker, which typechecks against
+// @cloudflare/workers-types, and the validator reaches node:child_process and
+// node:vm (see strudel-validate-host.ts) — neither of which exists in workerd.
+import type { StrudelValidation } from "./strudel-validation-types.js";
 
 // -----------------------------------------------------------------------------
 // Resource URIs
@@ -48,7 +63,9 @@ export const SERVER_INSTRUCTIONS =
   "topic 'genres' for templates, 'styles' for accompaniment presets, 'instruments' for the list) " +
   "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'). Use search-music-docs only " +
   "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
-  '("C", "Am7") above the notes and set a style.';
+  '("C", "Am7") above the notes and set a style. ' +
+  "If unsure about chord spelling or the key, call analyze-harmony; " +
+  "convert-abc-to-strudel turns a scored melody into a live pattern.";
 
 // -----------------------------------------------------------------------------
 // Server identity — icon + website (emitted verbatim in serverInfo by both
@@ -86,12 +103,44 @@ export const WORKER_SERVER_ICONS = [
 // Tool annotations (MCP hints — all tools here are read-only, non-destructive)
 // -----------------------------------------------------------------------------
 
+/**
+ * The play tools mutate no server state, but they are NOT idempotent: each call
+ * instantiates a widget and starts audio, so repeating one with the same
+ * arguments has an additional effect on the world. `idempotentHint: true` would
+ * invite a client to coalesce or silently retry a call the user can hear.
+ */
 export const PLAY_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
   destructiveHint: false,
-  idempotentHint: true,
+  idempotentHint: false,
   openWorldHint: false,
 } as const;
+
+/**
+ * Play-tool annotations for a given local render mode.
+ *
+ * `readOnlyHint` was hard-coded `true`, which is a lie in `--render-mode
+ * browser`: that mode writes an HTML file under `--output-dir` and shells out to
+ * the OS to open it. A client reading the hint may decide the call is safe to
+ * make without asking — so the hint has to follow the mode.
+ *
+ * `html` and `auto` stay read-only on purpose: `html` returns the player as an
+ * inline resource block (a pure string build, nothing touched), and `auto`
+ * returns text plus a link. Neither writes anything, so marking them
+ * non-read-only would just be a different inaccuracy.
+ */
+export function playToolAnnotations(renderMode: "auto" | "html" | "browser") {
+  if (renderMode !== "browser") return PLAY_TOOL_ANNOTATIONS;
+  return {
+    // Writes a file to disk...
+    readOnlyHint: false,
+    // ...but only ever a new player page; it destroys nothing.
+    destructiveHint: false,
+    idempotentHint: false,
+    // ...and launches the user's browser, which is squarely "the open world".
+    openWorldHint: true,
+  } as const;
+}
 
 export const GUIDE_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
@@ -123,8 +172,37 @@ export const STRUDEL_CSP: { resourceDomains: string[]; connectDomains: string[] 
     "https://cdn.jsdelivr.net",
     "https://felixroos.github.io",
     "https://tidalcycles.github.io",
+    // samples('shabda:...') resolves through shabda.ndre.gr, which then serves
+    // the audio from cdn.freesound.org. Both are needed or the fetch fails and
+    // the sound is never registered (silent layer, no error).
+    "https://shabda.ndre.gr",
+    "https://cdn.freesound.org",
   ],
 };
+
+// -----------------------------------------------------------------------------
+// UI tool _meta — single source for both transports
+// -----------------------------------------------------------------------------
+
+/**
+ * `_meta` linking a tool to its ext-apps UI resource.
+ *
+ * Both spellings are emitted: the nested `ui.resourceUri` of the current spec
+ * and the flat legacy `"ui/resourceUri"` some hosts still read. `registerAppTool`
+ * from @modelcontextprotocol/ext-apps back-fills whichever is missing, but the
+ * Worker calls `registerTool` directly (the ext-apps helper isn't in its bundle),
+ * so the pair used to be hand-written in two places and could silently drift.
+ * tests/transport-parity.test.ts pins the two transports together.
+ */
+export function uiToolMeta(resourceUri: string): {
+  ui: { resourceUri: string };
+  "ui/resourceUri": string;
+} {
+  return {
+    ui: { resourceUri },
+    "ui/resourceUri": resourceUri,
+  };
+}
 
 // -----------------------------------------------------------------------------
 // play-sheet-music
@@ -144,6 +222,28 @@ export const PLAY_SHEET_EXT_APPS_SUFFIX =
 export const PLAY_SHEET_FALLBACK_SUFFIX =
   "\n\nThe music player is delivered as HTML or opened in the browser automatically.";
 
+// -----------------------------------------------------------------------------
+// The honest tail — and the click-to-play link that can now replace it
+// -----------------------------------------------------------------------------
+//
+// Neither transport can tell whether the caller renders ext-apps widgets (the
+// SDK strips inbound capabilities.extensions, and the stateless worker never
+// replays `initialize`), so both play tools end on a sentence that refuses to
+// claim playback. When a hosted player URL is available that sentence changes
+// from a dead end into an instruction — see `attachPlayLink`.
+
+export const NO_INLINE_PLAYER_TAIL =
+  "If you don't see a player here, this client can't play it inline, so nothing has played yet.";
+
+export const NO_INLINE_PLAYER_TAIL_WITH_LINK =
+  "If you don't see a player here, this client can't play it inline — click the link below to play it in your browser.";
+
+/** Prefix of the line carrying the hosted player URL. */
+export const PLAY_LINK_PREFIX = "\u25b6 Play in browser: ";
+
+/** `name` of the resource_link block, so clients render a sensible label. */
+export const PLAY_LINK_NAME = "Play in browser";
+
 /**
  * Honest confirmation for transports that don't server-side validate ABC (the worker).
  * Deliberately does NOT assert that anything played — a terminal client sees only this
@@ -151,12 +251,95 @@ export const PLAY_SHEET_FALLBACK_SUFFIX =
  */
 export const PLAY_SHEET_NEUTRAL_TEXT =
   "Sheet music ready. It renders as an interactive, playable score in MCP-app hosts " +
-  "(e.g. Claude Desktop, claude.ai). If you don't see a player here, this client can't play it " +
-  "inline, so nothing has played yet.";
+  `(e.g. Claude Desktop, claude.ai). ${NO_INLINE_PLAYER_TAIL}`;
+
+/**
+ * Add the "Tier 3" click-to-play link to a play-tool result.
+ *
+ * Two content blocks, because clients disagree about what they render: the URL
+ * goes into the text (terminals show text and nothing else) *and* as a
+ * `resource_link`, which Claude Code and other structured clients turn into an
+ * actual link. The honest tail is swapped for its click-the-link variant at the
+ * same time, so the result never simultaneously offers a player and says
+ * nothing has played.
+ *
+ * A no-op when there is no URL (nothing fit, or the transport has no host) or
+ * when the result is an error — a link to a page that renders broken notation
+ * helps nobody.
+ *
+ * `keepOnError` is the one exception, and it exists for play-live-pattern:
+ * broken ABC renders as a broken score, but broken Strudel lands in an EDITABLE
+ * REPL, so the link is where the user goes to fix it.
+ *
+ * Not every result ends on the honest tail — `createPlaySheetMusicResult`'s
+ * "parsed with warnings" branch does not — and when the swap finds nowhere to
+ * land, the `resource_link` used to be appended alone: a bare link block that no
+ * prose in the result mentions or explains. So when nothing was swapped, the
+ * link line is appended as its own text block first, and the `resource_link`
+ * always has something introducing it.
+ */
+export function attachPlayLink(
+  result: CallToolResult,
+  // `null` is what buildShareQueryUrl returns for a payload too long to fit in
+  // a URL; `undefined` is "this transport had nowhere to host it".
+  url: string | null | undefined,
+  { keepOnError = false }: { keepOnError?: boolean } = {},
+): CallToolResult {
+  if (!url || (result.isError && !keepOnError)) return result;
+
+  let linked = false;
+  const content = result.content.map((block) => {
+    // The tail is not always final — the local server appends a --render-mode
+    // hint after it — so swap it in place and put the link at the very end.
+    if (linked || block.type !== "text" || !block.text.includes(NO_INLINE_PLAYER_TAIL)) {
+      return block;
+    }
+    linked = true;
+    const swapped = block.text.replace(
+      NO_INLINE_PLAYER_TAIL,
+      NO_INLINE_PLAYER_TAIL_WITH_LINK,
+    );
+    return { ...block, text: `${swapped}\n\n${PLAY_LINK_PREFIX}${url}` };
+  });
+
+  return {
+    ...result,
+    content: [
+      ...content,
+      // No tail to swap → the link has not been named anywhere yet. Say it in
+      // text before handing over a link block on its own.
+      ...(linked
+        ? []
+        : [{ type: "text" as const, text: `${PLAY_LINK_PREFIX}${url}` }]),
+      {
+        type: "resource_link" as const,
+        uri: url,
+        name: PLAY_LINK_NAME,
+        mimeType: "text/html",
+      },
+    ],
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Input bounds
+//
+// Every free-form field below is bounded. Unbounded strings/arrays are the
+// cheapest way to make a server do unbounded work: a multi-megabyte `code` or
+// `abcNotation` is parsed, hashed, URL-encoded for the share link, and (on the
+// worker) written to KV. These caps are far above any real piece of music.
+// -----------------------------------------------------------------------------
+
+/** Max length of a score or pattern, in characters. */
+export const MAX_SOURCE_CHARS = 64 * 1024;
+
+/** Max entries in a note/chord list for analyze-harmony. */
+export const MAX_HARMONY_ITEMS = 64;
 
 export const playSheetInputSchema = z.object({
   abcNotation: z
     .string()
+    .max(MAX_SOURCE_CHARS)
     .default(DEFAULT_ABC_NOTATION)
     .describe(
       'ABC notation string. Include chord symbols ("C", "Am7") above notes for auto-accompaniment with style presets.',
@@ -164,13 +347,20 @@ export const playSheetInputSchema = z.object({
   title: z
     .string()
     .optional()
-    .describe("Piece title (overrides T: in ABC). Displayed in the widget header."),
+    .describe(
+      "Piece title (overrides T: in ABC). Shown in the widget header and used as " +
+        "the filename stem for the WAV/MIDI downloads.",
+    ),
   instrument: z
     .string()
     .optional()
     .describe(
-      "Default instrument (e.g. 'Flute', 'Cello', 'Acoustic Grand Piano', 'Alto Sax'). " +
-        "Use get-music-guide with topic 'instruments' for the full list.",
+      "Default instrument for the main voice — any of the 128 General MIDI names " +
+        "(e.g. 'Flute', 'Cello', 'Banjo', 'Alto Sax'). Matching is fuzzy and picks the " +
+        "lowest GM program among the hits, so 'sax' gives Soprano Sax; the result text " +
+        "names what you actually got whenever it isn't what you asked for. " +
+        "Use get-music-guide with topic 'instruments' for the full list, or %%MIDI program N " +
+        "in the ABC to set a program per voice.",
     ),
   style: z
     .enum(STYLE_NAMES)
@@ -189,17 +379,35 @@ export const playSheetInputSchema = z.object({
   swing: z
     .number()
     .min(0)
-    .max(100)
+    .max(75)
     .optional()
     .describe(
-      "Swing percentage (0-100). 0=straight, 33=light swing, 66=heavy swing. Great for jazz and blues.",
+      "Swing as the share of the beat given to its first half. " +
+        "50 = straight, 60 \u2248 3:2, 66 = triplet swing, 75 = maximum " +
+        "(dotted eighth + sixteenth). Anything at or below 50 is treated as no swing. " +
+        "Only takes effect in an x/4 or x/8 meter.",
+    ),
+  drumIntro: z
+    .number()
+    .int()
+    .min(0)
+    .max(8)
+    .optional()
+    .describe(
+      "Bars of count-in before the melody starts (0-8). " +
+        "Needs a style preset \u2014 the count-in is played by that style's drum kit, " +
+        "so without a style you get silent bars instead.",
     ),
   transpose: z
     .number()
+    .int()
     .min(-12)
     .max(12)
     .optional()
-    .describe("Transpose by semitones (-12 to 12). Positive=higher, negative=lower."),
+    .describe(
+      "Transpose by semitones (-12 to 12). Positive=higher, negative=lower. " +
+        "Rewrites the notation and the key signature, so the printed score matches what plays.",
+    ),
 });
 
 // -----------------------------------------------------------------------------
@@ -208,13 +416,20 @@ export const playSheetInputSchema = z.object({
 
 export const PLAY_LIVE_BASE_DESCRIPTION =
   "Live-code music patterns using TidalCycles mini-notation in JavaScript. " +
-  "Layer drums, synths, and bass with stack(). Choose from 72 drum machine banks, " +
+  "Layer drums, synths, and bass with stack(). Choose from 71 drum machine banks, " +
   "128 GM instruments, built-in synths, and a full effects chain. " +
   "Patterns play in a REPL the user can edit directly. " +
   "Add .pianoroll() to a pattern to show a live piano-roll animation in the widget " +
-  "(or .punchcard()/.scope()/.spectrum() — use one visual per pattern). " +
+  "(or .punchcard()/.scope()/.spectrum() — one draw method per pattern). " +
+  "For a custom animated background, start the code with `await initHydra()` and write " +
+  "Hydra shader code — H(pattern) locks it to the sequence, and `() => a.fft[0]` makes it " +
+  "react to the audio itself (Strudel's output, not the mic); see get-strudel-guide topic 'visuals'. " +
+  "Rather not hand-write one? `visuals` picks a ready-made animation for code that has none " +
+  "(pianoroll/punchcard/scope/spectrum, or hydra-kaleid/pulse/wash/feed). " +
+  "`theme` sets the code-editor colour scheme, which also tints the visuals — match it to the mood " +
+  "(teletext chiptune, sonicPink synthwave, nord ambient, gruvboxDark lofi). " +
   "Use get-strudel-guide for genre templates, sound references, and advanced features " +
-  "like visualization, arrangement, and sample loading.";
+  "like arrangement and sample loading.";
 
 export const PLAY_LIVE_EXT_APPS_SUFFIX =
   "\n\nThe Strudel REPL renders inline with an editable code editor, " +
@@ -226,6 +441,7 @@ export const PLAY_LIVE_FALLBACK_SUFFIX =
 export const playLiveInputSchema = z.object({
   code: z
     .string()
+    .max(MAX_SOURCE_CHARS)
     .describe(
       "Strudel pattern code. Uses TidalCycles mini-notation in JavaScript. " +
         "Use stack() to layer drums, bass, and melody. " +
@@ -247,23 +463,151 @@ export const playLiveInputSchema = z.object({
     .describe(
       "Start playing immediately (default: true). May require user click due to browser autoplay policy.",
     ),
+  visuals: z
+    .enum(VISUAL_PRESETS)
+    .optional()
+    .describe(
+      "Ready-made visual, for when the code has none of its own. " +
+        "pianoroll/punchcard/scope/spectrum draw onto the 2D canvas behind the code; " +
+        "hydra-kaleid (rotating kaleidoscope), hydra-pulse (shape driven by a rhythm), " +
+        "hydra-wash (slow ambient noise) and hydra-feed (the piano roll mirrored and trailed) " +
+        "are WebGL shader backgrounds. Ignored if the code already visualises itself — " +
+        "writing your own .pianoroll() or initHydra() shader is still the better result " +
+        "(see get-strudel-guide topic 'visuals').",
+    ),
+  theme: z
+    .enum(EDITOR_THEMES)
+    .optional()
+    .describe("Editor colour theme — pick to match the mood (e.g. 'nord', 'sonicPink', 'githubLight')."),
 });
 
 /**
- * Build the play-live-pattern tool result. Strudel code is evaluated client-side
- * in the REPL, so the server cannot confirm it runs — the wording is deliberately
- * non-asserting so the agent doesn't over-trust a silent failure.
+ * Why the remote transport returns an unchecked receipt.
+ *
+ * Not a bundle-size decision: the @strudel packages fit the Worker fine
+ * (+215 KiB gzip, measured). Strudel's evaluate() transpiles a pattern and runs
+ * it through `new Function`, and workerd rejects that outright — "EvalError:
+ * Code generation from strings disallowed for this context" — with no flag to
+ * lift it. So the remote server says what it cannot do, and points at the one
+ * that can.
  */
-export function buildPlayLiveResult(args: { code: string; title?: string }): CallToolResult {
+export const PLAY_LIVE_UNVALIDATED_REMOTE =
+  "Not verified: this remote server can't run Strudel to check it — Cloudflare " +
+  "Workers disallow the dynamic code generation its evaluator needs. The local npm " +
+  "server (npx mcp-music-studio) reports parse errors, sounds and event counts.";
+
+/** Where the pattern actually plays — the one sentence every branch ends on. */
+const PLAY_LIVE_PLAYBACK_TAIL =
+  "It plays in an editable REPL widget in MCP-app hosts " +
+  `(e.g. Claude Desktop, claude.ai). ${NO_INLINE_PLAYER_TAIL}`;
+
+/** Trim float noise off a cps computed as e.g. 120/60/4. */
+const showCps = (cps: number) => String(Math.round(cps * 1000) / 1000);
+
+/** The "parses OK: ..." clause — what the server can actually vouch for. */
+function summariseValidation(v: StrudelValidation): string {
+  const parts: string[] = [];
+  if (v.layers) parts.push(`${v.layers} layers`);
+  if (v.eventsPerCycle !== undefined) parts.push(`${v.eventsPerCycle} events/cycle`);
+  if (v.cps !== undefined) parts.push(`cps ${showCps(v.cps)}`);
+  if (v.sounds?.length) {
+    // A samples() call registers names this server cannot see, so "unknown"
+    // there means unverifiable, not wrong — say so rather than crying wolf.
+    const qualifier = v.sampleUrls?.length
+      ? " (custom samples loaded — names not checked)"
+      : v.unregistered?.length
+        ? ""
+        : " (all registered)";
+    parts.push(`sounds: ${v.sounds.join(" ")}${qualifier}`);
+  } else if (v.usesNotes) {
+    parts.push("notes with no sound named (plays on the default triangle synth)");
+  }
+  if (v.usesHydra) parts.push("Hydra background: yes");
+  if (v.visuals?.length) parts.push(`visuals: ${v.visuals.join(", ")}`);
+  return parts.join(", ");
+}
+
+/** Lines that qualify an otherwise-OK result. */
+function validationWarnings(v: StrudelValidation): string[] {
+  const warnings: string[] = [];
+  if (v.eventsPerCycle === 0) {
+    warnings.push(
+      "This pattern produces no events over the cycles queried — it evaluates, " +
+        "but nothing will be heard.",
+    );
+  }
+  if (v.unregistered?.length) {
+    warnings.push(
+      `Sounds not in the default banks: ${v.unregistered.join(", ")} — they will be ` +
+        "silent unless samples() loads them.",
+    );
+  }
+  return warnings;
+}
+
+/**
+ * Build the play-live-pattern tool result.
+ *
+ * With no `validation` the wording is deliberately non-asserting: the REPL
+ * evaluates the code client-side, so a server that has not run it cannot claim
+ * it works. Pass a `validation` (see src/shared/strudel-validate.ts) and the
+ * result can say what the pattern actually does — which for a text-only client
+ * is the only feedback there is.
+ */
+export function buildPlayLiveResult(
+  args: { code: string; title?: string },
+  validation?: StrudelValidation,
+  /**
+   * Why no validation ran, when a transport cannot run one at all. A complete
+   * sentence or two; rendered on its own line, like a validation warning.
+   */
+  unvalidatedNote?: string,
+): CallToolResult {
   const label = args.title ? `"${args.title}" — ` : "";
+
+  if (!validation) {
+    const text = unvalidatedNote
+      ? [`${label}Strudel pattern ready.`, unvalidatedNote, PLAY_LIVE_PLAYBACK_TAIL].join(
+          "\n",
+        )
+      : `${label}Strudel pattern ready. ${PLAY_LIVE_PLAYBACK_TAIL}`;
+    return { content: [{ type: "text", text }] };
+  }
+
+  if (!validation.ok) {
+    const { message = "unknown error", line, column } = validation.error ?? {};
+    // Acorn puts the position on the error object; V8 puts it in the message.
+    // Append it only when it isn't already there.
+    const at =
+      line !== undefined && !/\(\d+:\d+\)\s*$/.test(message)
+        ? ` (${line}:${column ?? 0})`
+        : "";
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text:
+            `${label}Strudel pattern failed to evaluate: ${message}${at}. ` +
+            `Nothing will play until it is fixed — the code is loaded in the REPL, ` +
+            `where you can edit and re-run it. ${NO_INLINE_PLAYER_TAIL}`,
+        },
+      ],
+    };
+  }
+
+  const summary = summariseValidation(validation);
+  const head = summary
+    ? `${label}Strudel pattern ready — parses OK: ${summary}.`
+    : `${label}Strudel pattern ready — parses OK.`;
+
   return {
     content: [
       {
         type: "text",
-        text:
-          `${label}Strudel pattern ready. It plays in an editable REPL widget in MCP-app hosts ` +
-          "(e.g. Claude Desktop, claude.ai). If you don't see a player here, this client can't play it " +
-          "inline, so nothing has played yet.",
+        text: [head, ...validationWarnings(validation), PLAY_LIVE_PLAYBACK_TAIL].join(
+          "\n",
+        ),
       },
     ],
   };
@@ -285,16 +629,20 @@ export const GET_MUSIC_GUIDE_TOPIC_DESCRIPTION =
 
 export const GET_STRUDEL_GUIDE_DESCRIPTION =
   "Reference material for Strudel live coding (performance mode). " +
-  "Topics: mini-notation (pattern syntax), sounds (synths, 72 drum banks, 128 GM instruments), " +
+  "Topics: mini-notation (pattern syntax), " +
+  "sounds (synths, 71 drum banks, 128 GM instruments, 128 vcsl orchestral/percussion samples), " +
   "effects (filters, reverb, delay, FM synthesis, envelopes), " +
   "patterns (transformations, probability, euclidean, arrangement), " +
   "genres (complete templates: techno/house/dnb/ambient/jazz/lofi/synthwave), " +
   "tips (tempo, common mistakes, ABC↔Strudel crossover), " +
-  "advanced (visualization, sample loading, wavetables, ZZFX, continuous signals, chord voicings).";
+  "visuals (pianoroll/scope draw methods, Hydra shader backgrounds, audio-reactive shaders, "
+  + "plus the visuals/theme parameters), " +
+  "advanced (sample loading, wavetables, ZZFX, continuous signals, chord voicings).";
 
 export const GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION =
   "Reference topic. Start with 'genres' for working templates, " +
-  "'sounds' for instruments, 'advanced' for visualization and sample loading.";
+  "'sounds' for instruments, 'visuals' for animations and Hydra backgrounds, " +
+  "'advanced' for sample loading.";
 
 // -----------------------------------------------------------------------------
 // search-music-docs — shared core (cache + key are injected per transport)
@@ -307,9 +655,27 @@ export const SEARCH_DOCS_DESCRIPTION =
   "cover what you need — for specific functions, advanced techniques, or when " +
   "you're unsure about syntax. Powered by semantic search over strudel.cc and ABCJS docs.";
 
+/** Max query length accepted (code points) — bounds KV-key cardinality and upstream cost. */
+export const SEARCH_DOCS_MAX_QUERY = 500;
+
+/**
+ * Hard cap on how much of the upstream response body is read, in bytes.
+ *
+ * `res.text()` buffers whatever context7.com sends before the result is
+ * truncated to SEARCH_DOCS_MAX_CHARS — an upstream that answers with 200 MB
+ * would be faithfully held in memory first (and on the Worker, that is the
+ * isolate's memory). The reader stops here instead; the payload is truncated
+ * for the model anyway.
+ */
+export const SEARCH_DOCS_MAX_BODY_BYTES = 256 * 1024;
+
+/** How long to wait on context7.com before giving up. */
+export const SEARCH_DOCS_TIMEOUT_MS = 15_000;
+
 export const searchDocsInputSchema = z.object({
   query: z
     .string()
+    .max(SEARCH_DOCS_MAX_QUERY)
     .describe(
       "What you want to know. Be specific. " +
         "Good: 'how to use FM synthesis with envelope' or 'chop and slice sample manipulation'. " +
@@ -343,13 +709,84 @@ export interface SearchDocsDeps {
 }
 
 /**
- * Shared search-music-docs implementation. Behavior is identical across
- * transports; only the cache adapter and API key differ (injected via deps).
- * Never reflects the raw upstream error body (status only) to avoid relaying
- * upstream-controlled text into the model context.
+ * Cache key for a (library, query) pair.
+ *
+ * Workers KV caps keys at 512 BYTES, but the query is capped at 500 CODE POINTS.
+ * A 500-character CJK or emoji query is 1500-2000 UTF-8 bytes, so the literal
+ * key `ctx7:<library>:<query>` overflowed the limit and every KV read/write
+ * threw — silently disabling the cache for exactly the queries most likely to
+ * repeat. Hashing gives a fixed 77-byte ASCII key regardless of the input.
  */
-/** Max query length accepted — bounds KV-key cardinality and upstream cost. */
-export const SEARCH_DOCS_MAX_QUERY = 500;
+export async function buildSearchCacheKey(
+  library: string,
+  query: string,
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(query),
+  );
+  const hex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `ctx7:${library}:${hex}`;
+}
+
+/**
+ * Truncate to `maxCodePoints` Unicode code points.
+ *
+ * Code points, not UTF-16 units, so an astral character straddling the cap
+ * can't be split into a broken surrogate half. Walked with an index rather than
+ * `Array.from(query)`, which materialised an array of every code point in the
+ * input *before* applying the cap — the one allocation the cap exists to avoid.
+ */
+export function truncateCodePoints(
+  value: string,
+  maxCodePoints: number,
+): string {
+  let count = 0;
+  for (let i = 0; i < value.length; ) {
+    if (count === maxCodePoints) return value.slice(0, i);
+    // A surrogate pair is one code point but two UTF-16 units.
+    i += value.codePointAt(i)! > 0xffff ? 2 : 1;
+    count++;
+  }
+  return value;
+}
+
+/**
+ * Read at most `maxBytes` of a response body, then hang up.
+ *
+ * Falls back to `.text()` only when the runtime gave us no stream to read
+ * (some fetch mocks), where the body is already in memory anyway.
+ */
+async function readCappedText(
+  res: Response,
+  maxBytes: number,
+): Promise<string> {
+  const body = res.body;
+  if (!body?.getReader) return (await res.text()).slice(0, maxBytes);
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const room = maxBytes - total;
+      const chunk = value.byteLength > room ? value.subarray(0, room) : value;
+      total += chunk.byteLength;
+      text += decoder.decode(chunk, { stream: true });
+    }
+    text += decoder.decode();
+  } finally {
+    // Signals the upstream we're done; the remaining bytes are never buffered.
+    await reader.cancel().catch(() => {});
+  }
+  return text;
+}
 
 export async function searchMusicDocs(
   query: string,
@@ -358,14 +795,8 @@ export async function searchMusicDocs(
 ): Promise<CallToolResult> {
   const libraryId = CONTEXT7_LIBRARY_IDS[library] ?? CONTEXT7_LIBRARY_IDS.strudel;
   const maxChars = deps.maxChars ?? SEARCH_DOCS_MAX_CHARS;
-  // Truncate by Unicode code points (not UTF-16 units) so an astral character
-  // straddling the cap can't be split into a broken surrogate half.
-  const codePoints = Array.from(query);
-  const q =
-    codePoints.length > SEARCH_DOCS_MAX_QUERY
-      ? codePoints.slice(0, SEARCH_DOCS_MAX_QUERY).join("")
-      : query;
-  const cacheKey = `ctx7:${library}:${q}`;
+  const q = truncateCodePoints(query, SEARCH_DOCS_MAX_QUERY);
+  const cacheKey = await buildSearchCacheKey(library, q);
 
   if (deps.cacheGet) {
     try {
@@ -381,9 +812,16 @@ export async function searchMusicDocs(
   const apiKey = deps.apiKey ?? "";
 
   try {
-    let res = await fetch(url);
+    // Without a deadline a hung upstream pins the tool call open indefinitely
+    // (and, on the Worker, holds the request alive until the platform kills it).
+    let res = await fetch(url, {
+      signal: AbortSignal.timeout(SEARCH_DOCS_TIMEOUT_MS),
+    });
     if (res.status === 429 && apiKey && apiKey.startsWith("ctx7sk")) {
-      res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(SEARCH_DOCS_TIMEOUT_MS),
+      });
     }
 
     if (!res.ok) {
@@ -398,7 +836,7 @@ export async function searchMusicDocs(
       };
     }
 
-    const raw = await res.text();
+    const raw = await readCappedText(res, SEARCH_DOCS_MAX_BODY_BYTES);
     if (!raw || raw.trim().length === 0) {
       return {
         content: [
@@ -437,6 +875,134 @@ export async function searchMusicDocs(
       ],
     };
   }
+}
+
+// -----------------------------------------------------------------------------
+// analyze-harmony — music theory helper (no UI, pure computation)
+// -----------------------------------------------------------------------------
+
+export const ANALYZE_HARMONY_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+export const ANALYZE_HARMONY_DESCRIPTION =
+  "Music theory helper: name a chord from notes, guess the key, get a progression, " +
+  "or list what fits a key. Returns both the ABC chord-symbol spelling (for play-sheet-music) " +
+  "and the Strudel form (for play-live-pattern). " +
+  "Tasks: detect-chord (notes -> chord name + what to play next), " +
+  "detect-key (notes or chords -> best key + diatonic chords), " +
+  "suggest-progression (key [+ romanNumerals] -> chord symbols), " +
+  "scale-for-chord (chords -> the scale to improvise over each), " +
+  "key-chords (key -> every diatonic triad, seventh, and chord scale). " +
+  "Use it before writing chord symbols for a style preset, or to check a harmonization.";
+
+export const analyzeHarmonyInputSchema = z.object({
+  task: z
+    .enum(HARMONY_TASKS)
+    .describe(
+      "What to work out. detect-chord/detect-key need notes or chords; " +
+        "suggest-progression/key-chords need a key.",
+    ),
+  notes: z
+    .array(z.string())
+    .max(MAX_HARMONY_ITEMS)
+    .optional()
+    .describe('Note names, e.g. ["c4","e4","g4","b4"] or ["C","Eb","G"]. For detect-chord/detect-key.'),
+  chords: z
+    .array(z.string())
+    .max(MAX_HARMONY_ITEMS)
+    .optional()
+    .describe('Chord symbols, e.g. ["Dm7","G7","Cmaj7"]. For detect-key/scale-for-chord.'),
+  key: z
+    .string()
+    .optional()
+    .describe('Key, e.g. "C", "A minor", "F# major". For suggest-progression/key-chords.'),
+  romanNumerals: z
+    .array(z.string())
+    .max(MAX_HARMONY_ITEMS)
+    .optional()
+    .describe(
+      'Roman numerals to render in the key, e.g. ["ii7","V7","Imaj7"] or ["I","V","vi","IV"]. ' +
+        "Optional for suggest-progression — omit it to get common progressions instead.",
+    ),
+});
+
+/** Shared handler: identical text on both transports, never throws. */
+export function buildAnalyzeHarmonyResult(
+  args: z.infer<typeof analyzeHarmonyInputSchema>,
+): CallToolResult {
+  return { content: [{ type: "text", text: analyzeHarmony(args) }] };
+}
+
+// -----------------------------------------------------------------------------
+// convert-abc-to-strudel — bridge scored composition into live performance
+// -----------------------------------------------------------------------------
+
+export const CONVERT_ABC_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+export const CONVERT_ABC_DESCRIPTION =
+  "Turn an ABC melody into Strudel mini-notation so a scored piece can be remixed live. " +
+  "Returns runnable code — setcps() from the Q: tempo, one [...] bar group per bar inside " +
+  "note(\"<...>\"), with a chord(\"<...>\").voicing() layer stacked alongside it when the ABC " +
+  "has chord symbols (one stack(), because Strudel plays only the last expression) — " +
+  "then pass it to play-live-pattern. Durations become @ weights, rests become ~, " +
+  "triplets nest, the key signature is folded into the note names, and %%MIDI program " +
+  "picks the sound. Lists what was lost (grace notes, dynamics, repeats, lyrics, other " +
+  "voices, inline tempo changes, a short final bar, ABC's own gchord/drum accompaniment). " +
+  "Pick a single voice with `voice`; re-run per voice and stack() them for a full arrangement.";
+
+export const convertAbcInputSchema = z.object({
+  abcNotation: z
+    .string()
+    .max(MAX_SOURCE_CHARS)
+    .describe("ABC notation to convert (the same string you'd pass to play-sheet-music)."),
+  voice: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe(
+      "Which voice to convert, 1-based, counted across all staves (default 1). " +
+        "Multi-voice tunes report how many voices there are.",
+    ),
+  sound: z
+    .string()
+    .optional()
+    .describe(
+      `Strudel sound for the melody (defaults to the tune's %%MIDI program, else "${DEFAULT_STRUDEL_SOUND}"). ` +
+        "Use a GM soundfont name like gm_flute or gm_epiano1 — see get-strudel-guide topic 'sounds'.",
+    ),
+});
+
+/**
+ * Shared handler. The abcjs parser is injected so this module stays free of the
+ * abcjs import; each transport passes its own `ABCJS.parseOnly`.
+ */
+export function buildConvertAbcResult(
+  args: AbcToStrudelArgs,
+  parseOnly: ParseOnlyFn,
+): CallToolResult {
+  const result = convertAbcToStrudel(args, parseOnly);
+  if (!result.ok) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `${result.error}\n\nTip: use get-music-guide("abc-syntax") for notation reference.`,
+        },
+      ],
+    };
+  }
+  return { content: [{ type: "text", text: result.text }] };
 }
 
 // -----------------------------------------------------------------------------
@@ -488,7 +1054,8 @@ export const MUSIC_PROMPTS: PromptDef[] = [
       userText(
         `Compose a ${args.mood ? `${args.mood} ` : ""}${args.genre ?? "lofi"} pattern and play it with the play-live-pattern tool. ` +
           `First call get-strudel-guide with topic "genres" for a working ${args.genre ?? "lofi"} template, then adapt it — ` +
-          `use stack() to layer drums, bass, and melody, and set a fitting tempo with setcps().`,
+          `use stack() to layer drums, bass, and melody, and set a fitting tempo with setcps(). ` +
+          `For a living widget, add a visual — see get-strudel-guide topic "visuals".`,
       ),
   },
   {

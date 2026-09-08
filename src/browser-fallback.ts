@@ -2,26 +2,34 @@
  * Browser fallback for non-UI MCP clients.
  * Generates a self-contained HTML player and opens it in the default browser.
  */
-import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
+// Runtime-agnostic: no node: imports here, so the Cloudflare Worker can render
+// the same page for its /score route. The disk-writing + browser-launching half
+// lives in src/open-in-browser.ts.
 import {
   INSTRUMENTS,
   STYLE_PRESETS,
   STYLE_NAMES,
   type StyleName,
   findInstrument,
-  injectTempoAndTranspose,
+  injectTempoHeader,
+  normalizeDrumIntro,
+  normalizeSwing,
 } from "./music-logic.js";
+import { transposeAbc } from "./abc-transpose.js";
+import { ABCJS_CDN_BASE } from "./abcjs-version.js";
+// One implementation, shared with the Strudel page: this file used to carry a
+// byte-identical private copy, which is exactly how the two drift apart.
+import { safeJsonForScript } from "./shared/safe-json.js";
 
 export interface BrowserPlayerOptions {
   abcNotation: string;
+  /** Overrides the T: header for the page heading and <title>. */
+  title?: string;
   style?: string;
   instrument?: string;
   tempo?: number;
   swing?: number;
+  drumIntro?: number;
   transpose?: number;
 }
 
@@ -44,15 +52,6 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-// JSON.stringify doesn't escape <, >, & — if embedded in <script>, a payload
-// like </script><script>alert(1) would break out. Unicode-escape them.
-function safeJsonForScript(value: unknown): string {
-  return JSON.stringify(value)
-    .replace(/</g, "\\u003c")
-    .replace(/>/g, "\\u003e")
-    .replace(/&/g, "\\u0026");
-}
-
 function extractMeta(abc: string) {
   const title = abc.match(/^T:(.+)$/m)?.[1]?.trim() ?? "Untitled";
   const key = abc.match(/^K:(.+)$/m)?.[1]?.trim() ?? "";
@@ -65,21 +64,16 @@ function formatKey(raw: string): string {
   return raw.replace(/([A-G])b/g, "$1♭").replace(/([A-G])#/g, "$1♯");
 }
 
-// ABCJS ≤6.6.2 fails to render notation when V: lines use quoted name
-// attributes (e.g. name="Melody"). Strip the quotes so ABCJS can parse them.
-function stripVoiceNameQuotes(abc: string): string {
-  return abc.replace(/^(V:\S+.*?\bname=)"([^"]*)"(.*)$/gm, "$1$2$3");
-}
-
 export function generatePlayerHtml(options: BrowserPlayerOptions): string {
-  // Process ABC (tempo/transpose injection — baked into notation)
-  let abc = stripVoiceNameQuotes(options.abcNotation);
-  if (options.tempo !== undefined || options.transpose !== undefined) {
-    abc = injectTempoAndTranspose(abc, {
-      tempo: options.tempo,
-      transpose: options.transpose,
-    });
-  }
+  // Transposition first, so `strTranspose` sees the author's ABC before any
+  // Q:/style directives are woven in, then the tempo header.
+  //
+  // (A `stripVoiceNameQuotes()` pass used to run here on the theory that abcjs
+  // choked on `V:1 name="Melody"`. It doesn't — and the regex was lossy, since
+  // dropping the quotes turned `name="Melody Line"` into a voice called
+  // `Melody`. Removed; tests/browser-fallback.test.ts pins the quoted form.)
+  let abc = transposeAbc(options.abcNotation, options.transpose);
+  abc = injectTempoHeader(abc, { tempo: options.tempo });
 
   // Resolve instrument
   const instrumentName = options.instrument
@@ -94,6 +88,8 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
       : "";
 
   const meta = extractMeta(abc);
+  // An explicit `title` argument wins over the T: header, as the schema promises.
+  const displayTitle = options.title?.trim() || meta.title;
   const keyDisplay = formatKey(meta.key);
 
   // Build metadata fragments
@@ -104,7 +100,11 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
 
   // Build select options
   const styleOptionsHtml = [
-    '<option value="">None (melody only)</option>',
+    // Not "melody only": with `chordsOff` unset (deliberately — the chord
+    // symbols are the composer's, this selector only chooses the widget's
+    // preset), abcjs still synthesises bass and chords from any "C"/"Am7" in
+    // the ABC. Matches the ext-apps widget's wording.
+    '<option value="">No preset accompaniment</option>',
     ...STYLE_NAMES.map(
       (name) =>
         `<option value="${name}"${name === style ? " selected" : ""}>${STYLE_DISPLAY[name] ?? name}</option>`,
@@ -119,11 +119,15 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
     .join("");
 
   // Data for JS — use safe serialization to prevent </script> breakout
+  // `swing`/`drumIntro` go through the same normalizers the widget uses, so the
+  // fallback and the ext-app agree on what abcjs will actually honour (swing at
+  // or below 50 is a no-op; abcjs clamps above 75).
   const initData = safeJsonForScript({
     abc,
     style,
     instrumentProgram,
-    swing: options.swing ?? 0,
+    swing: normalizeSwing(options.swing) ?? 0,
+    drumIntro: normalizeDrumIntro(options.drumIntro) ?? 0,
   });
   const presetsJson = safeJsonForScript(STYLE_PRESETS);
 
@@ -133,9 +137,9 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
-  <title>${escapeHtml(meta.title)} — Music Studio</title>
+  <title>${escapeHtml(displayTitle)} — Music Studio</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♪</text></svg>">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/abcjs@6.6.2/abcjs-audio.css">
+  <link rel="stylesheet" href="${ABCJS_CDN_BASE}/abcjs-audio.css">
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     :root{
@@ -306,7 +310,7 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
     </div>
 
     <div class="piece-info">
-      <h1 class="piece-title anim d2">${escapeHtml(meta.title)}</h1>
+      <h1 class="piece-title anim d2">${escapeHtml(displayTitle)}</h1>
       <p class="piece-meta anim d2">
         ${metaParts.map((p) => `<span>${escapeHtml(p)}</span>`).join("")}
       </p>
@@ -335,14 +339,15 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
       <summary>Edit notation</summary>
       <textarea id="abc-editor">${escapeHtml(abc)}</textarea>
       <div class="editor-actions">
-        <button class="btn-render" onclick="renderFromEditor()">Render &amp; Play</button>
+        <button class="btn-render" onclick="renderFromEditor()" title="Render the edited notation and start playing">Render &amp; Play</button>
       </div>
     </details>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/abcjs@6.6.2/dist/abcjs-basic-min.js"></script>
+  <script src="${ABCJS_CDN_BASE}/dist/abcjs-basic-min.js"></script>
   <script>
     var INIT = ${initData};
+    var HAS_EXPLICIT_TITLE = ${options.title?.trim() ? "true" : "false"};
     var STYLE_PRESETS = ${presetsJson};
     var synthControl = null;
     var highlighted = [];
@@ -380,7 +385,15 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
       return directives + '\\n' + abc;
     }
 
-    async function render() {
+    // The startPlaying argument exists because this used to be a lie: the "Render & Play"
+    // button awaited setTune(..., false, ...) and never called play(), so it
+    // rendered and primed but nothing ever sounded. setTune's false argument only
+    // means "not a user action"; play() then primes via runWhenReady() anyway,
+    // because render() builds a FRESH SynthController every time and abcjs's
+    // isLoaded starts false on a new one. Called from the button's own click
+    // handler, so sticky user activation carries through the awaits and the
+    // AudioContext is allowed to resume.
+    async function render(startPlaying) {
       var style = document.getElementById('style-select').value;
       var program = parseInt(document.getElementById('instrument-select').value);
       var sheetEl = document.getElementById('sheet-music');
@@ -404,51 +417,40 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
 
       var opts = { program: program };
       if (INIT.swing) opts.swing = INIT.swing;
+      if (INIT.drumIntro) opts.drumIntro = INIT.drumIntro;
       await synthControl.setTune(visualObj[0], false, opts);
+
+      if (startPlaying) {
+        try {
+          await synthControl.play();
+        } catch (e) {
+          // Autoplay policy or a failed sample load — the transport's own ▶
+          // still works, so say nothing louder than the console.
+          console.debug('Playback did not start:', e);
+        }
+      }
     }
 
     function renderFromEditor() {
       currentAbc = document.getElementById('abc-editor').value;
-      var m = currentAbc.match(/^T:(.+)$/m);
+      // An explicit title= argument outranks T:, so editing the notation
+      // doesn't silently rename a piece the caller already named.
+      var m = HAS_EXPLICIT_TITLE ? null : currentAbc.match(/^T:(.+)$/m);
       if (m) {
         document.querySelector('.piece-title').textContent = m[1].trim();
         document.title = m[1].trim() + ' \\u2014 Music Studio';
       }
-      render();
+      render(true);
     }
 
-    document.getElementById('style-select').addEventListener('change', render);
-    document.getElementById('instrument-select').addEventListener('change', render);
+    // Re-priming on a settings change should not also start playback — that is
+    // the widget's behaviour too, and a select's change event is a poor moment
+    // to begin making noise.
+    document.getElementById('style-select').addEventListener('change', function () { render(false); });
+    document.getElementById('instrument-select').addEventListener('change', function () { render(false); });
 
-    render();
+    render(false);
   </script>
 </body>
 </html>`;
-}
-
-export async function openPlayerInBrowser(
-  options: BrowserPlayerOptions,
-  outputDir?: string,
-): Promise<string> {
-  const html = generatePlayerHtml(options);
-
-  const outDir = outputDir ?? path.join(os.homedir(), "Desktop", "mcp-music-studio");
-  await fs.mkdir(outDir, { recursive: true });
-
-  const filename = `player-${randomUUID()}.html`;
-  const filepath = path.join(outDir, filename);
-  await fs.writeFile(filepath, html, "utf-8");
-
-  // Try to open in default browser (may fail in sandboxed environments).
-  // Use execFile with an argv array so no shell parses the path.
-  const platform = process.platform;
-  const openErr = (err: Error | null) => {
-    if (err) console.error("Failed to open browser:", err.message);
-  };
-  if (platform === "darwin") execFile("open", [filepath], openErr);
-  else if (platform === "win32")
-    execFile("cmd", ["/c", "start", "", filepath], openErr);
-  else execFile("xdg-open", [filepath], openErr);
-
-  return filepath;
 }
