@@ -36,6 +36,34 @@
   }
 }
 
+/* Host-driven theme (handleHostContextChanged → applyDocumentTheme writes
+   data-theme on <html>). Without these the widget chrome followed the OS
+   preference only, so a host in light mode on a dark desktop — or the reverse —
+   got the wrong toolbar, and the theme the host reported was inert. The
+   attribute wins over the media query above, matching mcp-app.css. Only the
+   chrome is themed here: the visuals stage and scrim are owned by
+   syncVizTheme(), which writes them as inline style on .repl-section from the
+   EDITOR theme's own --background. */
+:root[data-theme="dark"] {
+  --bg: #1a1a1a;
+  --surface: #252525;
+  --border: #333;
+  --text: #e0e0e0;
+  --text-secondary: #999;
+  --accent: #a78bfa;
+  --accent-hover: #8b5cf6;
+}
+
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --surface: #f8f9fa;
+  --border: #e0e0e0;
+  --text: #1a1a1a;
+  --text-secondary: #666;
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+}
+
 * {
   margin: 0;
   padding: 0;
