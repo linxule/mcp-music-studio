@@ -395,13 +395,20 @@ export function createServer(options?: ServerOptions): McpServer {
       );
     }
 
+    // The standalone page gets the SAME reduction the share link gets, so all
+    // three paths (widget, share URL, fallback page) agree on what was asked
+    // for: `visuals` is folded into the code by applyVisualPreset and `bpm` is
+    // clamped to the tool's range. `theme` is dropped here as it is everywhere
+    // else — it colours the widget's CodeMirror chrome, and the standalone page
+    // renders its own, with no theme switch to hand it to.
+    const shareArgs = toPlayShareArgs(args);
     const playerOpts = {
-      code: args.code,
-      bpm: args.bpm,
-      autoplay: args.autoplay,
+      code: shareArgs.code,
+      bpm: shareArgs.bpm,
+      autoplay: shareArgs.autoplay,
       // The generator gained an optional `title`; spread so this compiles
       // whether or not that option is present in the signature yet.
-      ...(args.title ? { title: args.title } : {}),
+      ...(shareArgs.title ? { title: shareArgs.title } : {}),
     };
 
     if (defaultRenderMode === "html") {

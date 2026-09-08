@@ -41,6 +41,50 @@ describe("render modes", () => {
     expect(resourceBlock?.resource?.text).toContain("abcjs");
   });
 
+  // The share link folds `visuals` into the code (toPlayShareArgs), but the
+  // standalone page built by --render-mode html/browser used to be handed the
+  // RAW args, so a call with visuals: "hydra-kaleid" produced a page with no
+  // shader. All three paths now run the same reduction.
+  it("html mode bakes the visuals preset into the standalone page", async () => {
+    await connect("html");
+    const withViz = await client.callTool({
+      name: "play-live-pattern",
+      arguments: { code: 's("bd sd")', visuals: "hydra-kaleid" },
+    });
+    const without = await client.callTool({
+      name: "play-live-pattern",
+      arguments: { code: 's("bd sd")' },
+    });
+
+    const html = (c: unknown) =>
+      ((c as ContentBlock[]).find((b) => b.type === "resource")?.resource
+        ?.text ?? "");
+    const vizHtml = html(withViz.content);
+    const plainHtml = html(without.content);
+
+    expect(vizHtml).not.toBe("");
+    expect(vizHtml).not.toBe(plainHtml);
+    // The recipe body, not just the initHydra shim the page always ships.
+    expect(vizHtml).toContain("kaleid(5)");
+    expect(plainHtml).not.toContain("kaleid(5)");
+  });
+
+  it("html mode drops `theme` — the standalone page has no theme switch", async () => {
+    await connect("html");
+    const themed = await client.callTool({
+      name: "play-live-pattern",
+      arguments: { code: 's("bd sd")', theme: "nord" },
+    });
+    const plain = await client.callTool({
+      name: "play-live-pattern",
+      arguments: { code: 's("bd sd")' },
+    });
+    const html = (c: unknown) =>
+      ((c as ContentBlock[]).find((b) => b.type === "resource")?.resource
+        ?.text ?? "");
+    expect(html(themed.content)).toBe(html(plain.content));
+  });
+
   it("auto mode inlines no player HTML (the UI comes from the _meta resource)", async () => {
     await connect("auto");
     const res = await client.callTool({
