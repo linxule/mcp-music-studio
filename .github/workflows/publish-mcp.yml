@@ -51,7 +51,13 @@ jobs:
           # Pinned to the 11.x line: OIDC trusted publishing needs >= 11.5.1, and
           # `@latest` would silently adopt a future major mid-release.
           npm install -g "npm@^11.5.1"
-          npm publish --ignore-scripts
+          # Idempotent: a re-run after a registry-side failure must not die here.
+          VERSION=${GITHUB_REF#refs/tags/v}
+          if npm view "mcp-music-studio@$VERSION" version >/dev/null 2>&1; then
+            echo "mcp-music-studio@$VERSION is already on npm — skipping publish"
+          else
+            npm publish --ignore-scripts
+          fi
 
       - name: Update server.json version
         run: |

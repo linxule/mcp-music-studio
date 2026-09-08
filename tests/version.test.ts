@@ -15,3 +15,12 @@ describe("version single source of truth", () => {
     expect(VERSION).toBe(pkg.version);
   });
 });
+
+// The MCP Registry rejects server.json descriptions longer than 100 chars
+// (422 "expected length <= 100") — it broke the v0.5.0 registry publish.
+describe("server.json", () => {
+  it("keeps the description within the MCP Registry's 100-char limit", () => {
+    const sj = JSON.parse(readFileSync(new URL("../server.json", import.meta.url), "utf8"));
+    expect(sj.description.length).toBeLessThanOrEqual(100);
+  });
+});
