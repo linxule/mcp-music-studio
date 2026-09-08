@@ -1555,8 +1555,20 @@ let activeRecording: Recording | null = null;
 let lastRecording: Recording | null = null;
 let recordingLimitTimer: ReturnType<typeof setTimeout> | null = null;
 
-function pickRecordingMime(): string {
-  const canCheck = typeof MediaRecorder?.isTypeSupported === "function";
+/**
+ * The MIME type to record in — `""` meaning "let the UA choose" — or null when
+ * this browser has no MediaRecorder at all.
+ *
+ * The null case is why the `typeof` check is spelled out rather than folded
+ * into the loop's `MediaRecorder?.isTypeSupported`: optional chaining does NOT
+ * protect an UNDECLARED identifier. On a browser without MediaRecorder that
+ * expression threw a ReferenceError, and it ran BEFORE the constructor's
+ * try/catch — so the one handler written for exactly this case ("Recording not
+ * supported on this browser") never saw it and the Record click died silently.
+ */
+function pickRecordingMime(): string | null {
+  if (typeof MediaRecorder === "undefined") return null;
+  const canCheck = typeof MediaRecorder.isTypeSupported === "function";
   for (const mime of RECORDING_MIME_CANDIDATES) {
     if (mime === "") break;
     if (!canCheck || MediaRecorder.isTypeSupported(mime)) return mime;
@@ -1596,6 +1608,10 @@ function startRecording(): void {
   }
 
   const mime = pickRecordingMime();
+  if (mime === null) {
+    setStatus("Recording not supported on this browser", "error");
+    return;
+  }
   try {
     mediaRecorder = mime
       ? new MediaRecorder(recordingStream, { mimeType: mime })

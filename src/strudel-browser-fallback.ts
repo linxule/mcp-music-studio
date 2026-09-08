@@ -396,7 +396,21 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     } catch (e) { /* the pattern still plays, at its own tempo */ }
   }
 
+  // The autoplay listener, once it exists. Autoplay means "start on the first
+  // click anywhere", so it must be CONSUMED the moment the user takes explicit
+  // control — otherwise Play → Stop left it armed and the next click in the
+  // editor silently re-evaluated and restarted the pattern.
+  let autoStartHandler = null;
+
+  function consumeAutoStart() {
+    if (!autoStartHandler) return;
+    document.removeEventListener('click', autoStartHandler);
+    autoStartHandler = null;
+  }
+
   function togglePlay() {
+    // Either way this click is the user driving; autoplay's job is over.
+    consumeAutoStart();
     if (playing) stopPattern();
     else startPattern();
   }
@@ -443,6 +457,9 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   }
 
   function stopPattern() {
+    // Unconditional: Stop is the clearest possible "I do not want this playing",
+    // and a still-armed autoplay listener would undo it on the next click.
+    consumeAutoStart();
     const ed = getEditor();
     if (!ed) return;
     try {
@@ -472,14 +489,23 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     autoplay
       ? `
   // Browsers keep the AudioContext suspended until a user gesture, so autoplay
-  // means "start on the first click anywhere". The Play button's own click also
-  // bubbles to document — without these guards it evaluated the pattern twice.
+  // means "start on the first click anywhere" — but ONLY until the user takes
+  // over. togglePlay() and stopPattern() both consume the listener, so what is
+  // left here is the one case it exists for: a click that lands before the
+  // editor is ready (startPattern() bails, the listener stays armed for the
+  // next one).
+  //
+  // The .controls guard is still needed for the bubble ordering: a click on the
+  // Play button runs the button's own listener first, which removes this one
+  // before the event reaches document — but Retry, or any future control, may
+  // not.
   async function autoStart(ev) {
-    if (playing) { document.removeEventListener('click', autoStart); return; }
+    if (playing) { consumeAutoStart(); return; }
     if (ev.target && ev.target.closest && ev.target.closest('.controls')) return;
     await startPattern();
-    if (playing) document.removeEventListener('click', autoStart);
+    if (playing) consumeAutoStart();
   }
+  autoStartHandler = autoStart;
   document.addEventListener('click', autoStart);
   `
       : ""
