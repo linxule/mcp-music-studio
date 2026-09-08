@@ -23,8 +23,12 @@ import {
 } from "./abc-to-strudel.js";
 import { EDITOR_THEMES, VISUAL_PRESETS } from "./visual-presets.js";
 // Type-only: the validator itself (and the ~200 KiB of Strudel behind it) is
-// imported by each transport's handler, not by this module.
-import type { StrudelValidation } from "./strudel-validate.js";
+// imported by each transport's handler, not by this module. The shape comes
+// from -core rather than from the strudel-validate.ts entry point on purpose:
+// the entry point reaches node:child_process (see strudel-validate-host.ts),
+// and the worker typechecks against @cloudflare/workers-types, where `process`
+// and `Buffer` do not exist. Types only, so nothing crosses at runtime either way.
+import type { StrudelValidation } from "./strudel-validation-types.js";
 
 // -----------------------------------------------------------------------------
 // Resource URIs

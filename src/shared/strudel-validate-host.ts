@@ -44,7 +44,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import type { StrudelValidation, ValidateOptions } from "./strudel-validate-core.js";
+import type { StrudelValidation, ValidateOptions } from "./strudel-validation-types.js";
 
 /** Extra wall-clock the child gets past the caller's timeout before SIGKILL. */
 const KILL_GRACE_MS = 250;

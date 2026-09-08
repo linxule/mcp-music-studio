@@ -44,37 +44,19 @@
 // the one the guide tests assert against, which is the whole point of having it.
 import strudelSounds from "./data/strudel-sounds.json" with { type: "json" };
 
-export interface StrudelValidationError {
-  message: string;
-  line?: number;
-  column?: number;
-}
+// Result shapes live in a leaf module so tool-defs.ts (shared with the
+// Cloudflare Worker) can name them without dragging @strudel/* — or, through
+// the entry point, node:child_process — into workerd's type program.
+export type {
+  StrudelValidation,
+  StrudelValidationError,
+  ValidateOptions,
+} from "./strudel-validation-types.js";
 
-export interface StrudelValidation {
-  ok: boolean;
-  error?: StrudelValidationError;
-  /** Number of patterns handed to stack(); absent when stack() was not used. */
-  layers?: number;
-  eventsPerCycle?: number;
-  /** Distinct sound names the pattern actually triggers, sorted. */
-  sounds?: string[];
-  /** Sounds prebake() does not register. Absent when samples() was called. */
-  unregistered?: string[];
-  usesNotes?: boolean;
-  cps?: number;
-  usesHydra?: boolean;
-  /** Draw methods the code called (pianoroll, scope, ...). */
-  visuals?: string[];
-  /** URLs passed to samples() — why `unregistered` may be withheld. */
-  sampleUrls?: string[];
-}
-
-export interface ValidateOptions {
-  /** Cycles to query. Four bars is enough to see a pattern's full shape. */
-  cycles?: number;
-  /** Wall-clock ceiling for the whole run. */
-  timeoutMs?: number;
-}
+import type {
+  StrudelValidation,
+  ValidateOptions,
+} from "./strudel-validation-types.js";
 
 type Evaluator = typeof import("./strudel-eval.js");
 type StrudelTrace = import("./strudel-eval.js").StrudelTrace;
@@ -141,10 +123,22 @@ function positionOf(err: unknown): { line?: number; column?: number } {
   return {};
 }
 
+/**
+ * node:vm's wording when the sandbox's synchronous ceiling fires. Reworded so
+ * a caller sees the same sentence whichever ceiling caught the pattern — this
+ * one, or the host's SIGKILL when the loop hides behind an `await`.
+ */
+const VM_TIMEOUT = /^Script execution timed out after (\d+)ms$/;
+
 function describe(err: unknown): string {
   const e = err as Error;
   const name = e?.name;
   const message = e?.message ?? String(err);
+  const vmTimeout = VM_TIMEOUT.exec(message);
+  if (vmTimeout) {
+    const seconds = Math.round(Number(vmTimeout[1]) / 100) / 10;
+    return `evaluation timed out after ${seconds}s — the pattern may loop forever`;
+  }
   return name && name !== "Error" && !message.startsWith(name)
     ? `${name}: ${message}`
     : message;

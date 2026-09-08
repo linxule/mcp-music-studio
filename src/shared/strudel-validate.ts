@@ -20,9 +20,9 @@ export type {
   StrudelValidation,
   StrudelValidationError,
   ValidateOptions,
-} from "./strudel-validate-core.js";
+} from "./strudel-validation-types.js";
 
-import type { StrudelValidation, ValidateOptions } from "./strudel-validate-core.js";
+import type { StrudelValidation, ValidateOptions } from "./strudel-validation-types.js";
 
 /**
  * Evaluate `code` out of process and report what it does.
