@@ -4,8 +4,7 @@
 // A cue list re-sends `ui/notifications/tool-input` into the SAME Strudel
 // widget, so every section is a hot-swapped re-evaluation on the running
 // clock (Strudel keeps its cycle position across evaluate()). Hydra evolves
-// with it; captions are DOM over the visuals. The last section hands the
-// theme to the ABC widget as notation.
+// with it; captions are DOM over the visuals.
 //
 // Meant to be captured by an OBS Browser Source at 1920×1080 with
 // `?autoplay=1` (see scripts/showcase/README.md), but it also runs in a tab.
@@ -17,7 +16,45 @@ import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const params = new URLSearchParams(location.search);
 const SPEED = Number(params.get("speed") ?? 1) || 1;
-const HY = "'https://unpkg.com/hydra-synth@1.4.0'";
+// Canvas size: ?w=1080&h=1440 for a 3:4 cut. The widgets lay out at size/1.35
+// (see perform.html) and portrait gets its code reflowed to fit.
+const W = Number(params.get("w") ?? 1920) || 1920;
+const H = Number(params.get("h") ?? 1080) || 1080;
+const SCALE = 1.35;
+const PORTRAIT = H > W;
+document.documentElement.style.setProperty("--fw", `${Math.round(W / SCALE)}px`);
+document.documentElement.style.setProperty("--fh", `${Math.round(H / SCALE)}px`);
+if (PORTRAIT) document.documentElement.style.setProperty("--capw", "84vw");
+
+/**
+ * Break long lines at method-chain boundaries so they fit a narrow frame.
+ * Splits at `).` outside string literals; continuation lines are indented.
+ */
+function reflow(code: string, max = 68): string {
+  return code
+    .split("\n")
+    .flatMap((line) => {
+      if (line.length <= max) return [line];
+      const indent = (line.match(/^\s*/)?.[0] ?? "") + "    ";
+      const out: string[] = [];
+      let cur = "";
+      let inStr: string | null = null;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        cur += ch;
+        if (inStr) { if (ch === inStr) inStr = null; continue; }
+        if (ch === '"' || ch === "'") { inStr = ch; continue; }
+        if (ch === ")" && line[i + 1] === "." && cur.trim().length > max * 0.45) {
+          out.push(cur);
+          cur = indent;
+        }
+      }
+      if (cur.trim()) out.push(cur);
+      return out;
+    })
+    .join("\n");
+}
+// hydra-synth is pinned by the widget; a bare initHydra() is reproducible.
 const THEME = "tokyoNight";
 const BPM = 120;
 
@@ -26,13 +63,13 @@ const BPM = 120;
 const PAD = `note("<[a2,c3,e3] [f2,a2,c3] [c3,e3,g3] [g2,b2,d3]>/2").s("gm_pad_warm").attack(1).release(3).room(0.9)`;
 const BOX = `note("<a4 ~ e5 ~ c5 ~ ~ ~>/2").s("gm_music_box").delay(0.6).delaytime(0.75).room(0.7)`;
 const ROOTS = `"<a1 f1 c2 g1>/2"`;
-const ARP = `note("<[a3 c4 e4 a4 c5 a4 e4 c4]!2 [f3 a3 c4 f4 a4 f4 c4 a3]!2 [c4 e4 g4 c5 e5 c5 g4 e4]!2 [g3 b3 d4 g4 b4 g4 d4 b3]!2>")`;
+const ARP = `n("0 2 4 7 9 7 4 2").scale("<a3:minor f3:major c4:major g3:major>/2")`;
 const THEME_MELODY = `note("<[e4 c4 a4 c5] [a4 f4 c4 f4] [e4 g4 c5 g4] [d4 g4 b4 g4]>")`;
 
 const WASH_SHADER = `noise(1.6, 0.06).color(0.16, 0.22, 0.55).modulate(voronoi(3, 0.15), 0.25)`;
 
 const SECTIONS = {
-  wash: `await initHydra({ src: ${HY} })
+  wash: `await initHydra()
 ${WASH_SHADER}
   .blend(o0, 0.92)
   .out(o0)
@@ -42,7 +79,7 @@ stack(
   ${BOX}.gain(0.45)
 )`,
 
-  pulse: `await initHydra({ src: ${HY} })
+  pulse: `await initHydra()
 const kick = "1 0 0.5 0 1 0 0.3 0.3"
 ${WASH_SHADER}
   .add(shape(6, () => 0.12 + 0.3 * H(kick)(), 0.4).color(0.35, 0.5, 1.2), 0.6)
@@ -57,7 +94,7 @@ stack(
   note(${ROOTS}).s("gm_synth_bass_1").lpf(500).gain(0.7)
 )`,
 
-  listen: `await initHydra({ src: ${HY} })
+  listen: `await initHydra()
 a.setCutoff(1)
 a.setScale(6)
 osc(12, 0.08, () => 0.6 + a.fft[0] * 2)
@@ -76,7 +113,7 @@ stack(
   ${PAD}.gain(0.4)
 )`,
 
-  feed: `await initHydra({ feedStrudel: true, src: ${HY} })
+  feed: `await initHydra({ feedStrudel: true })
 src(s0)
   .kaleid(4)
   .modulate(noise(3, 0.2), 0.05)
@@ -94,7 +131,7 @@ stack(
     .s("gm_epiano1").room(0.5).delay(0.25).gain(0.7).color("cyan")
 )`,
 
-  stage: `await initHydra({ feedStrudel: true, src: ${HY} })
+  stage: `await initHydra({ feedStrudel: true })
 src(s0)
   .kaleid(() => 4 + Math.round(a.fft[0] * 4))
   .modulate(noise(3, 0.2), () => 0.05 + a.fft[1] * 0.4)
@@ -114,7 +151,7 @@ stack(
     .delay(0.5).delaytime(0.375).room(0.6).gain(0.35).color("magenta")
 )`,
 
-  breathe: `await initHydra({ src: ${HY} })
+  breathe: `await initHydra()
 ${WASH_SHADER}
   .add(osc(6, 0.03, () => 0.4 + a.fft[0]).kaleid(5).color(0.2, 0.3, 0.9), 0.35)
   .blend(o0, 0.9)
@@ -126,7 +163,7 @@ stack(
   note("<a1 f1 c2 g1>").s("gm_synth_bass_1").lpf(400).gain(0.5)
 )`,
 
-  tail: `await initHydra({ src: ${HY} })
+  tail: `await initHydra()
 ${WASH_SHADER}
   .blend(o0, 0.95)
   .out(o0)
@@ -136,16 +173,6 @@ stack(
   note("<a4 ~ ~ ~ e5 ~ ~ ~>").s("gm_music_box").room(0.9).delay(0.5).gain(0.35)
 )`,
 };
-
-const ABC_SCORE = `X:1
-T:Theme
-C:mcp-music-studio 0.5
-M:4/4
-L:1/8
-Q:1/4=120
-K:Am
-"Am"e2 c2 a2 c'2 | "F"a2 f2 c2 f2 | "C"e2 g2 c'2 g2 | "G"d2 g2 b2 g2 |
-"Am"e2 c2 a2 c'2 | "F"a2 f2 c2 f2 | "C"e2 g2 c'2 g2 | "G"d2 g2 b2 a2 |]`;
 
 // ---- cues -------------------------------------------------------------------
 
@@ -159,42 +186,28 @@ const CAPTIONS: Record<string, Caption> = {
   feed: { n: "IV", t: "feed", s: "<code>feedStrudel</code> — the piano roll is the shader's texture" },
   stage: { n: "V", t: "stage", s: "Stage mode — the code steps aside" },
   breathe: { n: "VI", t: "breathe", s: "every section was a hot-swapped re-evaluation — the clock never stopped" },
-  score: { n: "VII", t: "score, arranged", s: "the theme again, <code>style: bossa</code> — presets with real drums again, swing that swings, edit in place, MIDI export" },
 };
 
-const T = 18; // the score plays the theme first; Strudel enters on top of its chords
 const cues: Cue[] = [
-  { at: 0, run: async () => { await abc(ABC_SCORE, "classical"); $("veil").classList.add("off"); $("abc").classList.add("on"); } },
-  { at: 2.5, run: () => caption({ n: "theme", t: "score", s: "eight bars in A minor, as <code>play-sheet-music</code> — everything that follows is built on them" }, 8000) },
-  { at: 4, run: () => $("brand").classList.add("on") },
-  { at: T - 1, run: () => strudel(SECTIONS.wash, "wash") },
-  { at: T + 0.5, run: () => { $("abc").classList.remove("on"); $("strudel").classList.add("on"); } },
-  // The 8-bar score ends on its own (~17.5 s); do not touch its transport — the
-  // abcjs button is a toggle and would restart the tune.
-  { at: T + 3, run: () => caption(CAPTIONS.wash) },
-  { at: T + 24, run: () => strudel(SECTIONS.pulse, "pulse") },
-  { at: T + 25, run: () => caption(CAPTIONS.pulse) },
-  { at: T + 48, run: () => strudel(SECTIONS.listen, "listen") },
-  { at: T + 49, run: () => caption(CAPTIONS.listen) },
-  { at: T + 76, run: () => strudel(SECTIONS.feed, "feed") },
-  { at: T + 77, run: () => caption(CAPTIONS.feed) },
-  { at: T + 104, run: () => strudel(SECTIONS.stage, "stage") },
-  { at: T + 105, run: () => clickInStrudel("stage-btn") },
-  { at: T + 106, run: () => caption(CAPTIONS.stage) },
-  { at: T + 128, run: () => strudel(SECTIONS.breathe, "breathe") },
-  { at: T + 129, run: () => clickInStrudel("stage-btn") },
-  { at: T + 130, run: () => caption(CAPTIONS.breathe) },
-  { at: T + 156, run: () => strudel(SECTIONS.tail, "tail") },
-  { at: T + 164, run: () => { $("strudel").classList.remove("on"); } },
-  { at: T + 166, run: async () => {
-    // Stop the Strudel widget cleanly (its Play button toggles), then hand over.
-    clickInStrudel("play-btn");
-    $("strudel").classList.add("gone");
-    await abc(ABC_SCORE, "bossa");
-    $("abc").classList.add("on");
-  } },
-  { at: T + 168, run: () => caption(CAPTIONS.score, 14000) },
-  { at: T + 192, run: () => { $("abc").classList.remove("on"); $("brand").classList.remove("on"); } },
+  { at: 0, run: () => strudel(SECTIONS.wash, "wash") },
+  { at: 1.5, run: () => { $("veil").classList.add("off"); $("strudel").classList.add("on"); } },
+  { at: 4, run: () => caption(CAPTIONS.wash) },
+  { at: 6, run: () => $("brand").classList.add("on") },
+  { at: 24, run: () => strudel(SECTIONS.pulse, "pulse") },
+  { at: 25, run: () => caption(CAPTIONS.pulse) },
+  { at: 48, run: () => strudel(SECTIONS.listen, "listen") },
+  { at: 49, run: () => caption(CAPTIONS.listen) },
+  { at: 76, run: () => strudel(SECTIONS.feed, "feed") },
+  { at: 77, run: () => caption(CAPTIONS.feed) },
+  { at: 104, run: () => strudel(SECTIONS.stage, "stage") },
+  { at: 105, run: () => clickInStrudel("stage-btn") },
+  { at: 106, run: () => caption(CAPTIONS.stage) },
+  { at: 128, run: () => strudel(SECTIONS.breathe, "breathe") },
+  { at: 129, run: () => clickInStrudel("stage-btn") },
+  { at: 130, run: () => caption(CAPTIONS.breathe) },
+  { at: 156, run: () => strudel(SECTIONS.tail, "tail") },
+  { at: 168, run: () => { $("strudel").classList.remove("on"); $("brand").classList.remove("on"); } },
+  { at: 171, run: () => clickInStrudel("play-btn") },
 ];
 
 // ---- host plumbing ----------------------------------------------------------
@@ -242,27 +255,36 @@ async function mount(id: string, src: string, name: string): Promise<AppBridge> 
 }
 
 let strudelBridge: AppBridge;
-let abcBridge: AppBridge;
+
+/**
+ * OBS's CEF renders fonts wider than Chrome, so at the portrait layout width
+ * the widget's toolbar overflows and CodeMirror scrolls the whole document
+ * sideways — the take came out shifted with a blank strip. Pin the widget
+ * document at (0,0) with overflow hidden; same-origin, so we can reach in.
+ */
+function pinStrudelViewport(): void {
+  const win = $<HTMLIFrameElement>("strudel").contentWindow;
+  const doc = win?.document;
+  if (!doc) return;
+  if (!doc.getElementById("perform-pin")) {
+    const st = doc.createElement("style");
+    st.id = "perform-pin";
+    st.textContent = "html, body { overflow: hidden !important; } .toolbar, header { flex-wrap: wrap; }";
+    doc.head.appendChild(st);
+  }
+  win!.scrollTo(0, 0);
+  doc.documentElement.scrollLeft = 0;
+  doc.body.scrollLeft = 0;
+}
 
 async function strudel(code: string, title: string): Promise<void> {
-  const args = { code, bpm: BPM, theme: THEME, title, autoplay: true };
+  const args = { code: PORTRAIT ? reflow(code) : code, bpm: BPM, theme: THEME, title, autoplay: true };
   await strudelBridge.sendToolInput({ arguments: args });
   await strudelBridge.sendToolResult({ content: [{ type: "text", text: `"${title}" — Strudel pattern ready.` }] });
+  setTimeout(pinStrudelViewport, 300);
+  setTimeout(pinStrudelViewport, 1500);
 }
 
-async function abc(abcNotation: string, style: string): Promise<void> {
-  const args = { abcNotation, title: "Theme", instrument: "vibraphone", style, tempo: BPM, autoplay: true };
-  await abcBridge.sendToolInput({ arguments: args });
-  await abcBridge.sendToolResult({ content: [{ type: "text", text: "Sheet music ready." }] });
-}
-
-/** abcjs's transport buttons carry classes, not ids: "play" (toggles), "pause". */
-function clickInAbc(cls: string): void {
-  const doc = $<HTMLIFrameElement>("abc").contentDocument;
-  const el = doc?.querySelector(`.abcjs-midi-${cls}, .abcjs-midi-start`) as HTMLButtonElement | null;
-  if (el) el.click();
-  else console.warn(`no abcjs ${cls} button`);
-}
 
 function clickInStrudel(id: string): void {
   const doc = $<HTMLIFrameElement>("strudel").contentDocument;
@@ -298,12 +320,27 @@ async function perform(): Promise<void> {
 }
 
 async function boot(): Promise<void> {
-  [strudelBridge, abcBridge] = await Promise.all([
-    mount("strudel", "/widgets/strudel-app.html", "PerformHost/strudel"),
-    mount("abc", "/widgets/mcp-app.html", "PerformHost/abc"),
-  ]);
+  strudelBridge = await mount("strudel", "/widgets/strudel-app.html", "PerformHost/strudel");
   console.log("[perform] widgets ready");
+  pinStrudelViewport();
+  setInterval(pinStrudelViewport, 1000);
   (window as any).__performReady = true;
+  if (params.get("debug") === "1") {
+    const r = $("strudel").getBoundingClientRect();
+    const cs = getComputedStyle($("strudel"));
+    $("go").textContent = `inner ${innerWidth}x${innerHeight} dpr ${devicePixelRatio} | frame rect ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)} | css w ${cs.width} h ${cs.height} transform ${cs.transform} | ua ${navigator.userAgent.slice(-60)}`;
+    $("go").style.cssText += ";font-size:26px;padding:40px;text-align:left;white-space:normal;line-height:1.5";
+  }
+  if (params.get("debug") === "2") {
+    setTimeout(() => {
+      const doc = $<HTMLIFrameElement>("strudel").contentDocument!;
+      const rect = (sel: string) => { const e = doc.querySelector(sel); if (!e) return `${sel}: none`; const r = e.getBoundingClientRect(); return `${sel}: ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}`; };
+      const info = [`inner ${doc.defaultView!.innerWidth}x${doc.defaultView!.innerHeight} scrollW ${doc.documentElement.scrollWidth} scrollX ${doc.defaultView!.scrollX}`,
+        rect("body"), rect("header"), rect(".repl-section"), rect("#strudel-container"), rect(".cm-editor"), rect("#hydra-canvas"), rect("#test-canvas")].join(" | ");
+      const el = $("caption"); el.querySelector(".s")!.textContent = info; el.querySelector(".t")!.textContent = "debug"; el.classList.add("on");
+      (el.querySelector(".s") as HTMLElement).style.fontSize = "22px";
+    }, 22000);
+  }
   if (params.get("autoplay") === "1") void perform();
   else $("go").addEventListener("click", () => void perform(), { once: true });
 }

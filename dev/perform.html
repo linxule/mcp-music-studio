@@ -11,12 +11,12 @@
     #stage { position: fixed; inset: 0; }
     /* The widgets lay out at 1422×800 and are scaled ×1.35 to 1920×1080, so the code reads at 1080p.
        transform, not zoom: OBS's CEF ignores zoom on iframes. */
-    .frame { position: absolute; left: 0; top: 0; width: 1422px; height: 800px; transform: scale(1.35); transform-origin: 0 0; border: 0; background: #0b0b10;
+    .frame { position: absolute; left: 0; top: 0; width: var(--fw, 1422px); height: var(--fh, 800px); transform: scale(1.35); transform-origin: 0 0; border: 0; background: #0b0b10;
       opacity: 0; transition: opacity 1.8s ease; }
     .frame.on { opacity: 1; }
     .frame.gone { visibility: hidden; }
     /* Captions live over the visuals; nothing is a slide. */
-    #caption { position: absolute; left: 56px; bottom: 48px; max-width: 46vw; pointer-events: none;
+    #caption { position: absolute; left: 56px; bottom: 48px; max-width: var(--capw, 46vw); pointer-events: none;
       opacity: 0; transform: translateY(6px); transition: opacity .9s ease, transform .9s ease; }
     #caption.on { opacity: 1; transform: none; }
     #caption .n { font: 600 15px/1 "SF Mono", Menlo, monospace; letter-spacing: .22em; color: #bcb2ff; text-transform: uppercase; }
@@ -37,7 +37,6 @@
 <body>
   <div id="stage">
     <iframe id="strudel" class="frame" allow="autoplay; clipboard-write"></iframe>
-    <iframe id="abc" class="frame" allow="autoplay; clipboard-write"></iframe>
     <div id="veil"></div>
     <div id="caption"><div class="n"></div><div class="t"></div><div class="s"></div></div>
     <div id="brand">mcp-music-studio 0.5<br>npx mcp-music-studio</div>

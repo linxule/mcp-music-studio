@@ -57,6 +57,14 @@ bunx vite --config dev/vite.config.ts --port 5210 &
 # start_record → wait outputActive → set url …?autoplay=1 → ~216 s → stop_record
 ```
 
+Portrait (3:4 for Xiaohongshu): `?w=1080&h=1440` — the page reflows long
+lines at method-chain boundaries (`reflow()`), and the widgets lay out at
+size/1.35. Use a SEPARATE scene + browser source sized 1080×1440 and set the
+canvas with `set_video_settings`; then **reset the scene item transform to
+scale 1 / position 0** — OBS auto-fits a new source into the canvas
+(`scaleX 1.333`) and the take comes out cropped with a blank strip. Restore
+the 1920×1080 canvas afterwards.
+
 Gotchas measured on OBS 32 / CEF: CSS `zoom` on the iframes is ignored (use
 `transform: scale()`); WebGL and WebAudio autoplay both work; the take's audio
 peaks ~+0.9 dBFS on two hits, so encode with a limiter. `?speed=6` rehearses
