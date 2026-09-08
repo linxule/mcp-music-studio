@@ -534,6 +534,28 @@ describe("H2 — the chord scale follows the chord's intervals", () => {
     expect(scaleFor("Caug")).toBe("C whole tone");
     expect(scaleFor("Cmaj7")).toBe("C major");
   });
+
+  // Codex review #16. Both symbols name an alteration OUT LOUD and both used to
+  // be answered with a scale that does not contain it:
+  //   Cmaj7#11 → C major   (no F#, the one note the symbol adds)
+  //   Cmaj7#5  → C whole tone (no B, the major 7th the symbol names — tonal
+  //                            spells maj7#5 "augmented seventh", 1P 3M 5A 7M,
+  //                            and the generic augmented branch caught it first)
+  it("gives an altered major seventh a scale that contains the alteration", () => {
+    expect(scaleFor("Cmaj7#11")).toBe("C lydian");
+    expect(scaleFor("Cmaj9#11")).toBe("C lydian");
+    expect(scaleFor("Cmaj7#5")).toBe("C lydian augmented");
+  });
+
+  it("prints the altered chord tone in the notes it lists", () => {
+    const sharp11 = analyzeHarmony({ task: "scale-for-chord", chords: ["Cmaj7#11"] });
+    expect(sharp11).toContain("C lydian: C D E F# G A B");
+    expect(sharp11).toContain('scale("C:lydian")');
+
+    const sharp5 = analyzeHarmony({ task: "scale-for-chord", chords: ["Cmaj7#5"] });
+    expect(sharp5).toContain("C lydian augmented: C D E F# G# A B");
+    expect(sharp5).toContain('scale("C:lydian:augmented")');
+  });
 });
 
 describe("H3 — the Strudel snippets are ones Strudel can play", () => {
