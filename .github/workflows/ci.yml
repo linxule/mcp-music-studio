@@ -17,11 +17,13 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          bun-version: "1.4.2"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
       - run: bun install --frozen-lockfile
       - run: bun run build   # runs `tsc --noEmit` inline (no standalone typecheck script)
       - run: bunx vitest run
@@ -31,4 +33,14 @@ jobs:
       - run: bun install --frozen-lockfile
         working-directory: worker
       - run: bunx tsc --noEmit
+        working-directory: worker
+      - name: Audit dependency locks
+        run: |
+          bun audit
+          (cd worker && bun audit)
+      - name: Build worker without deploying
+        run: bunx wrangler deploy --dry-run --outdir /tmp/music-worker-build
+        working-directory: worker
+      - name: Verify real worker HTTP transport
+        run: node --test tests/mcp.test.mjs
         working-directory: worker

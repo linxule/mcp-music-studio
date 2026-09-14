@@ -50,8 +50,10 @@
     "node": ">=20.11"
   },
   "dependencies": {
-    "@modelcontextprotocol/ext-apps": "^1.0.0",
-    "@modelcontextprotocol/sdk": "^1.24.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/core": "^2.0.0",
+    "@modelcontextprotocol/ext-apps": "^2.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@strudel/core": "1.2.6",
     "@strudel/mini": "1.2.6",
     "@strudel/tonal": "1.2.6",
@@ -60,19 +62,19 @@
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "tonal": "^6.4.3",
-    "zod": "^4.1.13"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
-    "@types/node": "22.10.0",
-    "concurrently": "^9.2.1",
+    "@types/node": "26.5.1",
+    "concurrently": "^10.0.5",
     "cross-env": "^10.1.0",
-    "typescript": "^5.9.3",
-    "vite": "^6.0.0",
-    "vite-plugin-singlefile": "^2.3.0",
-    "vitest": "^3.2.4",
-    "wrangler": "^4.76.0"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vite-plugin-singlefile": "^2.3.3",
+    "vitest": "^5.0.0",
+    "wrangler": "^4.131.2"
   },
   "types": "dist/server.d.ts",
   "exports": {

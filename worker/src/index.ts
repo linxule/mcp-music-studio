@@ -2,7 +2,7 @@
 // MCP Music Studio — Cloudflare Worker
 //
 // Remote MCP server for one-paste setup. Stateless handler (new server per
-// request) using createMcpHandler + WorkerTransport — matches the official
+// request) using createLegacyMcpHandler + WorkerTransport — matches the official
 // ext-apps example pattern for reliable UI rendering in Claude Desktop.
 //
 // Tool names, schemas, descriptions, annotations, _meta, instructions, and the
@@ -11,7 +11,7 @@
 // =============================================================================
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createMcpHandler } from "agents/mcp";
+import { createLegacyMcpHandler } from "agents/mcp";
 import { z } from "zod";
 // abcjs runs parse-only here (no DOM touched at import time — its one browser
 // polyfill is wrapped in try/catch), which is what convert-abc-to-strudel needs.
@@ -805,7 +805,7 @@ export function createMusicServer(
 }
 
 // =============================================================================
-// Worker fetch handler — stateless createMcpHandler
+// Worker fetch handler — stateless createLegacyMcpHandler
 // =============================================================================
 
 export default {
@@ -927,10 +927,10 @@ export default {
       // ext-apps UI — the default SSE response format isn't parsed correctly
       // by the Connector client for resources/read calls.
       const server = createMusicServer(env, url.origin);
-      // `agents` bundles its own @modelcontextprotocol/sdk copy, so its McpServer
-      // type is nominally distinct from ours (separate private fields). Safe at runtime.
-      const handler = createMcpHandler(
-        server as unknown as Parameters<typeof createMcpHandler>[0],
+      // Keep the SDK v1 server on Agents' explicit legacy adapter. The default
+      // createMcpHandler now accepts SDK v2 servers with a different context API.
+      const handler = createLegacyMcpHandler(
+        server as unknown as Parameters<typeof createLegacyMcpHandler>[0],
         {
           // `route` is optional and defaults to "/mcp"; the handler 404s
           // anything else. We already matched, and we accept the trailing-slash
