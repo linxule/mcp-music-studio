@@ -246,6 +246,14 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
 
+## 0.5.6 — September 14, 2026
+
+Dependency and compatibility maintenance: audited dependency locks, ext-apps v2
+widgets, the SDK v1-compatible worker adapter, and validated worker startup.
+The seven tools, music features and UI controls retain their existing behavior.
+Builds now synchronize the MCP Registry metadata with the package version, and
+publishing waits for the npm package to propagate before registry registration.
+
 ## Development
 
 Use Bun 1.4.2 and Node 24 for development and CI. Dependency updates use the Bun

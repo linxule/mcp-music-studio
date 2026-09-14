@@ -11,3 +11,9 @@ const body =
   `export const VERSION = ${JSON.stringify(pkg.version)};\n`;
 writeFileSync(join(root, "src", "version.ts"), body);
 console.error(`[sync-version] src/version.ts → ${pkg.version}`);
+
+const registryPath = join(root, "server.json");
+const registry = JSON.parse(readFileSync(registryPath, "utf8"));
+registry.version = pkg.version;
+for (const entry of registry.packages ?? []) entry.version = pkg.version;
+writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
