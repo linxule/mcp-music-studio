@@ -10,13 +10,13 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.24.0",
     "abcjs": "~6.7.0",
-    "agents": "^0.4.1",
+    "agents": "^0.22.0",
     "tonal": "^6.4.3",
     "zod": "^4.1.13"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250124.0",
-    "typescript": "^5.9.3",
+    "@cloudflare/workers-types": "^5.20260911.1",
+    "typescript": "^7.0.2",
     "wrangler": "^4.66.0"
   }
 }
