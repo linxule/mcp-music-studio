@@ -542,7 +542,7 @@ function setEditorOpen(open: boolean): void {
 }
 
 editBtn.addEventListener("click", () => {
-  setEditorOpen(editorPaneEl.hidden);
+  setEditorOpen(Boolean(editorPaneEl.hidden));
 });
 
 function cancelEditRender(): void {

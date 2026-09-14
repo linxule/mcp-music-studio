@@ -1,7 +1,5 @@
 # MCP Music Studio
 
-[![smithery badge](https://smithery.ai/badge/linxule/mcp-music-studio)](https://smithery.ai/server/linxule/mcp-music-studio)
-
 Two-mode creative music studio for AI: **scored composition** (ABC notation with sheet music) and **live performance** (Strudel live coding with TidalCycles). Interactive UI renders inline in Claude Desktop, claude.ai, and other MCP clients.
 
 <a href="https://github.com/linxule/mcp-music-studio/releases/download/v0.5.3/mcp-music-studio-v0.5-live-set-1080p60.mp4"><img src="assets/live-set-stage.gif" alt="A Strudel pattern with its piano roll fed into a Hydra shader, then Stage mode taking the whole frame" width="720"></a>
@@ -249,6 +247,14 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
 
 ## Development
+
+Use Bun 1.4.2 and Node 24 for development and CI. Dependency updates use the Bun
+ecosystem so both package manifests and lockfiles stay consistent. The server
+retains SDK v1 and the worker uses Agents' legacy MCP handler; widgets use
+ext-apps v2. CI checks both locks for vulnerabilities and exercises the real
+worker HTTP transport as well as the local/worker parity suite. The worker entry
+module exports only its fetch handler; test helpers stay in the implementation
+module because workerd rejects constants as runtime entry points.
 
 ```bash
 bun install

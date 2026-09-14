@@ -7,11 +7,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import {
-  RESOURCE_MIME_TYPE,
-  registerAppResource,
-  registerAppTool,
-} from "@modelcontextprotocol/ext-apps/server";
+import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import ABCJS from "abcjs";
 import {
   createPlaySheetMusicResult,
@@ -213,9 +209,10 @@ export function createServer(options?: ServerOptions): McpServer {
       inputSchema: config.inputSchema,
       annotations: playAnnotations,
     };
+    // uiToolMeta supplies both current and legacy metadata spellings. Register
+    // directly with SDK v1; ext-apps v2 server helpers require an SDK v2 server.
     if (inlineMode) {
-      registerAppTool(
-        server,
+      server.registerTool(
         name,
         { ...base, _meta: uiToolMeta(config.resourceUri) },
         handler as never,
@@ -352,8 +349,7 @@ export function createServer(options?: ServerOptions): McpServer {
   // ---------------------------------------------------------------------------
   // Resource: UI (bundled HTML/JS/CSS) — Sheet Music
   // ---------------------------------------------------------------------------
-  registerAppResource(
-    server,
+  server.registerResource(
     SHEET_RESOURCE_URI,
     SHEET_RESOURCE_URI,
     { mimeType: RESOURCE_MIME_TYPE, description: "Sheet Music Viewer UI" },
@@ -550,8 +546,7 @@ export function createServer(options?: ServerOptions): McpServer {
   // ---------------------------------------------------------------------------
   // Resource: UI (bundled HTML/JS/CSS) — Strudel REPL
   // ---------------------------------------------------------------------------
-  registerAppResource(
-    server,
+  server.registerResource(
     STRUDEL_RESOURCE_URI,
     STRUDEL_RESOURCE_URI,
     { mimeType: RESOURCE_MIME_TYPE, description: "Strudel Live Pattern REPL" },

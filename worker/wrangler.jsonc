@@ -1,9 +1,13 @@
 {
   "name": "mcp-music-studio",
-  "main": "src/index.ts",
+  "main": "src/entry.ts",
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["MusicStudioMCP"]
+    },
     {
       "tag": "v2",
       "deleted_classes": ["MusicStudioMCP"]
