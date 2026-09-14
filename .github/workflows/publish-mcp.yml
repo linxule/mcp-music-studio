@@ -48,6 +48,9 @@ jobs:
       - name: Run tests
         run: bunx vitest run
 
+      - name: Audit dependencies
+        run: bun audit
+
       - name: Publish to npm (OIDC Trusted Publishing)
         run: |
           # Pinned to the 11.x line: OIDC trusted publishing needs >= 11.5.1, and
@@ -61,6 +64,11 @@ jobs:
             npm publish --ignore-scripts
           fi
 
+      - name: Wait for npm package propagation
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          curl --fail --silent --show-error --retry 60 --retry-delay 5 --retry-all-errors --retry-max-time 300 --max-time 15 "https://registry.npmjs.org/mcp-music-studio/$VERSION" > /dev/null
+
       - name: Update server.json version
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
@@ -68,7 +76,7 @@ jobs:
 
       - name: Install MCP Publisher
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          curl -fL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
 
       - name: Login to MCP Registry
         run: ./mcp-publisher login github-oidc
