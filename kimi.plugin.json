@@ -1,0 +1,36 @@
+{
+  "$schema": "https://kimi.com/schemas/kimi.plugin.schema.json",
+  "name": "music-studio",
+  "version": "0.5.7",
+  "description": "Two-mode MCP music studio: scored composition (ABC notation) and live performance (Strudel live coding).",
+  "keywords": [
+    "mcp",
+    "music",
+    "abc-notation",
+    "strudel",
+    "live-coding",
+    "midi",
+    "sheet-music"
+  ],
+  "author": "Xule Lin",
+  "license": "MIT",
+  "homepage": "https://github.com/linxule/mcp-music-studio#readme",
+  "mcpServers": {
+    "music-studio": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-music-studio@latest",
+        "--stdio"
+      ]
+    }
+  },
+  "interface": {
+    "displayName": "Music Studio",
+    "shortDescription": "Compose scored music (ABC) and live-code patterns (Strudel) — sheet music, MIDI/WAV export, harmony tools",
+    "longDescription": "Two-mode MCP music studio: scored composition in ABC notation and live performance via Strudel live coding. Sheet music rendering, in-place editing, MIDI/WAV export, all 128 General MIDI instruments, style presets, harmony analysis, and a live REPL with Hydra shader visuals. The plugin runs the published npm package over stdio (npx mcp-music-studio --stdio). Note: the interactive ext-apps widgets require an MCP client with UI rendering support; in Kimi Code the composition, performance, and analysis tools work, but the widgets do not display.",
+    "developerName": "Xule Lin",
+    "websiteURL": "https://github.com/linxule/mcp-music-studio",
+    "iconUrl": "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/icons/logo-256.png"
+  }
+}

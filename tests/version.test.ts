@@ -14,6 +14,11 @@ describe("version single source of truth", () => {
   it("src/version.ts VERSION matches package.json version", () => {
     expect(VERSION).toBe(pkg.version);
   });
+
+  it("kimi.plugin.json version matches package.json version", () => {
+    const kp = JSON.parse(readFileSync(new URL("../kimi.plugin.json", import.meta.url), "utf8"));
+    expect(kp.version).toBe(pkg.version);
+  });
 });
 
 // The MCP Registry rejects server.json descriptions longer than 100 chars

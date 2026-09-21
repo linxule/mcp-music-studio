@@ -17,3 +17,8 @@ const registry = JSON.parse(readFileSync(registryPath, "utf8"));
 registry.version = pkg.version;
 for (const entry of registry.packages ?? []) entry.version = pkg.version;
 writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
+
+const kimiPluginPath = join(root, "kimi.plugin.json");
+const kimiPlugin = JSON.parse(readFileSync(kimiPluginPath, "utf8"));
+kimiPlugin.version = pkg.version;
+writeFileSync(kimiPluginPath, JSON.stringify(kimiPlugin, null, 2) + "\n");
