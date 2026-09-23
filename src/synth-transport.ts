@@ -11,10 +11,13 @@
 /** abcjs's transport UI (`create-synth-control.js`), as far as we touch it. */
 interface TransportUi {
   pushLoop(push: boolean): void;
+  /** Writes the % field and the BPM readout. */
+  setWarp(tempo: number, warp: number): void;
 }
 
 /** The SynthController members the widget reads or wraps. */
 interface SynthInternals {
+  warp?: number;
   isStarted?: boolean;
   isLooping?: boolean;
   isLoading?: boolean;
@@ -39,11 +42,18 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 export interface TransportState {
   wasPlaying: boolean;
   wasLooping: boolean;
+  /** The tempo field, in percent (abcjs `warp`; 100 = as written). */
+  warp: number;
 }
 
 export function readTransport(control: object): TransportState {
   const raw = internals(control);
-  return { wasPlaying: Boolean(raw.isStarted), wasLooping: Boolean(raw.isLooping) };
+  const warp = Number(raw.warp);
+  return {
+    wasPlaying: Boolean(raw.isStarted),
+    wasLooping: Boolean(raw.isLooping),
+    warp: warp > 0 ? warp : 100,
+  };
 }
 
 /**
@@ -69,6 +79,39 @@ export function pauseTransport(control: object): void {
   const raw = internals(control);
   raw.pause();
   raw.isStarted = false;
+}
+
+// =============================================================================
+// Tempo carried into a new controller (#26)
+// =============================================================================
+
+/** The parts of a parsed abcjs tune that set its tempo. */
+export interface TempoSource {
+  getBeatsPerMeasure(): number;
+  millisecondsPerMeasure(): number;
+}
+
+/** The BPM abcjs shows for `tune` at `warp` percent: `go()`'s own formula. */
+export function warpedTempo(tune: TempoSource, warp: number): number {
+  const millisecondsPerMeasure = (tune.millisecondsPerMeasure() * 100) / warp;
+  return Math.round((tune.getBeatsPerMeasure() / millisecondsPerMeasure) * 60000);
+}
+
+/**
+ * Start a fresh controller at the tempo the listener had set on the old one.
+ *
+ * `go()` reads `self.warp` for the playback speed but updates only the BPM
+ * readout (`control.setTempo`). The % field is written only inside
+ * `setWarp()`, so setting `warp` alone would play at 150% under a field that
+ * still says 100. Writing it also fills the BPM readout of a re-render that
+ * does not autoplay, which is otherwise blank until the first ▶. Call after
+ * `load()`, which builds the field.
+ */
+export function carryWarp(control: object, warp: number, tune: TempoSource): void {
+  if (!(warp > 0)) return;
+  const raw = internals(control);
+  raw.warp = warp;
+  raw.control?.setWarp(warpedTempo(tune, warp), warp);
 }
 
 // =============================================================================

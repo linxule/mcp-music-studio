@@ -14,11 +14,14 @@
 import ABCJS from "abcjs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  carryWarp,
   keepLoopLitThroughWarp,
   pauseTransport,
   readTransport,
   reprime,
+  restoreLoop,
   trackTransport,
+  warpedTempo,
   whenTransportIdle,
 } from "../src/synth-transport";
 
@@ -413,5 +416,77 @@ describe("reprime", () => {
     });
     expect(superseded).toBe(1);
     expect(h.ctrl.isStarted).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #26 — a Style change reset the tempo and Loop (and played when paused)
+// -----------------------------------------------------------------------------
+
+describe("carrying the transport into a new controller (#26)", () => {
+  it("computes the BPM abcjs shows, from go()'s own formula", () => {
+    // Q:1/4=120 in 4/4.
+    expect(warpedTempo(TUNE, 100)).toBe(120);
+    expect(warpedTempo(TUNE, 150)).toBe(180);
+    expect(warpedTempo(TUNE, 50)).toBe(60);
+  });
+
+  it("reads the tempo field, defaulting to 100%", () => {
+    const h = harness();
+    expect(readTransport(h.ctrl).warp).toBe(100);
+    h.ctrl.warp = 150;
+    expect(readTransport(h.ctrl).warp).toBe(150);
+    h.ctrl.warp = Number.NaN;
+    expect(readTransport(h.ctrl).warp).toBe(100);
+  });
+
+  /** What renderAbc does with a Style change's carry: the new controller's life. */
+  async function restyle(old: Harness, autoplay: boolean): Promise<Harness> {
+    const carry = readTransport(old.ctrl);
+    const next = harness();
+    carryWarp(next.ctrl, carry.warp, TUNE); // after load()
+    await next.ctrl.setTune(TUNE, false);
+    restoreLoop(next.ctrl, carry); // setTune() switched Loop off
+    if (autoplay) await next.ctrl.play();
+    return next;
+  }
+
+  it("keeps the tempo and Loop, and the field shows the tempo it plays at", async () => {
+    const old = await playingWithLoop();
+    keepLoopLitThroughWarp(old.ctrl);
+    await old.ctrl.setWarp(150);
+    const next = await restyle(old, readTransport(old.ctrl).wasPlaying);
+    expect(next.ctrl.warp).toBe(150);
+    expect(next.ui.warpField).toBe(150);
+    expect(next.ui.tempoText).toBe("180");
+    expect(next.ctrl.currentTempo).toBe(180); // what go() then plays at
+    expect(next.ctrl.isLooping).toBe(true);
+    expect(next.ui.loop).toBe(true);
+    expect(next.ctrl.isStarted).toBe(true);
+  });
+
+  it("writes the readout at 100% too, so a paused re-render still shows its BPM", () => {
+    const h = harness();
+    carryWarp(h.ctrl, 100, TUNE);
+    expect(h.ctrl.warp).toBe(100);
+    expect(h.ui.warpField).toBe(100);
+    expect(h.ui.tempoText).toBe("120");
+  });
+
+  it("ignores a nonsense tempo", () => {
+    const h = harness();
+    carryWarp(h.ctrl, 0, TUNE);
+    expect(h.ctrl.warp).toBe(100);
+    expect(h.ui.tempoText).toBe("");
+  });
+
+  it("a paused tune, or one stopped by a cancel, reads as not playing", async () => {
+    const paused = await playingWithLoop();
+    await paused.ctrl.play(); // the user's pause
+    expect(readTransport(paused.ctrl).wasPlaying).toBe(false);
+
+    const cancelled = await playingWithLoop();
+    pauseTransport(cancelled.ctrl); // ontoolcancelled → stopPlayback()
+    expect(readTransport(cancelled.ctrl).wasPlaying).toBe(false);
   });
 });

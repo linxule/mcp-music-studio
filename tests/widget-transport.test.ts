@@ -78,6 +78,39 @@ describe("sheet music transport", () => {
     );
   });
 
+  it("a Style change carries tempo and Loop, and plays only if it was playing (#26)", () => {
+    const handler = ABC.slice(ABC.indexOf('styleSelect.addEventListener("change"'));
+    const fn = handler.slice(0, handler.indexOf("\n});\n"));
+    expect(fn).toContain("const carry = control ? readTransport(control) : null;");
+    expect(fn).toContain("const autoplay = Boolean(carry?.wasPlaying) || autoplayLoading(control);");
+    expect(fn).toContain("renderAbc(state.currentAbc, undefined, { autoplay, carry });");
+
+    const render = body(ABC, "async function renderAbc(");
+    // Tempo onto the new controller once load() has built its % field…
+    expect(render).toMatch(/synthControl\.load\([\s\S]*?carryWarp\(synthControl, transport\.carry\.warp/);
+    // …Loop back after setTune() cleared it, and only for a current render…
+    expect(render).toMatch(
+      /if \(isStale\(generation\)\) \{[\s\S]*?if \(transport\.carry\) restoreLoop\(synthControl, transport\.carry\);/,
+    );
+    // …and no play() unless asked.
+    expect(render).toMatch(/if \(!transport\.autoplay\) \{[\s\S]*?return;\s*\}[\s\S]*?synthControl\.play\(\)/);
+  });
+
+  it("a stale autoplay (cancelled, or taken over) does not count as playing", () => {
+    expect(body(ABC, "function autoplayLoading(")).toContain(
+      "!isStale(pendingAutoplay.generation)",
+    );
+  });
+
+  it("every full render says whether it autoplays: nothing is inferred", () => {
+    const code = ABC.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    // Every call, but not the declaration or ABCJS.renderAbc.
+    const calls = code.match(/[^.\w]renderAbc\((?!\s*abcNotation)/g) ?? [];
+    const explicit = code.match(/[^.\w]renderAbc\([^)]*\{ autoplay[^}]*\}\)/g) ?? [];
+    expect(explicit.length).toBe(3); // tool input, Style change, editor fallback
+    expect(calls.length).toBe(explicit.length);
+  });
+
   it("keeps the Loop button lit through a tempo change on every controller it builds (#31)", () => {
     // One construction site, and it wraps setWarp before anything can call it.
     expect(ABC.match(/new ABCJS\.synth\.SynthController\(\)/g)).toHaveLength(1);

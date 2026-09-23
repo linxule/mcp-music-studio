@@ -43,6 +43,7 @@ import {
 } from "./frame-size";
 import { USER_SCROLL_GRACE_MS, followScrollTarget } from "./sheet-follow";
 import {
+  carryWarp,
   keepLoopLitThroughWarp,
   pauseTransport,
   readTransport,
@@ -50,6 +51,7 @@ import {
   restoreLoop,
   trackTransport,
   whenTransportIdle,
+  type TransportState,
 } from "./synth-transport";
 import { VERSION } from "./version";
 
@@ -541,9 +543,16 @@ for (const name of Object.keys(STYLE_PRESETS)) {
 
 styleSelect.addEventListener("change", () => {
   state.currentStyle = styleSelect.value;
-  if (state.currentAbc) {
-    renderAbc(state.currentAbc);
-  }
+  if (!state.currentAbc) return;
+  // The preset rewrites the ABC, so a Style change re-renders and builds a new
+  // controller (tempo 100%, Loop off). Carry the old one's tempo and Loop
+  // across, and play only if it was playing, or still loading its autoplay
+  // (#26). After a cancel it reads as stopped (pauseTransport) and its
+  // autoplay as stale, so a Style change never restarts cancelled music.
+  const control = state.synthControl;
+  const carry = control ? readTransport(control) : null;
+  const autoplay = Boolean(carry?.wasPlaying) || autoplayLoading(control);
+  void renderAbc(state.currentAbc, undefined, { autoplay, carry });
 });
 
 const styleLabel = document.createElement("label");
@@ -803,7 +812,8 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
   if (!state.synthControl) {
     lastEditRendered = abc;
     setEditorMessage(messages.length > 0 ? messages.join("\n") : null, "warn");
-    await renderAbc(abc);
+    // The tool call's first playable render, so it autoplays as that would have.
+    await renderAbc(abc, undefined, { autoplay: true });
     reportEditToModel(abc);
     return;
   }
@@ -1200,9 +1210,33 @@ function setLoading(text: string): void {
   }
 }
 
+/** What a full render does about the transport it replaces (#26). */
+interface RenderTransport {
+  /** Start playing once primed: a tool call does, a Style change only if it was. */
+  autoplay: boolean;
+  /** Tempo and Loop to carry over from the controller being replaced. */
+  carry?: TransportState | null;
+}
+
+/** The autoplay a render started that has not finished loading and starting. */
+let pendingAutoplay: {
+  control: ABCJS.SynthObjectController;
+  generation: number;
+} | null = null;
+
+/** Is `control` still loading an autoplay that nothing has superseded? */
+function autoplayLoading(control: ABCJS.SynthObjectController | null): boolean {
+  return (
+    control !== null &&
+    pendingAutoplay?.control === control &&
+    !isStale(pendingAutoplay.generation)
+  );
+}
+
 async function renderAbc(
   abcNotation: string,
-  extraSynthOpts?: Record<string, unknown>,
+  extraSynthOpts: Record<string, unknown> | undefined,
+  transport: RenderTransport,
 ): Promise<void> {
   // Supersede any partial render, any earlier renderAbc still awaiting, and
   // any queued play() continuation. Everything below re-checks this.
@@ -1265,6 +1299,9 @@ async function renderAbc(
       displayProgress: true,
       displayWarp: true,
     });
+    if (transport.carry) {
+      carryWarp(synthControl, transport.carry.warp, state.visualObj[0]);
+    }
 
     await synthControl.setTune(
       state.visualObj[0],
@@ -1286,6 +1323,13 @@ async function renderAbc(
     midiBtn.disabled = !downloadSupported;
     sendBtn.disabled = !messageSupported;
 
+    // setTune() switched Loop off; put the listener's back.
+    if (transport.carry) restoreLoop(synthControl, transport.carry);
+    if (!transport.autoplay) {
+      setStatus(withTransposeNote("Click ▶ to play"));
+      return;
+    }
+
     // Autoplay — attempt to start playback immediately
     // (may be blocked by browser autoplay policy until user clicks).
     // play() returns a Promise, so a synchronous try/catch never fires —
@@ -1295,8 +1339,13 @@ async function renderAbc(
     // slowest continuation in the widget and the one most likely to land in a
     // discarded generation. Both branches re-check before touching the UI, and
     // the resolved branch stops audio it started into a stale generation.
+    pendingAutoplay = { control: synthControl, generation };
+    const autoplayDone = () => {
+      if (pendingAutoplay?.control === synthControl) pendingAutoplay = null;
+    };
     (synthControl.play() as Promise<void> | undefined)
-      ?.then(() => {
+      ?.finally(autoplayDone)
+      .then(() => {
         hasPrimedAudio = true;
         if (isStale(generation)) {
           // NOT an unconditional destroy: an edit reuses this very controller
@@ -1379,7 +1428,7 @@ app.ontoolinput = (params) => {
     lastEditRendered = abc;
     lastEditReported = abc;
     setEditorMessage(null, "error");
-    renderAbc(abc, preparedInput.synthOptions).catch(console.error);
+    renderAbc(abc, preparedInput.synthOptions, { autoplay: true }).catch(console.error);
   } else {
     setStatus("No ABC notation provided", true);
   }
