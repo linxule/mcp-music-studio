@@ -468,6 +468,33 @@ describe("TransportQueue: one re-prime at a time, on the live controller", () =>
     expect(b.loads.calls).toBe(2);
   });
 
+  it("gives up on a load that never settles, and runs the change anyway", async () => {
+    // A stalled sample request: abcjs's XHR has no timeout, so go() never settles.
+    const h = await loading(gate());
+    const queue = new TransportQueue(() => h.ctrl, () => true, 60);
+    let ran = false;
+    const change = queue.run(() => {
+      ran = true;
+    });
+    await sleep(30);
+    expect(ran).toBe(false);
+    await sleep(120);
+    expect(ran).toBe(true);
+    await change;
+  });
+
+  it("…and on a change before it that never finishes", async () => {
+    const queue = new TransportQueue(() => null, () => true, 60);
+    void queue.run(() => new Promise<never>(() => {}));
+    let ran = false;
+    const next = queue.run(() => {
+      ran = true;
+    });
+    await sleep(150);
+    expect(ran).toBe(true);
+    await next;
+  });
+
   it("keeps going after a step throws", async () => {
     const queue = new TransportQueue(() => null);
     await expect(queue.run(() => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
@@ -505,6 +532,19 @@ describe("a ▶ while a play is still starting", () => {
     expect(h.loads.calls).toBe(1);
     expect(h.ctrl.isStarted).toBe(true);
     expect(h.ui.play).toBe(true);
+  });
+
+  it("does not join a play stuck on a load that a later re-prime went round", async () => {
+    // The autoplay's load stalled; after TRANSPORT_WAIT_LIMIT_MS a sound
+    // change re-primed the controller anyway. Its play() never settles.
+    const h = harness((call) => (call === 1 ? gate().promise : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    void h.ctrl.play();
+    await h.ctrl.setTune(TUNE, true);
+    expect(h.ctrl.isLoading).toBe(false);
+    await h.ctrl.play(); // the ▶
+    expect(h.ctrl.isStarted).toBe(true);
   });
 
   it("the next ▶ after it has started still pauses", async () => {

@@ -211,18 +211,20 @@ export function trackTransport(control: object): void {
 }
 
 /**
- * A `play()` while another is still starting joins it.
+ * A `play()` while another is still waiting for a load joins it.
  *
  * `_play()` toggles `isStarted`, so a second play() queued behind a load
  * (runWhenReady polls every 500 ms) switched the tune off within half a second
  * of it starting. That is what the ▶ you are told to press did to an autoplay
- * parked on blocked audio, and to a slow first load clicked twice.
+ * parked on blocked audio, and to a slow first load clicked twice. Only while
+ * something is loading: a play stuck on a stalled load that a later re-prime
+ * went round would otherwise swallow every ▶.
  */
 function joinPendingPlay(raw: Record<string, unknown>): void {
   const play = raw.play as () => unknown;
   let starting: Promise<unknown> | null = null;
   raw.play = () => {
-    if (starting) return starting;
+    if (starting && raw.isLoading) return starting;
     const result = play();
     if (result && typeof (result as Promise<unknown>).then === "function") {
       const pending = result as Promise<unknown>;
@@ -286,6 +288,29 @@ function nextSettle(state: Tracked, ms: number): Promise<void> {
 const noop = () => {};
 
 /**
+ * How long a queued change waits (for the change before it, then for the
+ * controller to go idle) before it runs anyway. abcjs fetches each sample
+ * with a bare XMLHttpRequest (load-note.js: onload and onerror, no timeout),
+ * so one stalled request kept go() pending forever and every change queued
+ * behind it never applied. Long enough for a slow first load of a large bank;
+ * a load still running after that is presumed dead, and the change's own
+ * load starts beside it.
+ */
+export const TRANSPORT_WAIT_LIMIT_MS = 15_000;
+
+/** Resolve when `promise` settles or after `ms`, whichever is first. */
+function settledWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    promise.then(done, done);
+  });
+}
+
+/**
  * Transport changes, one at a time, each run once the live controller is idle.
  *
  * Every change that re-primes goes through here: instrument and sound changes,
@@ -302,11 +327,12 @@ export class TransportQueue {
     private readonly current: () => object | null,
     /** False once the widget is torn down. */
     private readonly alive: () => boolean = () => true,
+    private readonly limitMs = TRANSPORT_WAIT_LIMIT_MS,
   ) {}
 
   /** Run `step` after every earlier step, once the live controller is idle. */
   run<T>(step: () => T | PromiseLike<T>): Promise<T> {
-    const next = this.tail.then(() => this.settle()).then(step);
+    const next = this.waitTurn(this.tail).then(step);
     this.tail = next.then(noop, noop);
     return next;
   }
@@ -316,11 +342,16 @@ export class TransportQueue {
     return this.alive() && this.current() === control;
   }
 
-  private async settle(): Promise<void> {
+  private async waitTurn(previous: Promise<unknown>): Promise<void> {
+    const deadline = Date.now() + this.limitMs;
+    await settledWithin(previous, this.limitMs);
     let control = this.current();
-    while (control && this.alive()) {
+    while (control && this.alive() && Date.now() < deadline) {
       const waitingOn = control;
-      await whenTransportIdle(waitingOn, () => this.isCurrent(waitingOn));
+      await whenTransportIdle(
+        waitingOn,
+        () => this.isCurrent(waitingOn) && Date.now() < deadline,
+      );
       control = this.current();
       if (control === waitingOn) return;
     }
