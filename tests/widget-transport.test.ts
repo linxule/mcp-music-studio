@@ -58,9 +58,11 @@ describe("sheet music transport", () => {
   });
 
   it("queues a settings change behind any load already in flight (#33)", () => {
-    const fn = body(ABC, "function applySettings()");
+    const fn = body(ABC, "function applySettings(");
     expect(fn).toContain("wakeAudio();");
-    expect(fn).toContain("applySettingsChain.then(settleTransport).then(applySettingsNow)");
+    expect(fn).toContain("applySettingsChain.then(settleTransport).then(() => {");
+    // The #25 re-engrave runs AFTER the wait, inside the same link.
+    expect(fn).toMatch(/settleTransport\)\.then\(\(\) => \{\s*prepare\?\.\(\);\s*return applySettingsNow\(\);/);
     expect(body(ABC, "async function renderAbc(")).toMatch(
       /trackTransport\(synthControl\);\s*synthControl\.load\(/,
     );

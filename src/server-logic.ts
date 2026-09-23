@@ -1,7 +1,8 @@
 import ABCJS from "abcjs";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { PLAY_SHEET_NEUTRAL_TEXT } from "./shared/tool-defs.js";
-import { resolveInvocationSettings } from "./music-logic.js";
+import { INSTRUMENTS, resolveInvocationSettings } from "./music-logic.js";
+import { findLeadingProgram, instrumentForProgram } from "./abc-program.js";
 
 /**
  * The slice of abcjs' parse-only output this module reads.
@@ -53,6 +54,30 @@ function instrumentNote(instrument: string | undefined): string {
   const settings = resolveInvocationSettings({ instrument });
   if (!settings.warning) return "";
   return `\n\nInstrument: ${settings.instrument} (requested "${settings.requestedInstrument}"). ${settings.warning}`;
+}
+
+/**
+ * "The score's own %%MIDI program wins", or "" when there is no conflict.
+ *
+ * `instrument` reaches abcjs as the STARTING program only, so a
+ * `%%MIDI program` that sets the first voice outranks it (#25). The widget shows
+ * the score's instrument in its menu, but the agent would otherwise believe
+ * the parameter took effect.
+ */
+function scoreProgramNote(args: PlaySheetMusicArgs): string {
+  const requested = args.instrument?.trim();
+  if (!requested) return "";
+  const leading = findLeadingProgram(args.abcNotation);
+  if (!leading) return "";
+  const resolved = resolveInvocationSettings({ instrument: requested }).instrument;
+  if (INSTRUMENTS[resolved] === leading.program) return "";
+  const name = instrumentForProgram(leading.program);
+  const label = name ? `${name}, GM program ${leading.program}` : `GM program ${leading.program}`;
+  return (
+    `\n\nInstrument: the ABC's own "${leading.directive}" (${label}) sets the first voice ` +
+    `and takes precedence over instrument "${requested}". ` +
+    `Remove that line or change its number to hear ${resolved}.`
+  );
 }
 
 /**
@@ -135,7 +160,8 @@ export function createPlaySheetMusicResult(
           text:
             `Parsed with warnings (the score still renders in MCP-app hosts):\n${messages.join("\n")}` +
             multiTuneNote(tunes.length) +
-            instrumentNote(args.instrument),
+            instrumentNote(args.instrument) +
+            scoreProgramNote(args),
         },
       ],
     };
@@ -166,7 +192,8 @@ export function createPlaySheetMusicResult(
         text:
           `${PLAY_SHEET_NEUTRAL_TEXT}${hint}` +
           multiTuneNote(tunes.length) +
-          instrumentNote(args.instrument),
+          instrumentNote(args.instrument) +
+          scoreProgramNote(args),
       },
     ],
   };

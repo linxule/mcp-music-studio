@@ -20,12 +20,16 @@ import {
   INSTRUMENTS,
   SOUNDFONTS,
   STYLE_PRESETS,
-  applyStyleToAbc,
   buildSynthOptions,
   isStyleName,
   prepareToolInput,
   type SoundFontName,
 } from "./music-logic";
+import {
+  deriveEffectiveAbc,
+  findLeadingProgram,
+  instrumentForProgram,
+} from "./abc-program";
 import { resetSoundsCache, soundsCacheLooksLive } from "./abcjs-sound-cache";
 import { transposeAbcDetailed } from "./abc-transpose";
 import {
@@ -56,6 +60,12 @@ import {
   whenTransportIdle,
   type TransportState,
 } from "./synth-transport";
+import {
+  alignTimerWithSwing,
+  type FlatEvent,
+  type NoteMapNote,
+  type TimingEventLike,
+} from "./swing-timing";
 import { VERSION } from "./version";
 
 // =============================================================================
@@ -66,6 +76,11 @@ interface AppState {
   visualObj: ABCJS.TuneObject[] | null;
   synthControl: ABCJS.SynthObjectController | null;
   currentInstrument: string;
+  /**
+   * The user has picked from the Instrument menu since the last tool call, so
+   * that choice replaces the score's own first-voice `%%MIDI program` (#25).
+   */
+  instrumentOverride: boolean;
   currentStyle: string;
   currentSoundFont: SoundFontName;
   currentAbc: string | null;
@@ -80,6 +95,7 @@ const state: AppState = {
   visualObj: null,
   synthControl: null,
   currentInstrument: DEFAULT_INSTRUMENT,
+  instrumentOverride: false,
   currentStyle: "",
   currentSoundFont: DEFAULT_SOUNDFONT,
   currentAbc: null,
@@ -216,7 +232,76 @@ function currentSynthOptions(): Record<string, unknown> {
   // two bars before the sound did. Every setTune() reads this first.
   cursorControl.extraMeasuresAtBeginning =
     typeof options.drumIntro === "number" ? options.drumIntro : 0;
+  // Swing moves only the audio. Collect abcjs's swung note map so onReady can
+  // move the highlight timer to match (#34, followSwing below).
+  if (typeof options.swing === "number") {
+    options.sequenceCallback = captureSwungNoteMap;
+    options.callbackContext = { swung: null } satisfies SwingCapture;
+  }
   return options;
+}
+
+/**
+ * Where `sequenceCallback` leaves abcjs's note map AFTER `addSwing()`. Each
+ * setTune() gets a fresh one. A warp change re-primes with the same options,
+ * and each prime overwrites it before `go()` builds the timer and calls
+ * `onReady`.
+ */
+interface SwingCapture {
+  swung: NoteMapNote[][] | null;
+}
+
+function captureSwungNoteMap(tracks: NoteMapNote[][], context: SwingCapture): NoteMapNote[][] {
+  context.swung = tracks;
+  return tracks;
+}
+
+/**
+ * Move the note highlight onto abcjs's swung timeline (#34; the matching is in
+ * src/swing-timing.ts). `go()` calls `onReady` after every prime: the first ▶,
+ * `setTune(…, true)`, and a warp change. Each time the TimingCallbacks is
+ * freshly built on the straight grid, so the shift never compounds.
+ */
+function followSwing(controller: unknown): void {
+  const raw = controller as {
+    timer?: { noteTimings?: TimingEventLike[] } | null;
+    midiBuffer?: {
+      flattened?: { tracks?: FlatEvent[][] };
+      callbackContext?: SwingCapture;
+      millisecondsPerMeasure?: number;
+      meterSize?: number;
+    } | null;
+  } | null;
+  const buffer = raw?.midiBuffer;
+  const capture = buffer?.callbackContext;
+  const timings = raw?.timer?.noteTimings;
+  const flattened = buffer?.flattened?.tracks;
+  if (!buffer || !capture?.swung || !timings || !flattened) return;
+  const swungTracks = capture.swung;
+  capture.swung = null; // consumed: one prime, one shift
+  alignTimerWithSwing({
+    timings,
+    flattenedTracks: flattened,
+    swungTracks,
+    millisecondsPerMeasure: buffer.millisecondsPerMeasure ?? 0,
+    meterSize: buffer.meterSize ?? 0,
+  });
+}
+
+/**
+ * The ABC abcjs actually renders and plays: `state.currentAbc` (never
+ * rewritten) with the style preset and, after a pick from the Instrument
+ * menu, the first voice's program override. Every render path goes through
+ * here: the first render, edits, Style changes, the streaming preview, and
+ * the instrument re-engrave.
+ */
+function effectiveAbc(raw: string): string {
+  return deriveEffectiveAbc(raw, {
+    style: state.currentStyle,
+    programOverride: state.instrumentOverride
+      ? (INSTRUMENTS[state.currentInstrument] ?? null)
+      : null,
+  });
 }
 
 // =============================================================================
@@ -280,6 +365,12 @@ const cursorControl: CursorControl & { extraMeasuresAtBeginning?: number } = {
   onFinished() {
     clearHighlights();
     resetFollow();
+  },
+
+  // abcjs passes the controller (synth-controller.js `go()`), although its
+  // published type declares no parameter.
+  onReady(controller?: unknown) {
+    followSwing(controller);
   },
 };
 
@@ -394,12 +485,90 @@ for (const name of Object.keys(INSTRUMENTS)) {
   instrumentSelect.appendChild(option);
 }
 
+/** Stands in for a score program with no GM name (e.g. 128); never pickable. */
+const SCORE_PROGRAM_VALUE = "__score__";
+const scoreProgramOption = document.createElement("option");
+scoreProgramOption.value = SCORE_PROGRAM_VALUE;
+scoreProgramOption.disabled = true;
+scoreProgramOption.hidden = true;
+instrumentSelect.prepend(scoreProgramOption);
+
+/**
+ * Show what the first voice will actually play (#25).
+ *
+ * The menu reaches abcjs only as the `program` synth option, which is the
+ * STARTING instrument, so a score that sets its own first-voice
+ * `%%MIDI program` outranks it. Until the user picks, the menu shows the
+ * score's instrument and says so. After a pick, `effectiveAbc()` writes the
+ * pick over that directive and the menu shows the pick.
+ */
+function syncInstrumentSelect(): void {
+  const leading = state.currentAbc ? findLeadingProgram(state.currentAbc) : null;
+  scoreProgramOption.hidden = true;
+  let title = "";
+  if (!leading || state.instrumentOverride) {
+    instrumentSelect.value = state.currentInstrument;
+    if (leading) {
+      title = `Your choice replaces the score's ${leading.directive} for the first voice.`;
+    }
+  } else {
+    const name = instrumentForProgram(leading.program);
+    if (name) {
+      instrumentSelect.value = name;
+    } else {
+      scoreProgramOption.textContent = `Program ${leading.program} (from the score)`;
+      scoreProgramOption.hidden = false;
+      instrumentSelect.value = SCORE_PROGRAM_VALUE;
+    }
+    title = `The score chooses this instrument (${leading.directive}). Pick another to override it for the first voice.`;
+  }
+  instrumentSelect.title = title;
+  instrumentLabel.title = title;
+}
+
 instrumentSelect.addEventListener("change", () => {
+  if (!Object.hasOwn(INSTRUMENTS, instrumentSelect.value)) return;
   state.currentInstrument = instrumentSelect.value;
+  state.instrumentOverride = true;
+  syncInstrumentSelect();
   if (state.visualObj && state.synthControl) {
-    applySettings();
+    // When the score names its own program, the pick can only reach the
+    // audio through the notation, so re-engrave the effective ABC first.
+    // Otherwise the `program` synth option is enough, and nothing re-renders.
+    const generation = renderGeneration;
+    const scoreSetsProgram =
+      state.currentAbc !== null && findLeadingProgram(state.currentAbc) !== null;
+    applySettings(
+      scoreSetsProgram
+        ? () => {
+            if (!isStale(generation)) reengraveForInstrument();
+          }
+        : undefined,
+    );
   }
 });
+
+/**
+ * Re-engrave the current score from its effective ABC, so the next
+ * `setTune()` carries the overridden program.
+ *
+ * `setTune()` takes ONE tune object for both the audio and the highlight timer,
+ * and the timer needs the engraved SVG, so a parse-only tune won't do. A
+ * `%%MIDI` line draws nothing, so the notation looks the same and the scroll
+ * position is kept. It runs synchronously just before `setTune()` pauses the
+ * transport (both in one applySettings link), so no beat callback can land
+ * on the replaced SVG.
+ */
+function reengraveForInstrument(): void {
+  if (!state.currentAbc || !state.visualObj) return;
+  const scrollTop = sheetSectionEl.scrollTop;
+  clearHighlights();
+  resetFollow();
+  const visualObj = engraveScore(effectiveAbc(state.currentAbc));
+  if (!visualObj || (visualObj as unknown as unknown[]).length === 0) return;
+  state.visualObj = visualObj;
+  sheetSectionEl.scrollTop = scrollTop;
+}
 
 /**
  * Re-prime the live synth with the current instrument / bank / synth options.
@@ -438,12 +607,17 @@ instrumentSelect.addEventListener("change", () => {
  */
 let applySettingsChain: Promise<void> = Promise.resolve();
 
-function applySettings(): Promise<void> {
+function applySettings(prepare?: () => void): Promise<void> {
   wakeAudio();
   // Each link first waits out whatever the controller is already loading
   // (#33): setTune(…, true) starts a load at once, and one landing on top of
-  // the autoplay's put two init + prime runs on the same buffer.
-  const next = applySettingsChain.then(settleTransport).then(applySettingsNow);
+  // the autoplay's put two init + prime runs on the same buffer. `prepare`
+  // then runs right before the re-prime reads `state.visualObj` (the
+  // instrument re-engrave, #25).
+  const next = applySettingsChain.then(settleTransport).then(() => {
+    prepare?.();
+    return applySettingsNow();
+  });
   // Keep the chain alive even if a link rejects — applySettingsNow already
   // swallows its own errors, so this is only belt and braces.
   applySettingsChain = next.catch(() => {});
@@ -651,7 +825,7 @@ soundFontSelectorEl.appendChild(soundFontSelect);
 // The asymmetry this closes: the Strudel widget hands you a live REPL, while
 // the ABC widget used to be read-only — changing one note meant a chat
 // round-trip. The pane below edits `state.currentAbc`, which is the RAW user
-// notation (style presets are layered on at render time by `applyStyleToAbc`
+// notation (style presets are layered on at render time by `effectiveAbc()`
 // and never written back), so what you see in the box is what the model wrote,
 // modulo the tool's `transpose` — which rewrites the notation itself and so is
 // genuinely part of the score you are editing.
@@ -794,7 +968,7 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
   }
   if (!forcePlay && abc === lastEditRendered) return;
 
-  const effective = applyStyleToAbc(abc, state.currentStyle);
+  const effective = effectiveAbc(abc);
 
   // Validate first: nothing on screen is touched until we know it parses.
   let messages: string[] = [];
@@ -849,6 +1023,7 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     state.currentAbc = abc;
     lastEditRendered = abc;
     renderTitle();
+    syncInstrumentSelect();
     setEditorMessage(messages.length > 0 ? messages.join("\n") : null, "warn");
 
     await synthControl.setTune(
@@ -1097,6 +1272,9 @@ function midiExportOptions(): ABCJS.MidiFileOptions {
   const {
     soundFontUrl: _soundFontUrl,
     soundFontVolumeMultiplier: _soundFontVolumeMultiplier,
+    // The swing capture only matters to prime(); the writer never swings.
+    sequenceCallback: _sequenceCallback,
+    callbackContext: _callbackContext,
     ...musical
   } = currentSynthOptions();
   return {
@@ -1305,12 +1483,13 @@ async function renderAbc(
     // `ontoolinputpartial` (streaming), both of which call syncEditor directly.
     state.currentAbc = abcNotation;
     renderTitle();
+    syncInstrumentSelect();
     clearHighlights();
     resetFollow();
     sheetMusicEl.innerHTML = "";
     audioControlsEl.innerHTML = "";
 
-    const abcWithStyle = applyStyleToAbc(abcNotation, state.currentStyle);
+    const abcWithStyle = effectiveAbc(abcNotation);
 
     state.visualObj = engraveScore(abcWithStyle);
 
@@ -1433,6 +1612,8 @@ app.ontoolinput = (params) => {
   transposeNote = null;
 
   state.currentInstrument = preparedInput.instrument;
+  // A new tool call hands the instrument back to the score (#25).
+  state.instrumentOverride = false;
   instrumentSelect.value = preparedInput.instrument;
 
   state.currentStyle = preparedInput.style;
@@ -1523,7 +1704,7 @@ app.ontoolinputpartial = (params) => {
     partialRenderTimer = null;
     if (isStale(generation)) return;
     try {
-      const abcWithStyle = applyStyleToAbc(abcNotation, state.currentStyle);
+      const abcWithStyle = effectiveAbc(abcNotation);
       // Render in place — ABCJS replaces the target element's content
       engraveScore(abcWithStyle);
       // Keep the newest notation in view as it streams in — unless the
