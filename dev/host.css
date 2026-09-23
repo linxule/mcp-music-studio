@@ -79,3 +79,6 @@ iframe {
   border-radius: 6px;
   background: #fff;
 }
+/* Fill mode (fixed container or fullscreen): the frame is exactly the pane,
+   never the 520px floor above. */
+.frame-wrap.fills iframe { min-height: 0; }

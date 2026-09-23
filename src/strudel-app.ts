@@ -883,7 +883,9 @@ function changeEditorSetting(editor: any, key: string, value: unknown): void {
     editor.changeSetting(key, value);
   } else if (typeof editor?.updateSettings === "function") {
     // Older REPL shape. updateSettings() reads fontSize/fontFamily off the
-    // object it is given, so merge over the element's current settings.
+    // object it is given, so merge over the element's current settings. This
+    // path DOES persist (it is the only setter those REPLs have); the pinned
+    // @strudel/repl@1.3.0 has changeSetting() and never reaches it.
     const base = (editorEl as any)?.settings ?? {};
     editor.updateSettings({ ...base, [key]: value });
   }
