@@ -49,6 +49,14 @@ describe("sheet music transport", () => {
       "restoreLoop(synthControl, transport);",
     );
   });
+
+  it("keeps the Loop button lit through a tempo change on every controller it builds (#31)", () => {
+    // One construction site, and it wraps setWarp before anything can call it.
+    expect(ABC.match(/new ABCJS\.synth\.SynthController\(\)/g)).toHaveLength(1);
+    expect(body(ABC, "async function renderAbc(")).toMatch(
+      /new ABCJS\.synth\.SynthController\(\);[\s\S]*?keepLoopLitThroughWarp\(synthControl\);[\s\S]*?synthControl\.load\(/,
+    );
+  });
 });
 
 describe("strudel transport", () => {

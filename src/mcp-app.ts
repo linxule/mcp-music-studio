@@ -42,6 +42,7 @@ import {
   screenAvailHeight,
 } from "./frame-size";
 import { USER_SCROLL_GRACE_MS, followScrollTarget } from "./sheet-follow";
+import { keepLoopLitThroughWarp } from "./synth-transport";
 import { VERSION } from "./version";
 
 // =============================================================================
@@ -1234,6 +1235,7 @@ async function renderAbc(
 
     const synthControl = new ABCJS.synth.SynthController();
     ownSynthControl(synthControl, generation);
+    keepLoopLitThroughWarp(synthControl);
     synthControl.load(audioControlsEl, cursorControl, {
       displayLoop: true,
       displayPlay: true,
