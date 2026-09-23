@@ -114,6 +114,17 @@ describe("sheet music widget", () => {
     expect(rules(ABC_CSS)).toContain("max-height: var(--frame-max-height, none)");
   });
 
+  it("keeps the score in the frame when the editor is open (Codex review of #24)", () => {
+    // A hand-resized editor under a 420px cap pushed the whole score below the
+    // frame: 0px of it visible, the document 689px tall in a 420px frame.
+    const main = rules(ABC_CSS).match(/(^|\n)\.main \{[^}]*\}/)?.[0] ?? "";
+    expect(main).toContain("overflow-y: auto;");
+    const editor = rules(ABC_CSS).match(/(^|\n)\.abc-editor \{[^}]*\}/)?.[0] ?? "";
+    expect(editor).toContain(
+      "max-height: calc(var(--frame-max-height, var(--frame-height, 100vh)) * 0.4);",
+    );
+  });
+
   it("does not smooth-scroll by CSS (the follow scrolls explicitly)", () => {
     expect(rules(ABC_CSS)).not.toContain("scroll-behavior");
   });
