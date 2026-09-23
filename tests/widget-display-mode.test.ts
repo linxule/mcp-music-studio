@@ -79,7 +79,10 @@ describe("both widgets toggle the display mode the same way", () => {
 describe("applySettings is serialised against rapid selector changes", () => {
   it("chains each call behind the one in flight", () => {
     expect(ABC).toContain("let applySettingsChain: Promise<void> = Promise.resolve()");
-    expect(ABC).toContain("applySettingsChain.then(applySettingsNow)");
+    // The link runs an optional `prepare` step (the #25 instrument re-engrave)
+    // and then the re-prime.
+    expect(ABC).toContain("const next = applySettingsChain.then(() => {");
+    expect(ABC).toContain("    prepare?.();\n    return applySettingsNow();");
   });
 
   it("keeps the chain alive when a link rejects", () => {
@@ -98,7 +101,7 @@ describe("applySettings is serialised against rapid selector changes", () => {
 
   it("still returns a promise the callers can chain onto", () => {
     // The sound-bank change path does applySettings().then(...).catch(...).
-    expect(ABC).toMatch(/function applySettings\(\): Promise<void>/);
+    expect(ABC).toMatch(/function applySettings\(prepare\?: \(\) => void\): Promise<void>/);
     expect(ABC).toContain("applySettings()\n    .then(");
   });
 });
