@@ -44,6 +44,18 @@ import {
   screenAvailHeight,
 } from "./frame-size";
 import { USER_SCROLL_GRACE_MS, followScrollTarget } from "./sheet-follow";
+import { OVERHANG_TEXT_SELECTOR, paddingRightToFit } from "./score-fit";
+import {
+  carryWarp,
+  keepLoopLitThroughWarp,
+  pauseTransport,
+  readTransport,
+  reprime,
+  restoreLoop,
+  trackTransport,
+  whenTransportIdle,
+  type TransportState,
+} from "./synth-transport";
 import { VERSION } from "./version";
 
 // =============================================================================
@@ -427,54 +439,67 @@ instrumentSelect.addEventListener("change", () => {
 let applySettingsChain: Promise<void> = Promise.resolve();
 
 function applySettings(): Promise<void> {
-  const next = applySettingsChain.then(applySettingsNow);
+  wakeAudio();
+  // Each link first waits out whatever the controller is already loading
+  // (#33): setTune(…, true) starts a load at once, and one landing on top of
+  // the autoplay's put two init + prime runs on the same buffer.
+  const next = applySettingsChain.then(settleTransport).then(applySettingsNow);
   // Keep the chain alive even if a link rejects — applySettingsNow already
   // swallows its own errors, so this is only belt and braces.
   applySettingsChain = next.catch(() => {});
   return next;
 }
 
-/** What `setTune()` throws away that the listener would want kept. */
-interface TransportState {
-  wasPlaying: boolean;
-  wasLooping: boolean;
-}
-
-function readTransport(control: ABCJS.SynthObjectController): TransportState {
-  const raw = control as unknown as { isStarted?: boolean; isLooping?: boolean };
-  return { wasPlaying: Boolean(raw.isStarted), wasLooping: Boolean(raw.isLooping) };
-}
-
 /**
- * `setTune()` pauses, rewinds, and switches Loop off (abcjs
- * synth-controller.js: `pause()`, `resetAll()`, `isLooping = false`). Put Loop
- * back; the caller decides whether to play again.
+ * Resume the AudioContext from the gesture that changed a setting. A load
+ * started while autoplay was blocked is parked on `AudioContext.resume()`,
+ * which stays pending until a resume made during a user gesture. The change
+ * waits for that load, so this gesture has to be the one that releases it.
  */
-function restoreLoop(control: ABCJS.SynthObjectController, { wasLooping }: TransportState): void {
-  const raw = control as unknown as { isLooping?: boolean; toggleLoop?: () => void };
-  if (wasLooping && !raw.isLooping) raw.toggleLoop?.();
+function wakeAudio(): void {
+  try {
+    void ABCJS.synth.activeAudioContext()?.resume().catch(() => {});
+  } catch {
+    // No Web Audio: renderAbc already reported it.
+  }
+}
+
+/** Wait until the live controller has finished loading (and starting). */
+function settleTransport(): Promise<void> {
+  const control = state.synthControl;
+  if (!control) return Promise.resolve();
+  return whenTransportIdle(control, () => state.synthControl === control && !disposed);
 }
 
 async function applySettingsNow(): Promise<void> {
   const control = state.synthControl;
-  if (!control || !state.visualObj?.[0]) return;
+  const tune = state.visualObj?.[0];
+  if (!control || !tune) return;
   // An instrument or sound change made mid-tune used to STOP the music:
   // setTune() pauses and rewinds, and nothing started it again. Like an edit
   // (applyEditorAbc), it now carries on from the top — and keeps Loop.
-  const transport = readTransport(control);
+  //
+  // A cancel keeps this controller but bumps the generation, and an edit
+  // takes it over under a new one. Neither may have the music restarted
+  // behind its back, so this re-checks the generation after every await,
+  // not just "is it still the widget's controller?".
+  const generation = renderGeneration;
+  const owner = synthControlOwner;
   try {
-    await control.setTune(
-      state.visualObj[0],
-      true,
-      currentSynthOptions() as SynthOptions,
-    );
-    hasPrimedAudio = true;
-    // A newer render may have replaced the controller while we primed.
-    if (state.synthControl !== control) return;
-    restoreLoop(control, transport);
-    if (transport.wasPlaying) {
-      await (control.play() as unknown as Promise<unknown> | undefined);
-    }
+    await reprime(control, {
+      prime: async () => {
+        await control.setTune(tune, true, currentSynthOptions() as SynthOptions);
+        hasPrimedAudio = true;
+      },
+      stillWanted: () => state.synthControl === control && !isStale(generation),
+      onSuperseded: () => {
+        // A cancel landed while play() was starting: stop what we started.
+        // An edit that took the controller over decides for itself.
+        if (state.synthControl === control && synthControlOwner === owner) {
+          pauseTransport(control);
+        }
+      },
+    });
   } catch (error) {
     console.error("Failed to apply settings:", error);
   }
@@ -520,9 +545,16 @@ for (const name of Object.keys(STYLE_PRESETS)) {
 
 styleSelect.addEventListener("change", () => {
   state.currentStyle = styleSelect.value;
-  if (state.currentAbc) {
-    renderAbc(state.currentAbc);
-  }
+  if (!state.currentAbc) return;
+  // The preset rewrites the ABC, so a Style change re-renders and builds a new
+  // controller (tempo 100%, Loop off). Carry the old one's tempo and Loop
+  // across, and play only if it was playing, or still loading its autoplay
+  // (#26). After a cancel it reads as stopped (pauseTransport) and its
+  // autoplay as stale, so a Style change never restarts cancelled music.
+  const control = state.synthControl;
+  const carry = control ? readTransport(control) : null;
+  const autoplay = Boolean(carry?.wasPlaying) || autoplayLoading(control);
+  void renderAbc(state.currentAbc, undefined, { autoplay, carry });
 });
 
 const styleLabel = document.createElement("label");
@@ -782,7 +814,8 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
   if (!state.synthControl) {
     lastEditRendered = abc;
     setEditorMessage(messages.length > 0 ? messages.join("\n") : null, "warn");
-    await renderAbc(abc);
+    // The tool call's first playable render, so it autoplays as that would have.
+    await renderAbc(abc, undefined, { autoplay: true });
     reportEditToModel(abc);
     return;
   }
@@ -802,10 +835,7 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
 
   try {
     clearHighlights();
-    const visualObj = ABCJS.renderAbc(sheetMusicEl, effective, {
-      responsive: "resize",
-      add_classes: true,
-    });
+    const visualObj = engraveScore(effective);
     // abcjs types the return as a 1-tuple, but unparseable input really does
     // come back empty at runtime — hence the widened length check.
     if (!visualObj || (visualObj as unknown as unknown[]).length === 0) {
@@ -1179,9 +1209,71 @@ function setLoading(text: string): void {
   }
 }
 
+const SCORE_RENDER_OPTIONS = { responsive: "resize", add_classes: true } as const;
+
+/**
+ * Engrave `abc` (the effective notation, style already applied) into the
+ * sheet. Every render of the score goes through here.
+ *
+ * abcjs reserves no room for text it hangs off a note, so a long annotation
+ * in a line's last bar ran past the SVG and was clipped (#28). If any such
+ * text overhangs, engrave once more with the right padding widened to fit it:
+ * the same layout, scaled down a little, and only when it has to be.
+ */
+function engraveScore(abc: string): ABCJS.TuneObject[] {
+  const tunes = ABCJS.renderAbc(sheetMusicEl, abc, SCORE_RENDER_OPTIONS);
+  const paddingright = overhangPadding(tunes);
+  return paddingright === null
+    ? tunes
+    : ABCJS.renderAbc(sheetMusicEl, abc, { ...SCORE_RENDER_OPTIONS, paddingright });
+}
+
+/** The right padding the engraved score needs, or null if it already fits. */
+function overhangPadding(tunes: ABCJS.TuneObject[]): number | null {
+  // The tune's own %%rightmargin outranks the option: nothing to gain.
+  if (tunes[0]?.formatting?.rightmargin !== undefined) return null;
+  const svg = sheetMusicEl.querySelector("svg");
+  const width = svg?.viewBox?.baseVal?.width;
+  if (!svg || !width) return null;
+  const edges: number[] = [];
+  for (const el of svg.querySelectorAll<SVGGraphicsElement>(OVERHANG_TEXT_SELECTOR)) {
+    try {
+      const box = el.getBBox(); // SVG user units, whatever the frame's width
+      edges.push(box.x + box.width);
+    } catch {
+      // Not rendered (a hidden frame): nothing to measure.
+    }
+  }
+  return paddingRightToFit(edges, width);
+}
+
+/** What a full render does about the transport it replaces (#26). */
+interface RenderTransport {
+  /** Start playing once primed: a tool call does, a Style change only if it was. */
+  autoplay: boolean;
+  /** Tempo and Loop to carry over from the controller being replaced. */
+  carry?: TransportState | null;
+}
+
+/** The autoplay a render started that has not finished loading and starting. */
+let pendingAutoplay: {
+  control: ABCJS.SynthObjectController;
+  generation: number;
+} | null = null;
+
+/** Is `control` still loading an autoplay that nothing has superseded? */
+function autoplayLoading(control: ABCJS.SynthObjectController | null): boolean {
+  return (
+    control !== null &&
+    pendingAutoplay?.control === control &&
+    !isStale(pendingAutoplay.generation)
+  );
+}
+
 async function renderAbc(
   abcNotation: string,
-  extraSynthOpts?: Record<string, unknown>,
+  extraSynthOpts: Record<string, unknown> | undefined,
+  transport: RenderTransport,
 ): Promise<void> {
   // Supersede any partial render, any earlier renderAbc still awaiting, and
   // any queued play() continuation. Everything below re-checks this.
@@ -1220,10 +1312,7 @@ async function renderAbc(
 
     const abcWithStyle = applyStyleToAbc(abcNotation, state.currentStyle);
 
-    state.visualObj = ABCJS.renderAbc(sheetMusicEl, abcWithStyle, {
-      responsive: "resize",
-      add_classes: true,
-    });
+    state.visualObj = engraveScore(abcWithStyle);
 
     if (!state.visualObj || state.visualObj.length === 0) {
       throw new Error("Failed to parse music notation");
@@ -1235,12 +1324,18 @@ async function renderAbc(
 
     const synthControl = new ABCJS.synth.SynthController();
     ownSynthControl(synthControl, generation);
+    keepLoopLitThroughWarp(synthControl);
+    // Before load(), which hands the Play button `self.play` by reference.
+    trackTransport(synthControl);
     synthControl.load(audioControlsEl, cursorControl, {
       displayLoop: true,
       displayPlay: true,
       displayProgress: true,
       displayWarp: true,
     });
+    if (transport.carry) {
+      carryWarp(synthControl, transport.carry.warp, state.visualObj[0]);
+    }
 
     await synthControl.setTune(
       state.visualObj[0],
@@ -1262,6 +1357,13 @@ async function renderAbc(
     midiBtn.disabled = !downloadSupported;
     sendBtn.disabled = !messageSupported;
 
+    // setTune() switched Loop off; put the listener's back.
+    if (transport.carry) restoreLoop(synthControl, transport.carry);
+    if (!transport.autoplay) {
+      setStatus(withTransposeNote("Click ▶ to play"));
+      return;
+    }
+
     // Autoplay — attempt to start playback immediately
     // (may be blocked by browser autoplay policy until user clicks).
     // play() returns a Promise, so a synchronous try/catch never fires —
@@ -1271,8 +1373,13 @@ async function renderAbc(
     // slowest continuation in the widget and the one most likely to land in a
     // discarded generation. Both branches re-check before touching the UI, and
     // the resolved branch stops audio it started into a stale generation.
+    pendingAutoplay = { control: synthControl, generation };
+    const autoplayDone = () => {
+      if (pendingAutoplay?.control === synthControl) pendingAutoplay = null;
+    };
     (synthControl.play() as Promise<void> | undefined)
-      ?.then(() => {
+      ?.finally(autoplayDone)
+      .then(() => {
         hasPrimedAudio = true;
         if (isStale(generation)) {
           // NOT an unconditional destroy: an edit reuses this very controller
@@ -1355,7 +1462,7 @@ app.ontoolinput = (params) => {
     lastEditRendered = abc;
     lastEditReported = abc;
     setEditorMessage(null, "error");
-    renderAbc(abc, preparedInput.synthOptions).catch(console.error);
+    renderAbc(abc, preparedInput.synthOptions, { autoplay: true }).catch(console.error);
   } else {
     setStatus("No ABC notation provided", true);
   }
@@ -1418,10 +1525,7 @@ app.ontoolinputpartial = (params) => {
     try {
       const abcWithStyle = applyStyleToAbc(abcNotation, state.currentStyle);
       // Render in place — ABCJS replaces the target element's content
-      ABCJS.renderAbc(sheetMusicEl, abcWithStyle, {
-        responsive: "resize",
-        add_classes: true,
-      });
+      engraveScore(abcWithStyle);
       // Keep the newest notation in view as it streams in — unless the
       // reader has scrolled back to look at something.
       if (!userIsScrolling()) {
@@ -1439,7 +1543,7 @@ app.onerror = console.error;
 // Reset playback/highlight state when a compose is cancelled or torn down.
 function stopPlayback(): void {
   try {
-    state.synthControl?.pause();
+    if (state.synthControl) pauseTransport(state.synthControl);
   } catch {
     // synthControl may not be loaded yet — ignore
   }

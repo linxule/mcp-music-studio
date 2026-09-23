@@ -79,7 +79,8 @@ describe("both widgets toggle the display mode the same way", () => {
 describe("applySettings is serialised against rapid selector changes", () => {
   it("chains each call behind the one in flight", () => {
     expect(ABC).toContain("let applySettingsChain: Promise<void> = Promise.resolve()");
-    expect(ABC).toContain("applySettingsChain.then(applySettingsNow)");
+    // …and behind any load already in flight (#33): settleTransport first.
+    expect(ABC).toContain("applySettingsChain.then(settleTransport).then(applySettingsNow)");
   });
 
   it("keeps the chain alive when a link rejects", () => {

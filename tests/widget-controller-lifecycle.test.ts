@@ -213,7 +213,7 @@ describe("the editor text follows external input only (Codex #4)", () => {
       ABC_APP.indexOf('styleSelect.addEventListener("change"'),
       ABC_APP.indexOf("const styleLabel"),
     );
-    expect(handler).toContain("renderAbc(state.currentAbc)");
+    expect(handler).toContain("renderAbc(state.currentAbc, undefined, { autoplay, carry })");
     expect(handler).not.toContain("syncEditor");
     expect(handler).not.toContain("editorEl.value =");
   });

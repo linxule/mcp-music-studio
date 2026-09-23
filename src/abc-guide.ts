@@ -165,6 +165,9 @@ z = rest (same length rules: z2, z/2, etc.)
 [CEG]   simultaneous notes (chord voicing)
 "C"     guitar chord symbol (placed above staff, plays with gchord)
 "Am7"   jazz chord (renders above, plays accompaniment)
+"^Verse"  text annotation above the staff ("_text" below); display only.
+          Put section labels on the first bar of a line and keep them short:
+          text starting in a line's last bar runs past the right edge.
 
 ## Ties and Slurs
 C-C    tie (same pitch)
