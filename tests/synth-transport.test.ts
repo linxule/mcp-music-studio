@@ -350,20 +350,111 @@ describe("one load at a time (#33)", () => {
     expect(subscriptions - before).toBe(0);
   });
 
-  it("does not wait on a failed load, nor on a ▶ spinning on abcjs's stuck isLoading", async () => {
+  it("does not wait on a failed load", async () => {
     const h = harness((call) =>
       call === 1 ? Promise.reject(new Error("soundfont 404")) : Promise.resolve(),
     );
     trackTransport(h.ctrl);
     await h.ctrl.setTune(TUNE, false);
     await expect(h.ctrl.play() as unknown as Promise<unknown>).rejects.toThrow("soundfont 404");
-    expect(h.ctrl.isLoading).toBe(true); // upstream: go() clears it only on success
-    const spinning = h.ctrl.play() as unknown as Promise<unknown>; // runWhenReady polls forever
     await whenTransportIdle(h.ctrl, () => true, 5);
-    // A fresh prime (a different sound bank, say) is what gets that ▶ moving.
     await reprime(h.ctrl, { prime: () => h.ctrl.setTune(TUNE, true), stillWanted: () => true });
-    await spinning;
+    expect(h.ctrl.isLoaded).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// A failed sample load left ▶ dead for good
+// -----------------------------------------------------------------------------
+
+describe("recovering from a failed load", () => {
+  const notFound = () => Promise.reject(new Error("soundfont 404"));
+
+  /** A controller whose first load fails; later loads succeed. */
+  async function failedOnce(trackIt: boolean, events: unknown[] = []) {
+    const h = harness((call) => (call === 1 ? notFound() : Promise.resolve()));
+    if (trackIt) trackTransport(h.ctrl, (event) => events.push(event));
+    await h.ctrl.setTune(TUNE, false);
+    await expect(h.ctrl.play() as unknown as Promise<unknown>).rejects.toThrow("soundfont 404");
+    return h;
+  }
+
+  it("upstream: go() clears isLoading only on success, so every later ▶ spins", async () => {
+    const h = await failedOnce(false);
+    expect(h.ctrl.isLoading).toBe(true);
+    const click = h.ctrl.play() as unknown as Promise<unknown>;
+    const settled = await Promise.race([click.then(() => "played"), sleep(700).then(() => "spinning")]);
+    expect(settled).toBe("spinning");
+    expect(h.loads.calls).toBe(1); // it never even tried again
+  });
+
+  it("the next ▶ loads again and plays", async () => {
+    const h = await failedOnce(true);
+    expect(h.ctrl.isLoading).toBe(false);
+    await h.ctrl.play();
+    expect(h.loads.calls).toBe(2);
     expect(h.ctrl.isStarted).toBe(true);
+    expect(h.ui.play).toBe(true);
+  });
+
+  it("reports the failure, once", async () => {
+    const events: { type: string; error?: unknown }[] = [];
+    await failedOnce(true, events);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("load-failed");
+    expect(String(events[0].error)).toContain("soundfont 404");
+  });
+
+  it("reports the start of the ▶ that retries it", async () => {
+    const events: { type: string }[] = [];
+    const h = await failedOnce(true, events);
+    await h.ctrl.play();
+    expect(events.map((event) => event.type)).toEqual(["load-failed", "started"]);
+    await h.ctrl.play(); // a pause is not a start
+    expect(events).toHaveLength(2);
+  });
+
+  it("a failed re-prime of a loaded tune: ▶ loads again, not the half-primed buffer", async () => {
+    const h = harness((call) => (call === 2 ? notFound() : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    await h.ctrl.play();
+    await h.ctrl.play(); // pause
+    await expect(h.ctrl.setTune(TUNE, true)).rejects.toThrow("soundfont 404");
+    expect(h.ctrl.isLoaded).toBe(false); // upstream kept the first load's true
+    await h.ctrl.play();
+    expect(h.loads.calls).toBe(3);
+    expect(h.ctrl.isStarted).toBe(true);
+  });
+
+  it("a ▶ that was spinning when the load failed starts nothing", async () => {
+    // runWhenReady's poll calls _play() without checking isLoaded.
+    const first = gate();
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    const load = h.ctrl.setTune(TUNE, true); // a re-prime, say
+    const click = h.ctrl.play() as unknown as Promise<unknown>; // polls isLoading
+    first.fail(new Error("soundfont 404"));
+    await expect(load).rejects.toThrow("soundfont 404");
+    await click;
+    expect(h.ctrl.isStarted).toBe(false);
+    await h.ctrl.play(); // the retry
+    expect(h.ctrl.isStarted).toBe(true);
+  });
+
+  it("a superseded load failing late does not unload its replacement", async () => {
+    const first = gate();
+    const events: unknown[] = [];
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    trackTransport(h.ctrl, (event) => events.push(event));
+    await h.ctrl.setTune(TUNE, false);
+    const stale = h.ctrl.setTune(TUNE, true);
+    await h.ctrl.setTune(TUNE, true); // a later re-prime, which lands
+    first.fail(new Error("soundfont 404"));
+    await expect(stale).rejects.toThrow("soundfont 404");
+    expect(h.ctrl.isLoaded).toBe(true);
+    expect(events).toHaveLength(0);
   });
 });
 

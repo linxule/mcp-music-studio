@@ -63,7 +63,7 @@ describe("sheet music transport", () => {
     // The #25 re-engrave runs AFTER the wait, inside the same step.
     expect(fn).toMatch(/transportQueue\.run\(\(\) => \{\s*prepare\?\.\(\);\s*return applySettingsNow\(\);/);
     expect(body(ABC, "async function renderAbc(")).toMatch(
-      /trackTransport\(synthControl\);\s*queueWarp\(synthControl, transportQueue\);\s*synthControl\.load\(/,
+      /trackTransport\(synthControl, [^\n]*\);\s*queueWarp\(synthControl, transportQueue\);\s*synthControl\.load\(/,
     );
   });
 
@@ -76,7 +76,7 @@ describe("sheet music transport", () => {
     const prime = body(ABC, "async function primeEdit(");
     // The transport is read after the wait, and the load starts inside the step.
     expect(prime.indexOf("readTransport(synthControl)")).toBeGreaterThanOrEqual(0);
-    expect(prime).toContain("await synthControl.setTune(");
+    expect(prime).toMatch(/await synthControl\s*\.setTune\(/);
   });
 
   it("a cancel's pause is recorded, so nothing later reads the widget as playing", () => {
@@ -143,6 +143,32 @@ describe("sheet music transport", () => {
     expect(fn.indexOf("soundsCacheLooksLive(hasPrimedAudio)")).toBeLessThan(
       fn.indexOf("applySettings(resetSoundsCache)"),
     );
+  });
+
+  it("a failed load says so, forgets the failed samples, and leaves ▶ to retry", () => {
+    // The recovery itself (flags reset, one report) is trackTransport's, in
+    // synth-transport.test.ts; forgetFailedSounds is in soundfont-cache.test.ts.
+    expect(body(ABC, "async function renderAbc(")).toContain(
+      "trackTransport(synthControl, (event) => onTransportEvent(synthControl, event));",
+    );
+    const handler = body(ABC, "function onTransportEvent(");
+    expect(handler).toMatch(
+      /if \(event\.type === "load-failed"\) void forgetFailedSounds\(\);\s*if \(disposed \|\| state\.synthControl !== control\) return;/,
+    );
+    expect(handler).toContain('classList.remove("abcjs-loading")');
+    expect(handler).toContain("setStatus(withTransposeNote(LOAD_FAILED_STATUS), true);");
+    // …and takes it down when a ▶ retries it successfully.
+    expect(handler).toMatch(
+      /else if \(statusEl\.textContent\?\.startsWith\(LOAD_FAILED_STATUS\)\) \{[^}]*setStatus\(withTransposeNote\("Playing\.\.\."\)\);/,
+    );
+    // Nobody paints over it: not the autoplay's catch…
+    expect(body(ABC, "async function renderAbc(")).toMatch(
+      /if \(!statusEl\.classList\.contains\("error"\)\) \{\s*setStatus\(withTransposeNote\("Click ▶ to play"\)\);/,
+    );
+    // …nor an edit, whose score is on screen whether or not the sounds load.
+    const edit = body(ABC, "async function primeEdit(");
+    expect(edit).toMatch(/const primed = await synthControl\s*\.setTune\(visualObj\[0\], true, currentSynthOptions\(\) as SynthOptions\)\s*\.then\(\s*\(\) => true,\s*\(\) => false,\s*\);/);
+    expect(edit).toContain("if (primed && (wasPlaying || forcePlay)) {");
   });
 
   it("says so when autoplay is blocked, instead of leaving 'Rendering...' up", () => {

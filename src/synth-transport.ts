@@ -183,16 +183,25 @@ function track(state: Tracked, set: Set<Promise<unknown>>, result: unknown): voi
   promise.then(settle, settle);
 }
 
+/** What the transport did, for the widget's status line. */
+export type TransportEvent =
+  | { type: "load-failed"; error: unknown }
+  | { type: "started" };
+
 /**
  * Record every load and every play on `control`, for {@link whenTransportIdle},
- * and let a second ▶ join a play that is still starting.
+ * let a second ▶ join a play that is still starting, and recover from a failed
+ * load, reporting it to `onEvent`.
  *
  * Call it BEFORE `load()`: `load()` hands the Play button and the progress bar
  * `self.play` and `self.randomAccess` by reference. `go()` and `setWarp()` are
  * looked up on the instance whenever abcjs calls them, so those wraps can land
  * at any point.
  */
-export function trackTransport(control: object): void {
+export function trackTransport(
+  control: object,
+  onEvent: (event: TransportEvent) => void = () => {},
+): void {
   const raw = internals(control) as unknown as Record<string, unknown>;
   const state: Tracked = { loads: new Set(), calls: new Set(), waiters: new Set() };
   tracked.set(control, state);
@@ -205,9 +214,65 @@ export function trackTransport(control: object): void {
       return result;
     };
   };
+  recoverFromFailedLoads(raw, onEvent);
+  reportPlayback(raw, onEvent);
   wrap("go", state.loads);
   for (const name of PLAYING_CALLS) wrap(name, state.calls);
   joinPendingPlay(raw);
+}
+
+/**
+ * Leave a controller whose load failed ready to load again.
+ *
+ * `go()` clears `isLoading` only on success, so after a failed sample fetch
+ * every ▶ spun in runWhenReady forever. A prime that failed half-way also
+ * kept `isLoaded` from the load before it, over a buffer it never finished
+ * (and, after a tempo change, no timer). Both are reset so the next ▶ loads
+ * again, but only for the latest load: a superseded one failing late must not
+ * unload the controller that replaced it.
+ */
+function recoverFromFailedLoads(
+  raw: Record<string, unknown>,
+  onEvent: (event: TransportEvent) => void,
+): void {
+  const go = raw.go as () => unknown;
+  let latest = 0;
+  raw.go = () => {
+    const load = ++latest;
+    const result = go();
+    if (!result || typeof (result as Promise<unknown>).then !== "function") return result;
+    return (result as Promise<unknown>).catch((error: unknown) => {
+      if (load === latest) {
+        raw.isLoading = false;
+        raw.isLoaded = false;
+        onEvent({ type: "load-failed", error });
+      }
+      throw error;
+    });
+  };
+  // A ▶ that was polling in runWhenReady when the load failed calls _play()
+  // without checking isLoaded, and would start the half-primed buffer.
+  const play = raw._play as () => unknown;
+  raw._play = () => (raw.isLoaded ? play() : Promise.resolve({ status: "not-loaded" }));
+}
+
+/**
+ * Report the starts `_play()` makes: every start goes through it (▶, an
+ * autoplay, a re-prime or tempo change playing on). `play()` reaches it as
+ * `self._play`, an instance lookup.
+ */
+function reportPlayback(
+  raw: Record<string, unknown>,
+  onEvent: (event: TransportEvent) => void,
+): void {
+  const play = raw._play as () => unknown;
+  raw._play = () => {
+    const wasStarted = Boolean(raw.isStarted);
+    return Promise.resolve(play()).then((value) => {
+      if (!wasStarted && raw.isStarted) onEvent({ type: "started" });
+      return value;
+    });
+  };
 }
 
 /**
@@ -244,11 +309,9 @@ function joinPendingPlay(raw: Record<string, unknown>): void {
  *
  * It waits on the tracked promises rather than on `isLoading`, for two
  * reasons. The `_play()` that follows a load resumes the AudioContext before
- * it flips `isStarted`, so "not loading" arrives before "playing". And `go()`
- * clears `isLoading` only on success: after a failed soundfont fetch it stays
- * true forever, and every later `play()` spins in `runWhenReady`. Such a play
- * has no load in flight to wait for, so it is not waited on. A fresh prime is
- * exactly what gets it moving again.
+ * it flips `isStarted`, so "not loading" arrives before "playing". And a
+ * `play()` spinning in `runWhenReady` while `isLoading` is set has no load of
+ * its own to wait for: it is not waited on while the flag stays up.
  *
  * A load can hang. `go()` first awaits `AudioContext.resume()`, which under a
  * blocked autoplay stays pending until something resumes the context during
