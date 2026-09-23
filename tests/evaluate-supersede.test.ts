@@ -33,16 +33,27 @@ function extract(signature: string): string {
 }
 
 const SEQ_DECL = /^let evaluationSeq = 0;$/m.exec(SRC)?.[0] ?? "";
+const QUEUE_DECLS = [
+  /^let evaluationTail: Promise<void> = Promise\.resolve\(\);$/m.exec(SRC)?.[0] ?? "",
+  /^const EVALUATION_QUEUE_MAX_WAIT_MS = [\d_]+;$/m.exec(SRC)?.[0] ?? "",
+];
 
 const HOOK_TS = [
   SEQ_DECL,
+  ...QUEUE_DECLS,
   extract("function evaluationSuperseded("),
   extract("function installEvaluateHook("),
 ].join("\n");
 
-it("found the evaluation counter (a rename must fail here, not silently pass)", () => {
+it("found the evaluation counter and queue (a rename must fail here, not silently pass)", () => {
   expect(SEQ_DECL).toBe("let evaluationSeq = 0;");
+  for (const decl of QUEUE_DECLS) expect(decl).not.toBe("");
 });
+
+/** Let queued microtasks (the evaluation queue's hand-offs) run. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+}
 
 interface Deferred {
   promise: Promise<void>;
@@ -64,7 +75,9 @@ async function loadHook() {
     hydraStruck: 0,
     stateReports: 0,
   };
-  const scheduler = { started: false };
+  // `pattern` is what the scheduler would play: repl.evaluate() sets it when
+  // it FINISHES, so the last evaluation to finish is the one you hear.
+  const scheduler = { started: false, pattern: "" };
   const pending: Deferred[] = [];
   let settle: Deferred | null = null;
 
@@ -76,6 +89,8 @@ async function loadHook() {
     getSettle: () => settle,
     Error,
     Promise,
+    setTimeout,
+    clearTimeout,
   });
   vm.runInContext(
     `
@@ -116,7 +131,9 @@ async function loadHook() {
     evaluate(shouldPlay: boolean) {
       const d = deferred();
       pending.push(d);
+      const code = this.code;
       return d.promise.then(() => {
+        scheduler.pattern = code;
         if (shouldPlay) scheduler.started = true;
       });
     },
@@ -137,6 +154,7 @@ describe("an evaluation superseded while in flight", () => {
   it("control: an evaluation nobody cancelled plays and reports once", async () => {
     const { editor, log, scheduler, pending } = await loadHook();
     const run = editor.evaluate(true);
+    await flush(); // in flight: past the evaluation queue, inside repl.evaluate()
     pending[0].resolve();
     await run;
     expect(scheduler.started).toBe(true);
@@ -147,6 +165,7 @@ describe("an evaluation superseded while in flight", () => {
   it("a cancel during evaluation keeps the pattern stopped and reports nothing", async () => {
     const { api, editor, log, scheduler, pending } = await loadHook();
     const run = editor.evaluate(true);
+    await flush(); // in flight: past the evaluation queue, inside repl.evaluate()
     // ontoolcancelled: bump the generation, stop — BEFORE the scheduler starts.
     api.cancel();
     editor.stop();
@@ -162,6 +181,7 @@ describe("an evaluation superseded while in flight", () => {
     const { api, editor, log, scheduler, pending, holdSettle } = await loadHook();
     const settle = holdSettle();
     const run = editor.evaluate(true);
+    await flush(); // in flight: past the evaluation queue, inside repl.evaluate()
     pending[0].resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -173,18 +193,41 @@ describe("an evaluation superseded while in flight", () => {
     expect(log.reports).toEqual([]);
   });
 
-  it("leaves a NEWER evaluation's scheduler alone", async () => {
+  it("a stale evaluation can't finish after a newer one and replace its pattern", async () => {
+    // Codex review: A (cancelled, still loading hydra-synth) used to finish
+    // AFTER B and install A's pattern over B's, audible, with nothing stopping it.
     const { api, editor, log, scheduler, pending } = await loadHook();
     const stale = editor.evaluate(true);
+    await flush();
     api.cancel();
     editor.code = 'note("c e g")';
     const fresh = editor.evaluate(true); // e.g. the user pressed Play after the cancel
+    await flush();
+    // B is queued behind A: it hasn't reached repl.evaluate() yet.
+    expect(pending).toHaveLength(1);
+    pending[0].resolve(); // A finishes first, still the latest, and stops itself
+    await stale;
+    await flush();
+    expect(pending).toHaveLength(2);
     pending[1].resolve();
     await fresh;
-    pending[0].resolve();
-    await stale;
+    expect(scheduler.pattern).toBe('note("c e g")');
     expect(scheduler.started).toBe(true);
-    expect(log.stops).toBe(0);
     expect(log.reports).toEqual(['ok:note("c e g")']);
+  });
+
+  it("a queued evaluation cancelled before its turn never starts", async () => {
+    const { api, editor, log, scheduler, pending } = await loadHook();
+    const first = editor.evaluate(true);
+    await flush();
+    editor.code = 'note("c e g")';
+    const queued = editor.evaluate(true);
+    api.cancel(); // lands while `queued` waits behind `first`
+    pending[0].resolve();
+    await first;
+    await queued;
+    expect(pending).toHaveLength(1); // the queued one never reached repl.evaluate()
+    expect(scheduler.started).toBe(false);
+    expect(log.reports).toEqual([]);
   });
 });

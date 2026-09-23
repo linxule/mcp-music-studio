@@ -1792,6 +1792,10 @@ function reportEvaluation(
 
 /** Bumped by every evaluation, so a stale one can tell if a newer one began. */
 let evaluationSeq = 0;
+/** Settles when the evaluation in flight is done; the next one queues on it. */
+let evaluationTail: Promise<void> = Promise.resolve();
+/** How long a queued evaluation waits for a predecessor that never finishes. */
+const EVALUATION_QUEUE_MAX_WAIT_MS = 10_000;
 
 /**
  * Did a cancel, a teardown or a newer tool input take over (renderGeneration
@@ -1839,6 +1843,34 @@ function installEvaluateHook(editor: any): void {
   editor.evaluate = async (shouldPlay?: unknown) => {
     // Checked after every await below (evaluationSuperseded).
     const generation = renderGeneration;
+    // One evaluation at a time. repl.evaluate() installs its pattern only when
+    // it FINISHES, so two in flight finished in either order: a cancelled one
+    // still loading hydra-synth that landed after a newer one replaced the
+    // newer pattern (and shader) and stayed audible. Queued, a stale
+    // evaluation finishes while it is still the latest, and stops itself.
+    const previous = evaluationTail;
+    let finished!: () => void;
+    evaluationTail = new Promise<void>((resolve) => {
+      finished = resolve;
+    });
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        previous,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, EVALUATION_QUEUE_MAX_WAIT_MS);
+        }),
+      ]);
+      clearTimeout(timer);
+      // Cancelled (or replaced by a newer tool call) while queued: never start.
+      if (generation !== renderGeneration) return;
+      await evaluateNow(shouldPlay, generation);
+    } finally {
+      finished();
+    }
+  };
+
+  async function evaluateNow(shouldPlay: unknown, generation: number): Promise<void> {
     const seq = ++evaluationSeq;
     // Idempotent, and cheap once it has taken. It must run here rather than at
     // CDN load: initHydra/H only land on globalThis when the REPL's eval scope
@@ -1877,7 +1909,7 @@ function installEvaluateHook(editor: any): void {
     if (isSchedulerStarted()) await ensureAudioRunning(AUDIO_SETTLE_MS);
     if (evaluationSuperseded(editor, generation, seq)) return;
     reportEvaluation(code, null, tempoAtRuntime);
-  };
+  }
 }
 
 /**
