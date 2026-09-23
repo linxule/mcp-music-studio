@@ -32,8 +32,6 @@ interface SynthInternals {
 
 const internals = (control: object) => control as SynthInternals;
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 // =============================================================================
 // Transport state
 // =============================================================================
@@ -165,6 +163,8 @@ interface Tracked {
   loads: Set<Promise<unknown>>;
   /** Transport calls that load and may then START playback. */
   calls: Set<Promise<unknown>>;
+  /** Waiting {@link whenTransportIdle} calls, woken when one of those settles. */
+  waiters: Set<() => void>;
 }
 
 const tracked = new WeakMap<object, Tracked>();
@@ -172,39 +172,151 @@ const tracked = new WeakMap<object, Tracked>();
 /** Transport calls whose promise outlives the load (`_play()`, a seek). */
 const PLAYING_CALLS = ["play", "setWarp", "randomAccess"] as const;
 
-function track(set: Set<Promise<unknown>>, result: unknown): void {
+function track(state: Tracked, set: Set<Promise<unknown>>, result: unknown): void {
   if (!result || typeof (result as Promise<unknown>).then !== "function") return;
   const promise = result as Promise<unknown>;
   set.add(promise);
   const settle = () => {
     set.delete(promise);
+    for (const wake of [...state.waiters]) wake();
   };
   promise.then(settle, settle);
 }
 
+/** What the transport did, for the widget's status line. */
+export type TransportEvent =
+  | { type: "load-failed"; error: unknown }
+  | { type: "started" }
+  /** A ▶ pause. A pause from code (setTune, pauseTransport) is not reported. */
+  | { type: "paused" }
+  /** The tune ran to its end with Loop off. A loop restart is not an end. */
+  | { type: "finished" };
+
 /**
- * Record every load and every play on `control`, for {@link whenTransportIdle}.
+ * Record every load and every play on `control`, for {@link whenTransportIdle},
+ * let a second ▶ join a play that is still starting, and recover from a failed
+ * load, reporting it to `onEvent`.
  *
  * Call it BEFORE `load()`: `load()` hands the Play button and the progress bar
  * `self.play` and `self.randomAccess` by reference. `go()` and `setWarp()` are
  * looked up on the instance whenever abcjs calls them, so those wraps can land
  * at any point.
  */
-export function trackTransport(control: object): void {
+export function trackTransport(
+  control: object,
+  onEvent: (event: TransportEvent) => void = () => {},
+): void {
   const raw = internals(control) as unknown as Record<string, unknown>;
-  const state: Tracked = { loads: new Set(), calls: new Set() };
+  const state: Tracked = { loads: new Set(), calls: new Set(), waiters: new Set() };
   tracked.set(control, state);
   const wrap = (name: string, into: Set<Promise<unknown>>) => {
     const original = raw[name];
     if (typeof original !== "function") return;
     raw[name] = (...args: unknown[]) => {
       const result = (original as (...a: unknown[]) => unknown)(...args);
-      track(into, result);
+      track(state, into, result);
       return result;
     };
   };
+  recoverFromFailedLoads(raw, onEvent);
+  reportPlayback(raw, onEvent);
   wrap("go", state.loads);
   for (const name of PLAYING_CALLS) wrap(name, state.calls);
+  joinPendingPlay(raw);
+}
+
+/**
+ * Leave a controller whose load failed ready to load again.
+ *
+ * `go()` clears `isLoading` only on success, so after a failed sample fetch
+ * every ▶ spun in runWhenReady forever. A prime that failed half-way also
+ * kept `isLoaded` from the load before it, over a buffer it never finished
+ * (and, after a tempo change, no timer). Both are reset so the next ▶ loads
+ * again, but only for the latest load: a superseded one failing late must not
+ * unload the controller that replaced it.
+ */
+function recoverFromFailedLoads(
+  raw: Record<string, unknown>,
+  onEvent: (event: TransportEvent) => void,
+): void {
+  const go = raw.go as () => unknown;
+  let latest = 0;
+  raw.go = () => {
+    const load = ++latest;
+    const result = go();
+    if (!result || typeof (result as Promise<unknown>).then !== "function") return result;
+    return (result as Promise<unknown>).catch((error: unknown) => {
+      if (load === latest) {
+        raw.isLoading = false;
+        raw.isLoaded = false;
+        onEvent({ type: "load-failed", error });
+      }
+      throw error;
+    });
+  };
+  // A ▶ that was polling in runWhenReady when the load failed calls _play()
+  // without checking isLoaded, and would start the half-primed buffer.
+  const play = raw._play as () => unknown;
+  raw._play = () => (raw.isLoaded ? play() : Promise.resolve({ status: "not-loaded" }));
+}
+
+/**
+ * Report what `_play()` and `finished()` do to the transport. Every start and
+ * every ▶ pause goes through `_play()` (▶, an autoplay, a re-prime or tempo
+ * change playing on), which `play()` reaches as `self._play`; the timer's
+ * end-of-tune callback calls `self.finished()`. Both are instance lookups.
+ */
+function reportPlayback(
+  raw: Record<string, unknown>,
+  onEvent: (event: TransportEvent) => void,
+): void {
+  const play = raw._play as () => unknown;
+  raw._play = () => {
+    const wasStarted = Boolean(raw.isStarted);
+    return Promise.resolve(play()).then((value) => {
+      if (!wasStarted && raw.isStarted) onEvent({ type: "started" });
+      else if (wasStarted && !raw.isStarted) onEvent({ type: "paused" });
+      return value;
+    });
+  };
+  const finished = raw.finished as () => unknown;
+  raw.finished = () => {
+    const wasStarted = Boolean(raw.isStarted);
+    const result = finished();
+    // "continue" is a loop restart.
+    if (result !== "continue" && wasStarted && !raw.isStarted) {
+      onEvent({ type: "finished" });
+    }
+    return result;
+  };
+}
+
+/**
+ * A `play()` while another is still waiting for a load joins it.
+ *
+ * `_play()` toggles `isStarted`, so a second play() queued behind a load
+ * (runWhenReady polls every 500 ms) switched the tune off within half a second
+ * of it starting. That is what the ▶ you are told to press did to an autoplay
+ * parked on blocked audio, and to a slow first load clicked twice. Only while
+ * something is loading: a play stuck on a stalled load that a later re-prime
+ * went round would otherwise swallow every ▶.
+ */
+function joinPendingPlay(raw: Record<string, unknown>): void {
+  const play = raw.play as () => unknown;
+  let starting: Promise<unknown> | null = null;
+  raw.play = () => {
+    if (starting && raw.isLoading) return starting;
+    const result = play();
+    if (result && typeof (result as Promise<unknown>).then === "function") {
+      const pending = result as Promise<unknown>;
+      starting = pending;
+      const done = () => {
+        if (starting === pending) starting = null;
+      };
+      pending.then(done, done);
+    }
+    return result;
+  };
 }
 
 /**
@@ -213,17 +325,18 @@ export function trackTransport(control: object): void {
  *
  * It waits on the tracked promises rather than on `isLoading`, for two
  * reasons. The `_play()` that follows a load resumes the AudioContext before
- * it flips `isStarted`, so "not loading" arrives before "playing". And `go()`
- * clears `isLoading` only on success: after a failed soundfont fetch it stays
- * true forever, and every later `play()` spins in `runWhenReady`. Such a play
- * has no load in flight to wait for, so it is not waited on. A fresh prime is
- * exactly what gets it moving again.
+ * it flips `isStarted`, so "not loading" arrives before "playing". And a
+ * `play()` spinning in `runWhenReady` while `isLoading` is set has no load of
+ * its own to wait for: it is not waited on while the flag stays up.
  *
  * A load can hang. `go()` first awaits `AudioContext.resume()`, which under a
  * blocked autoplay stays pending until something resumes the context during
  * a user gesture. The caller wakes the context from the gesture that asked
  * for the change, and `stillWanted` is polled so that a superseded controller
- * is never waited on.
+ * is never waited on. Each poll subscribes to nothing: `track()` wakes the
+ * waiters when a call settles. Racing a fresh `Promise.allSettled()` of the
+ * pending calls every poll added a reaction to each of them every 100 ms for
+ * as long as a load hung.
  */
 export async function whenTransportIdle(
   control: object,
@@ -235,12 +348,115 @@ export async function whenTransportIdle(
   const raw = internals(control);
   const busy = () =>
     state.loads.size > 0 || (state.calls.size > 0 && !raw.isLoading);
-  while (busy() && stillWanted()) {
-    await Promise.race([
-      Promise.allSettled([...state.loads, ...state.calls]),
-      sleep(pollMs),
-    ]);
+  while (busy() && stillWanted()) await nextSettle(state, pollMs);
+}
+
+/** Resolve when a tracked call settles, or after `ms` to re-check the caller. */
+function nextSettle(state: Tracked, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const wake = () => {
+      clearTimeout(timer);
+      state.waiters.delete(wake);
+      resolve();
+    };
+    const timer = setTimeout(wake, ms);
+    state.waiters.add(wake);
+  });
+}
+
+const noop = () => {};
+
+/**
+ * How long a queued change waits (for the change before it, then for the
+ * controller to go idle) before it runs anyway. abcjs fetches each sample
+ * with a bare XMLHttpRequest (load-note.js: onload and onerror, no timeout),
+ * so one stalled request kept go() pending forever and every change queued
+ * behind it never applied. Long enough for a slow first load of a large bank;
+ * a load still running after that is presumed dead, and the change's own
+ * load starts beside it.
+ */
+export const TRANSPORT_WAIT_LIMIT_MS = 15_000;
+
+/** Resolve when `promise` settles or after `ms`, whichever is first. */
+function settledWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    promise.then(done, done);
+  });
+}
+
+/**
+ * Transport changes, one at a time, each run once the live controller is idle.
+ *
+ * Every change that re-primes goes through here: instrument and sound changes,
+ * edits, and the % field. The live controller is re-read after each wait: one
+ * replaced mid-wait (a new tool call, a Style re-render) may be loading its own
+ * autoplay, and a change run on it then was the #33 double load again, on the
+ * replacement.
+ */
+export class TransportQueue {
+  private tail: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    /** The widget's live controller, if any. */
+    private readonly current: () => object | null,
+    /** False once the widget is torn down. */
+    private readonly alive: () => boolean = () => true,
+    private readonly limitMs = TRANSPORT_WAIT_LIMIT_MS,
+  ) {}
+
+  /** Run `step` after every earlier step, once the live controller is idle. */
+  run<T>(step: () => T | PromiseLike<T>): Promise<T> {
+    const next = this.waitTurn(this.tail).then(step);
+    this.tail = next.then(noop, noop);
+    return next;
   }
+
+  /** Is `control` still the widget's live controller? */
+  isCurrent(control: object): boolean {
+    return this.alive() && this.current() === control;
+  }
+
+  private async waitTurn(previous: Promise<unknown>): Promise<void> {
+    const deadline = Date.now() + this.limitMs;
+    await settledWithin(previous, this.limitMs);
+    let control = this.current();
+    while (control && this.alive() && Date.now() < deadline) {
+      const waitingOn = control;
+      await whenTransportIdle(
+        waitingOn,
+        () => this.isCurrent(waitingOn) && Date.now() < deadline,
+      );
+      control = this.current();
+      if (control === waitingOn) return;
+    }
+  }
+}
+
+/**
+ * Send the % field's tempo changes through `queue`.
+ *
+ * abcjs's `setWarp()` calls `go()` directly, so a change made while a load was
+ * in flight (the autoplay, a sound change, an edit, the previous tempo) put a
+ * second init + prime on the same buffer. The field reaches it as
+ * `self.setWarp` (`onWarp`), an instance lookup. A burst from the field's
+ * spinner collapses to its last value, and a change for a controller that
+ * has since been replaced is dropped.
+ */
+export function queueWarp(control: object, queue: TransportQueue): void {
+  const raw = internals(control);
+  const setWarp = raw.setWarp;
+  let latest = 0;
+  raw.setWarp = (warp: unknown) => {
+    const request = ++latest;
+    return queue.run(() =>
+      request === latest && queue.isCurrent(control) ? setWarp(warp) : undefined,
+    );
+  };
 }
 
 // =============================================================================

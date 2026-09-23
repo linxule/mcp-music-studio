@@ -30,7 +30,11 @@ import {
   findLeadingProgram,
   instrumentForProgram,
 } from "./abc-program";
-import { resetSoundsCache, soundsCacheLooksLive } from "./abcjs-sound-cache";
+import {
+  forgetFailedSounds,
+  resetSoundsCache,
+  soundsCacheLooksLive,
+} from "./abcjs-sound-cache";
 import { transposeAbcDetailed } from "./abc-transpose";
 import {
   cleanAbcWarnings,
@@ -38,6 +42,7 @@ import {
   hasFatalAbcWarning,
   staleControlAction,
 } from "./abc-edit";
+import { resumeAudioContext } from "./audio-unlock";
 import { audioBufferToWavBase64 } from "./wav-encoder";
 import { bytesToBase64, sanitizeFileStem } from "./bytes-to-base64";
 import {
@@ -50,14 +55,16 @@ import {
 import { USER_SCROLL_GRACE_MS, followScrollTarget } from "./sheet-follow";
 import { OVERHANG_TEXT_SELECTOR, paddingRightToFit } from "./score-fit";
 import {
+  TransportQueue,
   carryWarp,
   keepLoopLitThroughWarp,
   pauseTransport,
+  queueWarp,
   readTransport,
   reprime,
   restoreLoop,
   trackTransport,
-  whenTransportIdle,
+  type TransportEvent,
   type TransportState,
 } from "./synth-transport";
 import {
@@ -597,52 +604,60 @@ function reengraveForInstrument(): void {
  * or ⌘↵ in the editor).
  */
 /**
- * Serialises {@link applySettings}. `setTune()` pauses, rewinds and re-primes
- * the transport, so two of them overlapping (a user flicking through the
- * instrument selector, where every change fires one) interleave a rewind with
- * another prime and can leave the primed buffer disagreeing with the selector.
- * Each call waits for the one in flight and then re-reads the CURRENT selector
- * values, so a burst collapses to "prime whatever was chosen last" instead of
- * priming every intermediate choice.
+ * Serialises everything that re-primes the live controller: settings changes,
+ * edits and the % field. `setTune()` pauses, rewinds and re-primes, so two of
+ * them overlapping (a user flicking through the instrument selector, where
+ * every change fires one) interleave a rewind with another prime and can
+ * leave the primed buffer disagreeing with the selector. Each step first waits
+ * out whatever the controller is already loading (#33): `setTune(…, true)`
+ * starts a load at once, and one landing on top of the autoplay's put two
+ * init + prime runs on the same buffer.
  */
-let applySettingsChain: Promise<void> = Promise.resolve();
+const transportQueue = new TransportQueue(() => state.synthControl, () => !disposed);
 
 function applySettings(prepare?: () => void): Promise<void> {
   wakeAudio();
-  // Each link first waits out whatever the controller is already loading
-  // (#33): setTune(…, true) starts a load at once, and one landing on top of
-  // the autoplay's put two init + prime runs on the same buffer. `prepare`
-  // then runs right before the re-prime reads `state.visualObj` (the
-  // instrument re-engrave, #25).
-  const next = applySettingsChain.then(settleTransport).then(() => {
+  // Each step re-reads the CURRENT selector values, so a burst collapses to
+  // "prime whatever was chosen last". `prepare` runs right before the re-prime
+  // reads `state.visualObj` (the instrument re-engrave, #25).
+  return transportQueue.run(() => {
     prepare?.();
     return applySettingsNow();
   });
-  // Keep the chain alive even if a link rejects — applySettingsNow already
-  // swallows its own errors, so this is only belt and braces.
-  applySettingsChain = next.catch(() => {});
-  return next;
 }
 
-/**
- * Resume the AudioContext from the gesture that changed a setting. A load
- * started while autoplay was blocked is parked on `AudioContext.resume()`,
- * which stays pending until a resume made during a user gesture. The change
- * waits for that load, so this gesture has to be the one that releases it.
- */
-function wakeAudio(): void {
+/** abcjs's AudioContext, created on first call; null without Web Audio. */
+function audioContext(): AudioContext | null {
   try {
-    void ABCJS.synth.activeAudioContext()?.resume().catch(() => {});
+    return ABCJS.synth.activeAudioContext() ?? null;
   } catch {
-    // No Web Audio: renderAbc already reported it.
+    return null;
   }
 }
 
-/** Wait until the live controller has finished loading (and starting). */
-function settleTransport(): Promise<void> {
-  const control = state.synthControl;
-  if (!control) return Promise.resolve();
-  return whenTransportIdle(control, () => state.synthControl === control && !disposed);
+/** A gesture's resume() is never waited on longer than this. */
+const AUDIO_RESUME_TIMEOUT_MS = 1500;
+/**
+ * How long an autoplay's context gets to reach "running" before the status
+ * says it is blocked. A blocked resume() never settles (src/audio-unlock.ts).
+ */
+const AUDIO_SETTLE_MS = 300;
+
+/**
+ * Resume the AudioContext from a user gesture. A load started while autoplay
+ * was blocked is parked on `AudioContext.resume()`, which stays pending until
+ * a resume made during a user gesture. Settings changes wait for that load, so
+ * their gesture has to be the one that releases it.
+ */
+function wakeAudio(): void {
+  void resumeAudioContext(audioContext(), AUDIO_RESUME_TIMEOUT_MS);
+}
+
+// Any gesture in the widget releases a parked autoplay, not only ▶. Capture
+// phase, so no control's own handler can swallow it; on touch only
+// pointerup/touchend carry user activation.
+for (const type of ["pointerdown", "keydown", "pointerup", "touchend"]) {
+  document.addEventListener(type, wakeAudio, { capture: true, passive: true });
 }
 
 async function applySettingsNow(): Promise<void> {
@@ -780,6 +795,8 @@ function retireSoundFontSelector(): void {
   soundFontLabel.title = soundFontSelect.title;
 }
 
+const LOADING_SOUNDS = "Loading sounds…";
+
 soundFontSelect.addEventListener("change", () => {
   const previous = state.currentSoundFont;
   state.currentSoundFont = soundFontSelect.value as SoundFontName;
@@ -800,12 +817,20 @@ soundFontSelect.addEventListener("change", () => {
     return;
   }
 
-  // Drop every cached sample so init()/prime() refetch from the new bank.
-  resetSoundsCache();
-
-  setStatus("Loading sounds…");
-  applySettings()
-    .then(() => setStatus("Click ▶ to play"))
+  // Drop every cached sample so init()/prime() refetch from the new bank, but
+  // only once the wait is over: a load still in flight (an autoplay parked on
+  // blocked audio, released by this very gesture) refilled the cache from the
+  // OLD bank, and the re-prime then played those samples under the new name.
+  setStatus(LOADING_SOUNDS);
+  applySettings(resetSoundsCache)
+    .then(() => {
+      // The re-prime plays on if the tune was playing. Say which, unless
+      // something newer has taken the status line.
+      const control = state.synthControl;
+      if (!control || statusEl.textContent !== LOADING_SOUNDS) return;
+      const playing = readTransport(control).wasPlaying;
+      setStatus(withTransposeNote(playing ? "Playing..." : "Click ▶ to play"));
+    })
     .catch((err) =>
       setStatus(`Sound change failed: ${(err as Error).message}`, true),
     );
@@ -994,9 +1019,6 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     return;
   }
 
-  const transport = readTransport(state.synthControl);
-  const { wasPlaying } = transport;
-
   // The user's edit is the newest intent, so it supersedes any partial render
   // still queued from a stream. Everything after an await re-checks this.
   const generation = newGeneration();
@@ -1006,6 +1028,26 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
   // re-prime and keep playing.
   ownSynthControl(synthControl, generation);
   cancelPartialRender();
+
+  // setTune(…, true) starts a load at once, so an edit waits its turn behind
+  // any load or change in flight, like a settings change.
+  const edit = { abc, effective, messages, forcePlay, generation, synthControl };
+  await transportQueue.run(() => (isStale(generation) ? undefined : primeEdit(edit)));
+}
+
+/** The re-render half of {@link applyEditorAbc}, run by `transportQueue`. */
+async function primeEdit(edit: {
+  abc: string;
+  effective: string;
+  messages: string[];
+  forcePlay: boolean;
+  generation: number;
+  synthControl: ABCJS.SynthObjectController;
+}): Promise<void> {
+  const { abc, effective, messages, forcePlay, generation, synthControl } = edit;
+  // Read after the wait: an autoplay that was still loading is playing now.
+  const transport = readTransport(synthControl);
+  const { wasPlaying } = transport;
 
   try {
     clearHighlights();
@@ -1026,12 +1068,15 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     syncInstrumentSelect();
     setEditorMessage(messages.length > 0 ? messages.join("\n") : null, "warn");
 
-    await synthControl.setTune(
-      visualObj[0],
-      true,
-      currentSynthOptions() as SynthOptions,
-    );
-    hasPrimedAudio = true;
+    // The edit is on screen whatever happens to the sounds: a failed load is
+    // reported by onTransportEvent (▶ retries), not as "Edit not applied".
+    const primed = await synthControl
+      .setTune(visualObj[0], true, currentSynthOptions() as SynthOptions)
+      .then(
+        () => true,
+        () => false,
+      );
+    if (primed) hasPrimedAudio = true;
 
     // New tool input, a cancel or a teardown landed while setTune was priming.
     // The controller we just re-primed may already have been retired; don't
@@ -1046,14 +1091,14 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     sendBtn.disabled = !messageSupported;
     restoreLoop(synthControl, transport);
 
-    if (wasPlaying || forcePlay) {
+    if (primed && (wasPlaying || forcePlay)) {
       await (synthControl.play() as unknown as Promise<unknown> | undefined);
       if (isStale(generation)) {
         releaseStaleControl(synthControl, generation);
         return;
       }
       setStatus("Playing...");
-    } else {
+    } else if (primed) {
       setStatus("Edit applied — click ▶ to play");
     }
     reportEditToModel(abc);
@@ -1433,6 +1478,42 @@ interface RenderTransport {
   carry?: TransportState | null;
 }
 
+const LOAD_FAILED_STATUS = "Couldn't load sounds — ▶ to retry";
+
+/** What a controller's transport did (trackTransport, src/synth-transport.ts). */
+function onTransportEvent(
+  control: ABCJS.SynthObjectController,
+  event: TransportEvent,
+): void {
+  // abcjs caches the failed samples' rejections: the retry must ask again.
+  if (event.type === "load-failed") void forgetFailedSounds();
+  if (disposed || state.synthControl !== control) return;
+  switch (event.type) {
+    case "load-failed":
+      console.error("Couldn't load sounds:", event.error);
+      // abcjs takes the ▶ spinner down only when a play succeeds.
+      audioControlsEl.querySelector(".abcjs-midi-start")?.classList.remove("abcjs-loading");
+      setStatus(withTransposeNote(LOAD_FAILED_STATUS), true);
+      return;
+    case "started":
+      return showTransportStatus("Playing...");
+    case "paused":
+      return showTransportStatus("Paused");
+    case "finished":
+      return showTransportStatus("Finished — ▶ to play again");
+  }
+}
+
+/**
+ * Say what the transport is doing. An error stays up (an edit that did not
+ * apply, a failed download), except a failed load, which a start answers.
+ */
+function showTransportStatus(text: string): void {
+  const error = statusEl.classList.contains("error");
+  if (error && !statusEl.textContent?.startsWith(LOAD_FAILED_STATUS)) return;
+  setStatus(withTransposeNote(text));
+}
+
 /** The autoplay a render started that has not finished loading and starting. */
 let pendingAutoplay: {
   control: ABCJS.SynthObjectController;
@@ -1505,7 +1586,8 @@ async function renderAbc(
     ownSynthControl(synthControl, generation);
     keepLoopLitThroughWarp(synthControl);
     // Before load(), which hands the Play button `self.play` by reference.
-    trackTransport(synthControl);
+    trackTransport(synthControl, (event) => onTransportEvent(synthControl, event));
+    queueWarp(synthControl, transportQueue);
     synthControl.load(audioControlsEl, cursorControl, {
       displayLoop: true,
       displayPlay: true,
@@ -1572,9 +1654,20 @@ async function renderAbc(
       })
       .catch((e) => {
         if (isStale(generation)) return;
-        console.debug("Autoplay blocked:", e);
-        setStatus(withTransposeNote("Click ▶ to play"));
+        console.debug("Autoplay failed:", e);
+        // A failed load has already said so (onTransportEvent).
+        if (!statusEl.classList.contains("error")) {
+          setStatus(withTransposeNote("Click ▶ to play"));
+        }
       });
+    // A blocked autoplay never rejects: go() waits on AudioContext.resume(),
+    // which stays pending until a gesture resumes the context, and "Rendering..."
+    // stayed up. A context that is merely starting gets a moment first.
+    void resumeAudioContext(audioContext(), AUDIO_SETTLE_MS).then((running) => {
+      if (!running && autoplayLoading(synthControl)) {
+        setStatus(withTransposeNote("Click ▶ to play"));
+      }
+    });
   } catch (error) {
     if (isStale(generation)) return;
     console.error("Render error:", error);

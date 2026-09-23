@@ -13,6 +13,7 @@ import getNote from "abcjs/src/synth/load-note.js";
 import ABCJS from "abcjs";
 import {
   abcjsSoundsCache,
+  forgetFailedSounds,
   resetSoundsCache,
   soundsCacheLooksLive,
   soundsCacheSize,
@@ -129,6 +130,52 @@ describe("resetSoundsCache — the invalidation", () => {
   it("is a no-op on an already-empty cache", () => {
     expect(resetSoundsCache()).toBe(0);
     expect(soundsCacheSize()).toBe(0);
+  });
+});
+
+describe("forgetFailedSounds — a retry after a failed load asks again", () => {
+  /** Answers 404 for the URLs in `missing`, like RecordingXHR otherwise. */
+  let missing = new Set<string>();
+  class FlakyXHR extends RecordingXHR {
+    send() {
+      fetched.push(this.url);
+      this.status = missing.has(this.url) ? 404 : 200;
+      this.response = new ArrayBuffer(8);
+      this.onload?.();
+    }
+  }
+  const C4 = `${BANK_A}flute-mp3/C4.mp3`;
+  const D4 = `${BANK_A}flute-mp3/D4.mp3`;
+
+  beforeEach(() => {
+    missing = new Set([C4]);
+    (globalThis as { XMLHttpRequest?: unknown }).XMLHttpRequest = FlakyXHR;
+  });
+
+  it("upstream: abcjs caches the rejection, so the retry never asks", async () => {
+    await expect(getNote(BANK_A, "flute", "C4", audioContext)).rejects.toThrow("status=404");
+    missing.clear(); // the network is back
+    await expect(getNote(BANK_A, "flute", "C4", audioContext)).rejects.toThrow("status=404");
+    expect(fetched).toEqual([C4]);
+  });
+
+  it("drops the failed notes only, and the retry fetches them", async () => {
+    await expect(getNote(BANK_A, "flute", "C4", audioContext)).rejects.toThrow();
+    await getNote(BANK_A, "flute", "D4", audioContext);
+    await forgetFailedSounds();
+    expect(Object.keys(abcjsSoundsCache.flute)).toEqual(["D4"]);
+
+    missing.clear();
+    await getNote(BANK_A, "flute", "C4", audioContext);
+    await getNote(BANK_A, "flute", "D4", audioContext); // still cached
+    expect(fetched).toEqual([C4, D4, C4]);
+  });
+
+  it("keeps the instrument keys, so the cache still reads as live", async () => {
+    await expect(getNote(BANK_A, "flute", "C4", audioContext)).rejects.toThrow();
+    await forgetFailedSounds();
+    expect(soundsCacheSize()).toBe(1);
+    expect(soundsCacheLooksLive(true)).toBe(true);
   });
 });
 

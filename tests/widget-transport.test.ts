@@ -60,12 +60,23 @@ describe("sheet music transport", () => {
   it("queues a settings change behind any load already in flight (#33)", () => {
     const fn = body(ABC, "function applySettings(");
     expect(fn).toContain("wakeAudio();");
-    expect(fn).toContain("applySettingsChain.then(settleTransport).then(() => {");
-    // The #25 re-engrave runs AFTER the wait, inside the same link.
-    expect(fn).toMatch(/settleTransport\)\.then\(\(\) => \{\s*prepare\?\.\(\);\s*return applySettingsNow\(\);/);
+    // The #25 re-engrave runs AFTER the wait, inside the same step.
+    expect(fn).toMatch(/transportQueue\.run\(\(\) => \{\s*prepare\?\.\(\);\s*return applySettingsNow\(\);/);
     expect(body(ABC, "async function renderAbc(")).toMatch(
-      /trackTransport\(synthControl\);\s*synthControl\.load\(/,
+      /trackTransport\(synthControl, [^\n]*\);\s*queueWarp\(synthControl, transportQueue\);\s*synthControl\.load\(/,
     );
+  });
+
+  it("queues an edit's re-prime and a tempo change the same way", () => {
+    // Both used to start a load straight away: setTune(…, true) in the edit,
+    // go() inside abcjs's setWarp().
+    expect(body(ABC, "async function applyEditorAbc(")).toContain(
+      "await transportQueue.run(() => (isStale(generation) ? undefined : primeEdit(edit)));",
+    );
+    const prime = body(ABC, "async function primeEdit(");
+    // The transport is read after the wait, and the load starts inside the step.
+    expect(prime.indexOf("readTransport(synthControl)")).toBeGreaterThanOrEqual(0);
+    expect(prime).toMatch(/await synthControl\s*\.setTune\(/);
   });
 
   it("a cancel's pause is recorded, so nothing later reads the widget as playing", () => {
@@ -75,7 +86,7 @@ describe("sheet music transport", () => {
   });
 
   it("keeps Loop through an edit too", () => {
-    expect(body(ABC, "async function applyEditorAbc(")).toContain(
+    expect(body(ABC, "async function primeEdit(")).toContain(
       "restoreLoop(synthControl, transport);",
     );
   });
@@ -111,6 +122,83 @@ describe("sheet music transport", () => {
     const explicit = code.match(/[^.\w]renderAbc\([^)]*\{ autoplay[^}]*\}\)/g) ?? [];
     expect(explicit.length).toBe(3); // tool input, Style change, editor fallback
     expect(calls.length).toBe(explicit.length);
+  });
+
+  it("after a Sound change, says whether the tune plays on (not always 'Click ▶ to play')", () => {
+    const handler = ABC.slice(ABC.indexOf('soundFontSelect.addEventListener("change"'));
+    const fn = handler.slice(0, handler.indexOf("\n});\n"));
+    expect(fn).not.toContain('.then(() => setStatus("Click ▶ to play"))');
+    expect(fn).toMatch(
+      /if \(!control \|\| statusEl\.textContent !== LOADING_SOUNDS\) return;\s*const playing = readTransport\(control\)\.wasPlaying;\s*setStatus\(withTransposeNote\(playing \? "Playing\.\.\." : "Click ▶ to play"\)\);/,
+    );
+  });
+
+  it("empties the sample cache after the wait, not before it", () => {
+    // A load finishing during the wait refilled it from the old bank.
+    const handler = ABC.slice(ABC.indexOf('soundFontSelect.addEventListener("change"'));
+    const fn = handler.slice(0, handler.indexOf("\n});\n"));
+    expect(fn).toContain("applySettings(resetSoundsCache)");
+    expect(fn).not.toMatch(/resetSoundsCache\(\)/);
+    // The liveness check still runs first, synchronously.
+    expect(fn.indexOf("soundsCacheLooksLive(hasPrimedAudio)")).toBeLessThan(
+      fn.indexOf("applySettings(resetSoundsCache)"),
+    );
+  });
+
+  it("a failed load says so, forgets the failed samples, and leaves ▶ to retry", () => {
+    // The recovery itself (flags reset, one report) is trackTransport's, in
+    // synth-transport.test.ts; forgetFailedSounds is in soundfont-cache.test.ts.
+    expect(body(ABC, "async function renderAbc(")).toContain(
+      "trackTransport(synthControl, (event) => onTransportEvent(synthControl, event));",
+    );
+    const handler = body(ABC, "function onTransportEvent(");
+    expect(handler).toMatch(
+      /if \(event\.type === "load-failed"\) void forgetFailedSounds\(\);\s*if \(disposed \|\| state\.synthControl !== control\) return;/,
+    );
+    expect(handler).toContain('classList.remove("abcjs-loading")');
+    expect(handler).toContain("setStatus(withTransposeNote(LOAD_FAILED_STATUS), true);");
+    // …and takes it down when a ▶ retries it successfully.
+    expect(handler).toContain('case "started":\n      return showTransportStatus("Playing...");');
+    expect(body(ABC, "function showTransportStatus(")).toContain(
+      "if (error && !statusEl.textContent?.startsWith(LOAD_FAILED_STATUS)) return;",
+    );
+    // Nobody paints over it: not the autoplay's catch…
+    expect(body(ABC, "async function renderAbc(")).toMatch(
+      /if \(!statusEl\.classList\.contains\("error"\)\) \{\s*setStatus\(withTransposeNote\("Click ▶ to play"\)\);/,
+    );
+    // …nor an edit, whose score is on screen whether or not the sounds load.
+    const edit = body(ABC, "async function primeEdit(");
+    expect(edit).toMatch(/const primed = await synthControl\s*\.setTune\(visualObj\[0\], true, currentSynthOptions\(\) as SynthOptions\)\s*\.then\(\s*\(\) => true,\s*\(\) => false,\s*\);/);
+    expect(edit).toContain("if (primed && (wasPlaying || forcePlay)) {");
+  });
+
+  it("says Paused after a ▶ pause and Finished at the end, not 'Playing...'", () => {
+    // Which transport changes are reported (a ▶ pause yes, a loop restart
+    // no) is reportPlayback's, in synth-transport.test.ts.
+    const handler = body(ABC, "function onTransportEvent(");
+    expect(handler).toContain('case "paused":\n      return showTransportStatus("Paused");');
+    expect(handler).toContain(
+      'case "finished":\n      return showTransportStatus("Finished — ▶ to play again");',
+    );
+    // Neither paints over an error, and both keep the transposition note.
+    const show = body(ABC, "function showTransportStatus(");
+    expect(show).toContain('const error = statusEl.classList.contains("error");');
+    expect(show).toContain("setStatus(withTransposeNote(text));");
+  });
+
+  it("says so when autoplay is blocked, instead of leaving 'Rendering...' up", () => {
+    // A blocked play() never rejects, it waits: the check is on the context.
+    const render = body(ABC, "async function renderAbc(");
+    expect(render).toMatch(
+      /resumeAudioContext\(audioContext\(\), AUDIO_SETTLE_MS\)\.then\(\(running\) => \{\s*if \(!running && autoplayLoading\(synthControl\)\) \{\s*setStatus\(withTransposeNote\("Click ▶ to play"\)\);/,
+    );
+  });
+
+  it("any gesture in the widget resumes audio, so a parked autoplay can start", () => {
+    expect(ABC).toMatch(
+      /for \(const type of \["pointerdown", "keydown", "pointerup", "touchend"\]\) \{\s*document\.addEventListener\(type, wakeAudio, \{ capture: true, passive: true \}\);/,
+    );
+    expect(body(ABC, "function wakeAudio()")).toContain("resumeAudioContext(audioContext(),");
   });
 
   it("keeps the Loop button lit through a tempo change on every controller it builds (#31)", () => {
