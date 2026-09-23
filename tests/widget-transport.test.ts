@@ -9,6 +9,8 @@
 //    bars before the audio.
 //  * `setTune()` pauses, rewinds and clears Loop, so changing the instrument or
 //    sound bank mid-tune silently stopped the music.
+//  * That change then started a second load on top of the autoplay's (#33),
+//    and restarted music the user had cancelled while it primed.
 //  * Strudel: a cancel didn't supersede a render still loading, which went on
 //    to autoplay the cancelled pattern; a stop nobody announced (hush()) left
 //    the status reading "Playing...".
@@ -38,10 +40,36 @@ describe("sheet music transport", () => {
   });
 
   it("keeps playing (and looping) through an instrument or sound change", () => {
+    // The behaviour itself (Loop kept, play only if playing, never after a
+    // cancel) is reprime(), exercised in synth-transport.test.ts.
     const fn = body(ABC, "async function applySettingsNow()");
-    expect(fn).toContain("const transport = readTransport(control);");
-    expect(fn).toContain("restoreLoop(control, transport);");
-    expect(fn).toMatch(/if \(transport\.wasPlaying\) \{\s*await \(control\.play\(\)/);
+    expect(fn).toContain("await reprime(control, {");
+    expect(fn).toContain("await control.setTune(tune, true, currentSynthOptions() as SynthOptions);");
+  });
+
+  it("re-checks the generation, not just the controller, after a settings prime", () => {
+    // ontoolcancelled bumps the generation but KEEPS the controller, so an
+    // identity check alone let a prime in flight restart cancelled music.
+    const fn = body(ABC, "async function applySettingsNow()");
+    expect(fn).toMatch(/const generation = renderGeneration;/);
+    expect(fn).toContain(
+      "stillWanted: () => state.synthControl === control && !isStale(generation),",
+    );
+  });
+
+  it("queues a settings change behind any load already in flight (#33)", () => {
+    const fn = body(ABC, "function applySettings()");
+    expect(fn).toContain("wakeAudio();");
+    expect(fn).toContain("applySettingsChain.then(settleTransport).then(applySettingsNow)");
+    expect(body(ABC, "async function renderAbc(")).toMatch(
+      /trackTransport\(synthControl\);\s*synthControl\.load\(/,
+    );
+  });
+
+  it("a cancel's pause is recorded, so nothing later reads the widget as playing", () => {
+    expect(body(ABC, "function stopPlayback()")).toContain(
+      "pauseTransport(state.synthControl)",
+    );
   });
 
   it("keeps Loop through an edit too", () => {

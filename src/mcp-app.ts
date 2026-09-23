@@ -42,7 +42,15 @@ import {
   screenAvailHeight,
 } from "./frame-size";
 import { USER_SCROLL_GRACE_MS, followScrollTarget } from "./sheet-follow";
-import { keepLoopLitThroughWarp } from "./synth-transport";
+import {
+  keepLoopLitThroughWarp,
+  pauseTransport,
+  readTransport,
+  reprime,
+  restoreLoop,
+  trackTransport,
+  whenTransportIdle,
+} from "./synth-transport";
 import { VERSION } from "./version";
 
 // =============================================================================
@@ -427,54 +435,67 @@ instrumentSelect.addEventListener("change", () => {
 let applySettingsChain: Promise<void> = Promise.resolve();
 
 function applySettings(): Promise<void> {
-  const next = applySettingsChain.then(applySettingsNow);
+  wakeAudio();
+  // Each link first waits out whatever the controller is already loading
+  // (#33): setTune(…, true) starts a load at once, and one landing on top of
+  // the autoplay's put two init + prime runs on the same buffer.
+  const next = applySettingsChain.then(settleTransport).then(applySettingsNow);
   // Keep the chain alive even if a link rejects — applySettingsNow already
   // swallows its own errors, so this is only belt and braces.
   applySettingsChain = next.catch(() => {});
   return next;
 }
 
-/** What `setTune()` throws away that the listener would want kept. */
-interface TransportState {
-  wasPlaying: boolean;
-  wasLooping: boolean;
-}
-
-function readTransport(control: ABCJS.SynthObjectController): TransportState {
-  const raw = control as unknown as { isStarted?: boolean; isLooping?: boolean };
-  return { wasPlaying: Boolean(raw.isStarted), wasLooping: Boolean(raw.isLooping) };
-}
-
 /**
- * `setTune()` pauses, rewinds, and switches Loop off (abcjs
- * synth-controller.js: `pause()`, `resetAll()`, `isLooping = false`). Put Loop
- * back; the caller decides whether to play again.
+ * Resume the AudioContext from the gesture that changed a setting. A load
+ * started while autoplay was blocked is parked on `AudioContext.resume()`,
+ * which stays pending until a resume made during a user gesture. The change
+ * waits for that load, so this gesture has to be the one that releases it.
  */
-function restoreLoop(control: ABCJS.SynthObjectController, { wasLooping }: TransportState): void {
-  const raw = control as unknown as { isLooping?: boolean; toggleLoop?: () => void };
-  if (wasLooping && !raw.isLooping) raw.toggleLoop?.();
+function wakeAudio(): void {
+  try {
+    void ABCJS.synth.activeAudioContext()?.resume().catch(() => {});
+  } catch {
+    // No Web Audio: renderAbc already reported it.
+  }
+}
+
+/** Wait until the live controller has finished loading (and starting). */
+function settleTransport(): Promise<void> {
+  const control = state.synthControl;
+  if (!control) return Promise.resolve();
+  return whenTransportIdle(control, () => state.synthControl === control && !disposed);
 }
 
 async function applySettingsNow(): Promise<void> {
   const control = state.synthControl;
-  if (!control || !state.visualObj?.[0]) return;
+  const tune = state.visualObj?.[0];
+  if (!control || !tune) return;
   // An instrument or sound change made mid-tune used to STOP the music:
   // setTune() pauses and rewinds, and nothing started it again. Like an edit
   // (applyEditorAbc), it now carries on from the top — and keeps Loop.
-  const transport = readTransport(control);
+  //
+  // A cancel keeps this controller but bumps the generation, and an edit
+  // takes it over under a new one. Neither may have the music restarted
+  // behind its back, so this re-checks the generation after every await,
+  // not just "is it still the widget's controller?".
+  const generation = renderGeneration;
+  const owner = synthControlOwner;
   try {
-    await control.setTune(
-      state.visualObj[0],
-      true,
-      currentSynthOptions() as SynthOptions,
-    );
-    hasPrimedAudio = true;
-    // A newer render may have replaced the controller while we primed.
-    if (state.synthControl !== control) return;
-    restoreLoop(control, transport);
-    if (transport.wasPlaying) {
-      await (control.play() as unknown as Promise<unknown> | undefined);
-    }
+    await reprime(control, {
+      prime: async () => {
+        await control.setTune(tune, true, currentSynthOptions() as SynthOptions);
+        hasPrimedAudio = true;
+      },
+      stillWanted: () => state.synthControl === control && !isStale(generation),
+      onSuperseded: () => {
+        // A cancel landed while play() was starting: stop what we started.
+        // An edit that took the controller over decides for itself.
+        if (state.synthControl === control && synthControlOwner === owner) {
+          pauseTransport(control);
+        }
+      },
+    });
   } catch (error) {
     console.error("Failed to apply settings:", error);
   }
@@ -1236,6 +1257,8 @@ async function renderAbc(
     const synthControl = new ABCJS.synth.SynthController();
     ownSynthControl(synthControl, generation);
     keepLoopLitThroughWarp(synthControl);
+    // Before load(), which hands the Play button `self.play` by reference.
+    trackTransport(synthControl);
     synthControl.load(audioControlsEl, cursorControl, {
       displayLoop: true,
       displayPlay: true,
@@ -1440,7 +1463,7 @@ app.onerror = console.error;
 // Reset playback/highlight state when a compose is cancelled or torn down.
 function stopPlayback(): void {
   try {
-    state.synthControl?.pause();
+    if (state.synthControl) pauseTransport(state.synthControl);
   } catch {
     // synthControl may not be loaded yet — ignore
   }
