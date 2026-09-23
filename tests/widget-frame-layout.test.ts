@@ -47,6 +47,40 @@ describe("both widgets follow the host's container", () => {
   }
 });
 
+describe("neither widget can be panned sideways on a phone", () => {
+  // On iOS the widgets were wider than the frame (Strudel: a toolbar that
+  // never wrapped, 587px in a 380px frame), so the whole document panned
+  // sideways and cut off the clefs, Play and the line numbers.
+  for (const [label, css] of [
+    ["mcp-app.css", ABC_CSS],
+    ["strudel-app.css", STRUDEL_CSS],
+  ] as const) {
+    it(`${label} clips horizontal overflow at the root and stops iOS text inflation`, () => {
+      const html = rules(css).match(/(^|\n)html \{[^}]*\}/)?.[0] ?? "";
+      expect(html).toContain("overflow-x: clip;");
+      expect(html).toContain("text-size-adjust: 100%;");
+    });
+  }
+
+  it("the Strudel toolbar wraps and its buttons don't break mid-label", () => {
+    const css = rules(STRUDEL_CSS);
+    expect(css).toMatch(/\.toolbar \{[^}]*flex-wrap: wrap;/);
+    expect(css).toMatch(/\.control-btn \{[^}]*white-space: nowrap;/);
+  });
+
+  it("the Strudel editor wraps lines on a narrow stage, without saving the change", () => {
+    const fn = STRUDEL.slice(STRUDEL.indexOf("function syncEditorToWidth()"));
+    expect(fn).toContain('changeEditorSetting(editor, "isLineWrappingEnabled"');
+    expect(STRUDEL).toMatch(/new ResizeObserver\(\(\) => \{\s*syncVizCanvasSize\(\);\s*syncEditorToWidth\(\);/);
+  });
+
+  it("applies the editor theme without persisting it for later widgets", () => {
+    const fn = STRUDEL.slice(STRUDEL.indexOf("function applyEditorTheme("));
+    expect(fn.slice(0, fn.indexOf("\n}\n"))).toContain('changeEditorSetting(editor, "theme", wanted);');
+    expect(STRUDEL).toContain('const wanted = theme || DEFAULT_EDITOR_THEME;');
+  });
+});
+
 describe("sheet music widget", () => {
   it("no longer sizes the score from vh", () => {
     expect(rules(ABC_CSS)).not.toMatch(/max-height:\s*\d+vh/);
@@ -68,6 +102,12 @@ describe("sheet music widget", () => {
     for (const event of ["wheel", "touchmove", "keydown", "pointerdown"]) {
       expect(ABC).toContain(`sheetSectionEl.addEventListener("${event}"`);
     }
+  });
+
+  it("lets a line-end annotation spill into the card instead of being cut at the SVG", () => {
+    const css = rules(ABC_CSS);
+    expect(css).toMatch(/\.sheet-section #sheet-music svg \{\s*overflow: visible !important;/);
+    expect(css).toMatch(/\.sheet-section \{\s*overflow-x: hidden;/);
   });
 
   it("keeps the score keyboard-scrollable", () => {

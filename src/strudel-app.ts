@@ -864,21 +864,73 @@ let currentTheme: string | null = null;
 /** Theme requested by the most recent tool input, applied once an editor exists. */
 let pendingTheme: string | undefined;
 
+/** The REPL's own default, applied when a pattern asks for no theme. */
+const DEFAULT_EDITOR_THEME = "strudelTheme";
+
+/**
+ * Apply one editor setting WITHOUT saving it.
+ *
+ * StrudelMirror.updateSettings() also writes the whole settings object to the
+ * REPL's "codemirror-settings" localStorage entry, which every later
+ * <strudel-editor> on the same origin starts from — so one
+ * `theme: "githubLight"` call used to recolour later widgets that asked for no
+ * theme. changeSetting() reconfigures the same extension (and, for "theme",
+ * runs the same activateTheme()) and stores nothing.
+ */
+function changeEditorSetting(editor: any, key: string, value: unknown): void {
+  if (typeof editor?.changeSetting === "function") {
+    editor.changeSetting(key, value);
+  } else if (typeof editor?.updateSettings === "function") {
+    // Older REPL shape. updateSettings() reads fontSize/fontFamily off the
+    // object it is given, so merge over the element's current settings.
+    const base = (editorEl as any)?.settings ?? {};
+    editor.updateSettings({ ...base, [key]: value });
+  }
+}
+
 function applyEditorTheme(editor: any, theme: string | undefined): void {
-  if (theme && theme !== currentTheme) {
+  // Always apply one — the default when none was asked for — so a widget never
+  // inherits a theme some earlier widget left in storage.
+  const wanted = theme || DEFAULT_EDITOR_THEME;
+  if (wanted !== currentTheme) {
     try {
-      // updateSettings() also reads fontSize/fontFamily off the object it is
-      // given, so merge over the element's current settings rather than handing
-      // it a lone { theme } and clobbering those with undefined.
-      const base = (editorEl as any)?.settings ?? {};
-      editor.updateSettings({ ...base, theme });
-      currentTheme = theme;
+      changeEditorSetting(editor, "theme", wanted);
+      currentTheme = wanted;
     } catch {
       // An unknown name is non-fatal upstream (activateTheme warns and falls
       // back to strudelTheme); the scrim below still follows whatever landed.
     }
   }
   syncVizTheme();
+}
+
+// -----------------------------------------------------------------------------
+// Narrow stages (phones)
+//
+// The REPL's defaults are for a desktop: 18px monospace, no line wrapping. In a
+// ~390px phone frame that is about 30 characters a line, and every longer line
+// ran off the right edge — only reachable by panning inside the editor. Below
+// NARROW_STAGE_PX the editor wraps and uses a smaller font; nothing is saved,
+// and a wider stage (rotation, fullscreen) puts the element's own settings back.
+// -----------------------------------------------------------------------------
+
+const NARROW_STAGE_PX = 520;
+const NARROW_FONT_SIZE = 14;
+/** The mode last applied to the current editor; starts at its own settings. */
+let editorNarrow = false;
+
+function syncEditorToWidth(): void {
+  const editor = getEditor();
+  const width = replSection.clientWidth;
+  if (!editor || width === 0) return;
+  const narrow = width < NARROW_STAGE_PX;
+  if (narrow === editorNarrow) return;
+  editorNarrow = narrow;
+  const own = (editorEl as any)?.settings ?? {};
+  try {
+    changeEditorSetting(editor, "isLineWrappingEnabled", narrow || own.isLineWrappingEnabled === true);
+    changeEditorSetting(editor, "fontSize", narrow ? NARROW_FONT_SIZE : (own.fontSize ?? 18));
+  } catch { /* cosmetic — the editor still works at its own settings */ }
 }
 
 /** `#abc` / `#aabbcc` / `rgb()` / `rgba()` → [r, g, b], or null if unparseable. */
@@ -1895,6 +1947,9 @@ function ensureEditorElement(): void {
   const el = document.createElement("strudel-editor");
   container.replaceChildren(el);
   editorEl = el;
+  // A fresh element starts from its own settings, not the last one's.
+  currentTheme = null;
+  editorNarrow = false;
 }
 
 /** One-time per-editor setup: eval hook, prebake watch, theme, layout. */
@@ -1909,6 +1964,7 @@ async function prepareEditor(): Promise<any> {
   watchPrebake(editor);
   // Theme first, then the scrim derived from it.
   applyEditorTheme(editor, pendingTheme);
+  syncEditorToWidth();
   // Make `a` resolvable in the eval scope from the very first evaluation.
   installAudioReactiveGlobals();
   // Fix the broken layout (hide canvas, ensure editor visible)
@@ -2208,7 +2264,10 @@ document.addEventListener("keydown", (event) => {
 syncStageAffordance();
 
 // Keep the canvas backing store DPR-correct as the editor/iframe resizes.
-vizResizeObserver = new ResizeObserver(() => syncVizCanvasSize());
+vizResizeObserver = new ResizeObserver(() => {
+  syncVizCanvasSize();
+  syncEditorToWidth();
+});
 vizResizeObserver.observe(replSection);
 
 // =============================================================================

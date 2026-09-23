@@ -70,6 +70,18 @@
   box-sizing: border-box;
 }
 
+/* Never let the document itself pan sideways. If anything ever ends up wider
+   than the frame (a WebKit layout quirk, a long label), iOS otherwise pans the
+   WHOLE widget, cutting off the left of everything; clipping the overflow keeps
+   the rest in place. `clip` (not `hidden`) where supported, so no scroll
+   container is created. text-size-adjust stops iOS inflating small text. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overflow-x: hidden;
+  overflow-x: clip;
+}
+
 html, body {
   height: 100%;
   font-family: system-ui, -apple-system, sans-serif;
@@ -102,13 +114,20 @@ html, body {
   flex-shrink: 0;
 }
 
+/* Wraps on narrow frames. It used to be one unbreakable row: on a phone the
+   buttons and status ran past the right edge, the whole document became wider
+   than the frame, and iOS panned it sideways — cutting off Play, the line
+   numbers and the left of the stage. */
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .control-btn {
+  white-space: nowrap;
   padding: 6px 16px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -123,6 +142,13 @@ html, body {
 .control-btn:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* Phones: tighter buttons, so the toolbar takes two rows rather than three. */
+@media (max-width: 480px) {
+  .control-btn {
+    padding: 6px 10px;
+  }
 }
 
 .control-btn.playing {
