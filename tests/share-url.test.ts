@@ -305,6 +305,19 @@ describe("buildPlayerCsp", () => {
     expect(csp).toMatch(/connect-src[^;]*https:\/\/unpkg\.com/);
   });
 
+  it("allows data: scripts only when asked (Strudel's AudioWorklets)", () => {
+    expect(buildPlayerCsp({})).not.toMatch(/script-src[^;]*data:/);
+    const csp = buildPlayerCsp(
+      { resourceDomains: ["https://unpkg.com"] },
+      { dataScripts: true },
+    );
+    expect(csp).toContain(
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: https://unpkg.com",
+    );
+    // Only script-src gains it; connect-src already had data: for samples.
+    expect(csp).not.toMatch(/style-src[^;]*data:/);
+  });
+
   it("locks down everything the pages don't need", () => {
     const csp = buildPlayerCsp({});
     expect(csp.startsWith("default-src 'none'")).toBe(true);

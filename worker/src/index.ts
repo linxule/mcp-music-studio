@@ -244,7 +244,7 @@ function playerResponse(html: string, csp: string): Response {
 // Derived from the very constants the widgets declare, so a domain added for a
 // widget reaches the hosted page too. The sheet page additionally loads abcjs
 // itself from jsDelivr (the widget bundles it, hence no resourceDomains there).
-const STRUDEL_PAGE_CSP = buildPlayerCsp(STRUDEL_CSP);
+const STRUDEL_PAGE_CSP = buildPlayerCsp(STRUDEL_CSP, { dataScripts: true });
 const SHEET_PAGE_CSP = buildPlayerCsp({
   resourceDomains: [new URL(ABCJS_CDN_BASE).origin],
   connectDomains: SHEET_CSP.connectDomains,
