@@ -158,8 +158,9 @@ describe("sheet music transport", () => {
     expect(handler).toContain('classList.remove("abcjs-loading")');
     expect(handler).toContain("setStatus(withTransposeNote(LOAD_FAILED_STATUS), true);");
     // …and takes it down when a ▶ retries it successfully.
-    expect(handler).toMatch(
-      /else if \(statusEl\.textContent\?\.startsWith\(LOAD_FAILED_STATUS\)\) \{[^}]*setStatus\(withTransposeNote\("Playing\.\.\."\)\);/,
+    expect(handler).toContain('case "started":\n      return showTransportStatus("Playing...");');
+    expect(body(ABC, "function showTransportStatus(")).toContain(
+      "if (error && !statusEl.textContent?.startsWith(LOAD_FAILED_STATUS)) return;",
     );
     // Nobody paints over it: not the autoplay's catch…
     expect(body(ABC, "async function renderAbc(")).toMatch(
@@ -169,6 +170,20 @@ describe("sheet music transport", () => {
     const edit = body(ABC, "async function primeEdit(");
     expect(edit).toMatch(/const primed = await synthControl\s*\.setTune\(visualObj\[0\], true, currentSynthOptions\(\) as SynthOptions\)\s*\.then\(\s*\(\) => true,\s*\(\) => false,\s*\);/);
     expect(edit).toContain("if (primed && (wasPlaying || forcePlay)) {");
+  });
+
+  it("says Paused after a ▶ pause and Finished at the end, not 'Playing...'", () => {
+    // Which transport changes are reported (a ▶ pause yes, a loop restart
+    // no) is reportPlayback's, in synth-transport.test.ts.
+    const handler = body(ABC, "function onTransportEvent(");
+    expect(handler).toContain('case "paused":\n      return showTransportStatus("Paused");');
+    expect(handler).toContain(
+      'case "finished":\n      return showTransportStatus("Finished — ▶ to play again");',
+    );
+    // Neither paints over an error, and both keep the transposition note.
+    const show = body(ABC, "function showTransportStatus(");
+    expect(show).toContain('const error = statusEl.classList.contains("error");');
+    expect(show).toContain("setStatus(withTransposeNote(text));");
   });
 
   it("says so when autoplay is blocked, instead of leaving 'Rendering...' up", () => {

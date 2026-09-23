@@ -364,6 +364,61 @@ describe("one load at a time (#33)", () => {
 });
 
 // -----------------------------------------------------------------------------
+// What the transport reports: the status line said "Playing..." after a pause
+// and after the tune ended
+// -----------------------------------------------------------------------------
+
+describe("transport reports", () => {
+  /** A tracked controller, playing, recording what it reports. */
+  async function playing() {
+    const h = harness();
+    const events: string[] = [];
+    trackTransport(h.ctrl, (event) => events.push(event.type));
+    await h.ctrl.setTune(TUNE, false);
+    await h.ctrl.play();
+    return { ...h, events };
+  }
+
+  it("a ▶ start, a ▶ pause and a ▶ resume", async () => {
+    const h = await playing();
+    await h.ctrl.play();
+    await h.ctrl.play();
+    expect(h.events).toEqual(["started", "paused", "started"]);
+  });
+
+  it("the end of the tune, once: the timer's end-of-events calls finished()", () =>
+    playing().then((h) => {
+      h.ctrl.eventCallback(null);
+      expect(h.ctrl.isStarted).toBe(false);
+      expect(h.events).toEqual(["started", "finished"]);
+    }));
+
+  it("not a loop restart", async () => {
+    const h = await playing();
+    h.ctrl.toggleLoop();
+    expect(h.ctrl.eventCallback(null)).toBe("continue");
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(h.events).toEqual(["started"]);
+  });
+
+  it("not the pause setTune() makes for a re-prime, nor a cancel's", async () => {
+    const h = await playing();
+    await h.ctrl.setTune(TUNE, true);
+    await h.ctrl.play();
+    pauseTransport(h.ctrl);
+    expect(h.events).toEqual(["started", "started"]);
+  });
+
+  it("a tempo change while playing is a start, while paused nothing", async () => {
+    const h = await playing();
+    await h.ctrl.setWarp(150); // destroy(), re-prime, play() on
+    await h.ctrl.play(); // pause
+    await h.ctrl.setWarp(80);
+    expect(h.events).toEqual(["started", "started", "paused"]);
+  });
+});
+
+// -----------------------------------------------------------------------------
 // A failed sample load left ▶ dead for good
 // -----------------------------------------------------------------------------
 
@@ -411,7 +466,7 @@ describe("recovering from a failed load", () => {
     await h.ctrl.play();
     expect(events.map((event) => event.type)).toEqual(["load-failed", "started"]);
     await h.ctrl.play(); // a pause is not a start
-    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.type)).toEqual(["load-failed", "started", "paused"]);
   });
 
   it("a failed re-prime of a loaded tune: ▶ loads again, not the half-primed buffer", async () => {

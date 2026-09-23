@@ -186,7 +186,11 @@ function track(state: Tracked, set: Set<Promise<unknown>>, result: unknown): voi
 /** What the transport did, for the widget's status line. */
 export type TransportEvent =
   | { type: "load-failed"; error: unknown }
-  | { type: "started" };
+  | { type: "started" }
+  /** A ▶ pause. A pause from code (setTune, pauseTransport) is not reported. */
+  | { type: "paused" }
+  /** The tune ran to its end with Loop off. A loop restart is not an end. */
+  | { type: "finished" };
 
 /**
  * Record every load and every play on `control`, for {@link whenTransportIdle},
@@ -257,9 +261,10 @@ function recoverFromFailedLoads(
 }
 
 /**
- * Report the starts `_play()` makes: every start goes through it (▶, an
- * autoplay, a re-prime or tempo change playing on). `play()` reaches it as
- * `self._play`, an instance lookup.
+ * Report what `_play()` and `finished()` do to the transport. Every start and
+ * every ▶ pause goes through `_play()` (▶, an autoplay, a re-prime or tempo
+ * change playing on), which `play()` reaches as `self._play`; the timer's
+ * end-of-tune callback calls `self.finished()`. Both are instance lookups.
  */
 function reportPlayback(
   raw: Record<string, unknown>,
@@ -270,8 +275,19 @@ function reportPlayback(
     const wasStarted = Boolean(raw.isStarted);
     return Promise.resolve(play()).then((value) => {
       if (!wasStarted && raw.isStarted) onEvent({ type: "started" });
+      else if (wasStarted && !raw.isStarted) onEvent({ type: "paused" });
       return value;
     });
+  };
+  const finished = raw.finished as () => unknown;
+  raw.finished = () => {
+    const wasStarted = Boolean(raw.isStarted);
+    const result = finished();
+    // "continue" is a loop restart.
+    if (result !== "continue" && wasStarted && !raw.isStarted) {
+      onEvent({ type: "finished" });
+    }
+    return result;
   };
 }
 

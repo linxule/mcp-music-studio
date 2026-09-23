@@ -1488,15 +1488,30 @@ function onTransportEvent(
   // abcjs caches the failed samples' rejections: the retry must ask again.
   if (event.type === "load-failed") void forgetFailedSounds();
   if (disposed || state.synthControl !== control) return;
-  if (event.type === "load-failed") {
-    console.error("Couldn't load sounds:", event.error);
-    // abcjs takes the ▶ spinner down only when a play succeeds.
-    audioControlsEl.querySelector(".abcjs-midi-start")?.classList.remove("abcjs-loading");
-    setStatus(withTransposeNote(LOAD_FAILED_STATUS), true);
-  } else if (statusEl.textContent?.startsWith(LOAD_FAILED_STATUS)) {
-    // The ▶ that retried it.
-    setStatus(withTransposeNote("Playing..."));
+  switch (event.type) {
+    case "load-failed":
+      console.error("Couldn't load sounds:", event.error);
+      // abcjs takes the ▶ spinner down only when a play succeeds.
+      audioControlsEl.querySelector(".abcjs-midi-start")?.classList.remove("abcjs-loading");
+      setStatus(withTransposeNote(LOAD_FAILED_STATUS), true);
+      return;
+    case "started":
+      return showTransportStatus("Playing...");
+    case "paused":
+      return showTransportStatus("Paused");
+    case "finished":
+      return showTransportStatus("Finished — ▶ to play again");
   }
+}
+
+/**
+ * Say what the transport is doing. An error stays up (an edit that did not
+ * apply, a failed download), except a failed load, which a start answers.
+ */
+function showTransportStatus(text: string): void {
+  const error = statusEl.classList.contains("error");
+  if (error && !statusEl.textContent?.startsWith(LOAD_FAILED_STATUS)) return;
+  setStatus(withTransposeNote(text));
 }
 
 /** The autoplay a render started that has not finished loading and starting. */
