@@ -32,8 +32,6 @@ interface SynthInternals {
 
 const internals = (control: object) => control as SynthInternals;
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 // =============================================================================
 // Transport state
 // =============================================================================
@@ -165,6 +163,8 @@ interface Tracked {
   loads: Set<Promise<unknown>>;
   /** Transport calls that load and may then START playback. */
   calls: Set<Promise<unknown>>;
+  /** Waiting {@link whenTransportIdle} calls, woken when one of those settles. */
+  waiters: Set<() => void>;
 }
 
 const tracked = new WeakMap<object, Tracked>();
@@ -172,12 +172,13 @@ const tracked = new WeakMap<object, Tracked>();
 /** Transport calls whose promise outlives the load (`_play()`, a seek). */
 const PLAYING_CALLS = ["play", "setWarp", "randomAccess"] as const;
 
-function track(set: Set<Promise<unknown>>, result: unknown): void {
+function track(state: Tracked, set: Set<Promise<unknown>>, result: unknown): void {
   if (!result || typeof (result as Promise<unknown>).then !== "function") return;
   const promise = result as Promise<unknown>;
   set.add(promise);
   const settle = () => {
     set.delete(promise);
+    for (const wake of [...state.waiters]) wake();
   };
   promise.then(settle, settle);
 }
@@ -193,14 +194,14 @@ function track(set: Set<Promise<unknown>>, result: unknown): void {
  */
 export function trackTransport(control: object): void {
   const raw = internals(control) as unknown as Record<string, unknown>;
-  const state: Tracked = { loads: new Set(), calls: new Set() };
+  const state: Tracked = { loads: new Set(), calls: new Set(), waiters: new Set() };
   tracked.set(control, state);
   const wrap = (name: string, into: Set<Promise<unknown>>) => {
     const original = raw[name];
     if (typeof original !== "function") return;
     raw[name] = (...args: unknown[]) => {
       const result = (original as (...a: unknown[]) => unknown)(...args);
-      track(into, result);
+      track(state, into, result);
       return result;
     };
   };
@@ -251,7 +252,10 @@ function joinPendingPlay(raw: Record<string, unknown>): void {
  * blocked autoplay stays pending until something resumes the context during
  * a user gesture. The caller wakes the context from the gesture that asked
  * for the change, and `stillWanted` is polled so that a superseded controller
- * is never waited on.
+ * is never waited on. Each poll subscribes to nothing: `track()` wakes the
+ * waiters when a call settles. Racing a fresh `Promise.allSettled()` of the
+ * pending calls every poll added a reaction to each of them every 100 ms for
+ * as long as a load hung.
  */
 export async function whenTransportIdle(
   control: object,
@@ -263,12 +267,20 @@ export async function whenTransportIdle(
   const raw = internals(control);
   const busy = () =>
     state.loads.size > 0 || (state.calls.size > 0 && !raw.isLoading);
-  while (busy() && stillWanted()) {
-    await Promise.race([
-      Promise.allSettled([...state.loads, ...state.calls]),
-      sleep(pollMs),
-    ]);
-  }
+  while (busy() && stillWanted()) await nextSettle(state, pollMs);
+}
+
+/** Resolve when a tracked call settles, or after `ms` to re-check the caller. */
+function nextSettle(state: Tracked, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const wake = () => {
+      clearTimeout(timer);
+      state.waiters.delete(wake);
+      resolve();
+    };
+    const timer = setTimeout(wake, ms);
+    state.waiters.add(wake);
+  });
 }
 
 const noop = () => {};

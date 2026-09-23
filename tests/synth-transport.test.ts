@@ -324,6 +324,32 @@ describe("one load at a time (#33)", () => {
     expect(h.ctrl.isLoading).toBe(true);
   });
 
+  it("waiting on a load that never settles subscribes nothing new to it", async () => {
+    // A stalled sample request: abcjs's XHR has no timeout.
+    const hung = new Promise<never>(() => {});
+    let subscriptions = 0;
+    const then = hung.then.bind(hung);
+    Object.assign(hung, {
+      then: (...args: Parameters<typeof then>) => {
+        subscriptions += 1;
+        return then(...args);
+      },
+    });
+    const h = harness();
+    h.ctrl.go = () => {
+      h.ctrl.isLoading = true;
+      return hung;
+    };
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    void h.ctrl.setTune(TUNE, true);
+    const before = subscriptions;
+    let wanted = true;
+    setTimeout(() => (wanted = false), 100);
+    await whenTransportIdle(h.ctrl, () => wanted, 5); // ~20 polls
+    expect(subscriptions - before).toBe(0);
+  });
+
   it("does not wait on a failed load, nor on a ▶ spinning on abcjs's stuck isLoading", async () => {
     const h = harness((call) =>
       call === 1 ? Promise.reject(new Error("soundfont 404")) : Promise.resolve(),
