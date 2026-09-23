@@ -71,7 +71,9 @@ body {
 .main {
   width: 100%;
   margin: 0 auto;
-  padding: 8px;
+  /* The gutter plus the host's safe-area insets (applySafeAreaInsets). */
+  padding: calc(8px + var(--safe-top, 0px)) calc(8px + var(--safe-right, 0px))
+    calc(8px + var(--safe-bottom, 0px)) calc(8px + var(--safe-left, 0px));
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -257,8 +259,8 @@ body {
   border-radius: 8px;
   background: var(--color-card-bg);
   color: var(--color-text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace);
   font-size: 0.8125rem;
   line-height: 1.5;
   tab-size: 2;

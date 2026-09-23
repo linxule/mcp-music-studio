@@ -47,6 +47,33 @@ describe("both widgets follow the host's container", () => {
   }
 });
 
+describe("both widgets take the host's fonts and safe area", () => {
+  for (const [label, source, css] of [
+    ["mcp-app", ABC, ABC_CSS],
+    ["strudel-app", STRUDEL, STRUDEL_CSS],
+  ] as const) {
+    it(`${label} applies host fonts and ADDS safe-area insets to its gutter`, () => {
+      expect(source).toContain("applyHostFonts(ctx.styles.css.fonts)");
+      expect(source).toContain("applySafeAreaInsets(ctx.safeAreaInsets)");
+      // Inline padding replaced the CSS gutter; zero insets meant no gutter.
+      expect(source).not.toMatch(/mainEl\.style\.padding/);
+      const main = rules(css).match(/(^|\n)\.main \{[^}]*\}/)?.[0] ?? "";
+      for (const side of ["top", "right", "bottom", "left"]) {
+        expect(main).toContain(`var(--safe-${side}, 0px)`);
+      }
+    });
+  }
+
+  it("falls back to system fonts when the host sends none", () => {
+    expect(read("src/global.css")).toContain(
+      "font-family: var(--font-sans, system-ui, -apple-system, sans-serif);",
+    );
+    expect(STRUDEL_CSS).toContain(
+      "font-family: var(--font-sans, system-ui, -apple-system, sans-serif);",
+    );
+  });
+});
+
 describe("neither widget can be panned sideways on a phone", () => {
   // On iOS the widgets were wider than the frame (Strudel: a toolbar that
   // never wrapped, 587px in a 380px frame), so the whole document panned

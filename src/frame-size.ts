@@ -105,6 +105,31 @@ export function applyFrameSize(size: FrameSize, root: HTMLElement = document.doc
   }
 }
 
+export interface SafeAreaInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
+ * Publish the host's safe-area insets as `--safe-*` custom properties.
+ *
+ * Each widget's CSS ADDS them to its own gutter. Writing them straight into
+ * `.main`'s inline padding (what both widgets used to do) replaced that
+ * gutter instead: a host reporting zero insets took the sheet's 8px padding
+ * down to nothing.
+ */
+export function applySafeAreaInsets(
+  insets: SafeAreaInsets,
+  root: HTMLElement = document.documentElement,
+): void {
+  for (const side of ["top", "right", "bottom", "left"] as const) {
+    const px = Number.isFinite(insets[side]) ? Math.max(0, insets[side]) : 0;
+    root.style.setProperty(`--safe-${side}`, `${px}px`);
+  }
+}
+
 /** `screen.availHeight`, when the environment has one. */
 export function screenAvailHeight(): number | undefined {
   try {

@@ -5,6 +5,7 @@
 import {
   App,
   applyDocumentTheme,
+  applyHostFonts,
   applyHostStyleVariables,
   type McpUiHostContext,
 } from "@modelcontextprotocol/ext-apps";
@@ -38,6 +39,7 @@ import { bytesToBase64, sanitizeFileStem } from "./bytes-to-base64";
 import {
   SHEET_INLINE_CAP,
   applyFrameSize,
+  applySafeAreaInsets,
   resolveFrameSize,
   screenAvailHeight,
 } from "./frame-size";
@@ -209,7 +211,6 @@ function currentSynthOptions(): Record<string, unknown> {
 // DOM References
 // =============================================================================
 
-const mainEl = document.querySelector(".main") as HTMLElement;
 const statusEl = document.getElementById("status")!;
 const pieceTitleEl = document.getElementById("piece-title")!;
 const sheetMusicEl = document.getElementById("sheet-music")!;
@@ -1501,11 +1502,12 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
   if (ctx.styles?.variables) {
     applyHostStyleVariables(ctx.styles.variables);
   }
+  // The host's font faces, so `--font-sans` / `--font-mono` resolve.
+  if (ctx.styles?.css?.fonts) {
+    applyHostFonts(ctx.styles.css.fonts);
+  }
   if (ctx.safeAreaInsets) {
-    mainEl.style.paddingTop = `${ctx.safeAreaInsets.top}px`;
-    mainEl.style.paddingRight = `${ctx.safeAreaInsets.right}px`;
-    mainEl.style.paddingBottom = `${ctx.safeAreaInsets.bottom}px`;
-    mainEl.style.paddingLeft = `${ctx.safeAreaInsets.left}px`;
+    applySafeAreaInsets(ctx.safeAreaInsets);
   }
   if (ctx.displayMode || ctx.containerDimensions) syncFrameSize();
 }

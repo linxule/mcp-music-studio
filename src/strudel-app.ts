@@ -15,6 +15,7 @@ import "./strudel-app.css";
 import {
   App,
   applyDocumentTheme,
+  applyHostFonts,
   applyHostStyleVariables,
   type McpUiHostContext,
 } from "@modelcontextprotocol/ext-apps";
@@ -24,6 +25,7 @@ import { applyVisualPreset } from "./shared/visual-presets";
 import {
   STRUDEL_INLINE_CAP,
   applyFrameSize,
+  applySafeAreaInsets,
   resolveFrameSize,
   screenAvailHeight,
 } from "./frame-size";
@@ -49,7 +51,6 @@ const vizBtn = document.getElementById("viz-btn") as HTMLButtonElement;
 const stageBtn = document.getElementById("stage-btn") as HTMLButtonElement;
 const titleEl = document.getElementById("pattern-title") as HTMLElement;
 const replSection = document.querySelector(".repl-section") as HTMLElement;
-const mainEl = document.querySelector(".main") as HTMLElement;
 const vizCanvas = document.getElementById("test-canvas") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 const container = document.getElementById("strudel-container")!;
@@ -2393,11 +2394,12 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
   if (ctx.styles?.variables) {
     applyHostStyleVariables(ctx.styles.variables);
   }
+  // The host's font faces, so `--font-sans` / `--font-mono` resolve.
+  if (ctx.styles?.css?.fonts) {
+    applyHostFonts(ctx.styles.css.fonts);
+  }
   if (ctx.safeAreaInsets) {
-    mainEl.style.paddingTop = `${ctx.safeAreaInsets.top}px`;
-    mainEl.style.paddingRight = `${ctx.safeAreaInsets.right}px`;
-    mainEl.style.paddingBottom = `${ctx.safeAreaInsets.bottom}px`;
-    mainEl.style.paddingLeft = `${ctx.safeAreaInsets.left}px`;
+    applySafeAreaInsets(ctx.safeAreaInsets);
   }
   if (ctx.displayMode || ctx.containerDimensions) syncFrameSize();
 }
