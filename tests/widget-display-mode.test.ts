@@ -101,6 +101,6 @@ describe("applySettings is serialised against rapid selector changes", () => {
   it("still returns a promise the callers can chain onto", () => {
     // The sound-bank change path does applySettings().then(...).catch(...).
     expect(ABC).toMatch(/function applySettings\(prepare\?: \(\) => void\): Promise<void>/);
-    expect(ABC).toContain("applySettings()\n    .then(");
+    expect(ABC).toContain("applySettings(resetSoundsCache)\n    .then(");
   });
 });

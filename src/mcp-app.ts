@@ -812,11 +812,12 @@ soundFontSelect.addEventListener("change", () => {
     return;
   }
 
-  // Drop every cached sample so init()/prime() refetch from the new bank.
-  resetSoundsCache();
-
+  // Drop every cached sample so init()/prime() refetch from the new bank, but
+  // only once the wait is over: a load still in flight (an autoplay parked on
+  // blocked audio, released by this very gesture) refilled the cache from the
+  // OLD bank, and the re-prime then played those samples under the new name.
   setStatus(LOADING_SOUNDS);
-  applySettings()
+  applySettings(resetSoundsCache)
     .then(() => {
       // The re-prime plays on if the tune was playing. Say which, unless
       // something newer has taken the status line.

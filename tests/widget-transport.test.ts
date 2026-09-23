@@ -133,6 +133,18 @@ describe("sheet music transport", () => {
     );
   });
 
+  it("empties the sample cache after the wait, not before it", () => {
+    // A load finishing during the wait refilled it from the old bank.
+    const handler = ABC.slice(ABC.indexOf('soundFontSelect.addEventListener("change"'));
+    const fn = handler.slice(0, handler.indexOf("\n});\n"));
+    expect(fn).toContain("applySettings(resetSoundsCache)");
+    expect(fn).not.toMatch(/resetSoundsCache\(\)/);
+    // The liveness check still runs first, synchronously.
+    expect(fn.indexOf("soundsCacheLooksLive(hasPrimedAudio)")).toBeLessThan(
+      fn.indexOf("applySettings(resetSoundsCache)"),
+    );
+  });
+
   it("says so when autoplay is blocked, instead of leaving 'Rendering...' up", () => {
     // A blocked play() never rejects, it waits: the check is on the context.
     const render = body(ABC, "async function renderAbc(");
