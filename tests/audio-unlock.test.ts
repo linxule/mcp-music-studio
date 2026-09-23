@@ -216,4 +216,12 @@ describe("strudel widget wiring", () => {
     const teardown = STRUDEL.slice(STRUDEL.indexOf("app.onteardown = "));
     expect(teardown.slice(0, teardown.indexOf("\n};\n"))).toContain("setGestureUnlock(false)");
   });
+
+  it("a failed re-evaluation over blocked audio doesn't claim the old pattern is audible", () => {
+    // Kimi review: the error report said "still playing" whenever the
+    // scheduler ran, even when nothing could be heard.
+    const branch = STRUDEL.slice(STRUDEL.indexOf("pattern failed to evaluate"));
+    expect(branch.slice(0, 600)).toContain('state === "audio-blocked"');
+    expect(branch.slice(0, 600)).toContain("not audible until the user taps Play");
+  });
 });

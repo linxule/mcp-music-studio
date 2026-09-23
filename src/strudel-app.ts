@@ -1742,10 +1742,15 @@ function reportEvaluation(
     isPlaying = playing;
     audioBlocked = playing && audioIsBlockedNow();
     renderPlayButton();
-    markReportedPlaying(currentPlaybackState(), msg);
+    const state = currentPlaybackState();
+    markReportedPlaying(state, msg);
     reportToModel(
       `Strudel widget: pattern failed to evaluate — ${msg}` +
-        (playing ? " (the previous pattern is still playing)" : " (nothing is playing)"),
+        (state === "playing"
+          ? " (the previous pattern is still playing)"
+          : state === "audio-blocked"
+            ? " (the previous pattern is still running, but not audible until the user taps Play)"
+            : " (nothing is playing)"),
     );
     return;
   }

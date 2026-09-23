@@ -63,11 +63,14 @@ export interface LeadingProgram {
 /** Header fields abcjs parses as fields; any other `X:` line is music. */
 const KNOWN_FIELDS = new Set("ABCDFGINORSWZHKLMPQTUVswXEm");
 
+// abcjs lowercases the directive name (`%%midi` works) but compares the MIDI
+// sub-command as written (parse_directive.js parseMidiCommand), so
+// `%%MIDI PROGRAM 73` is filed under "PROGRAM" and never played.
 const DIRECTIVE_RE =
-  /^%%\s*MIDI\s*=?\s*program\s+(-?\d+)(?:\s+(-?\d+))?\s*(?:%.*)?$/i;
+  /^%%\s*[Mm][Ii][Dd][Ii]\s*=?\s*program\s+(-?\d+)(?:\s+(-?\d+))?\s*(?:%.*)?$/;
 const INLINE_FIELD_RE = /^\[([A-Za-z]):([^\]]*)\]/;
 const INLINE_PROGRAM_RE =
-  /^\[I:\s*MIDI\s*=?\s*program\s+(-?\d+)(?:\s+(-?\d+))?\s*\]/i;
+  /^\[I:\s*[Mm][Ii][Dd][Ii]\s*=?\s*program\s+(-?\d+)(?:\s+(-?\d+))?\s*\]/;
 const SCORE_RE = /^%%\s*(?:score|staves)\b(.*)$/i;
 /** Blocks abcjs consumes whole as text / PostScript, never as music or MIDI. */
 const BLOCK_RE = /^%%\s*begin(text|ps)\b/i;

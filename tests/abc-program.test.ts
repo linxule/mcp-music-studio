@@ -88,6 +88,11 @@ const LAYOUTS: Record<string, string> = {
     H + "V:1\n%%MIDI program 73\nCDEF|\nV:2\n%%MIDI program 32\nC,D,E,F,|\n\n%%score (2 1)\nX:2\nK:C\nCDEF|\n",
   blankLineEndsTune: H + "CDEF|\n\n%%MIDI program 73\nCDEF|\n",
   fileHeaderDirective: "%%MIDI program 73\n\nX:1\nK:C\nCDEF|\n\nX:2\nK:C\nCDEF|\n",
+  // From the Kimi review of #25: abcjs matches the sub-command case-sensitively.
+  upperCaseSubcommand: H + "%%MIDI PROGRAM 73\nCDEF|\n",
+  upperCaseInlineSubcommand: H + "[I:MIDI PROGRAM 73] CDEF|\n",
+  mixedCaseDirectiveName: H + "%%Midi program 73\nCDEF|\n",
+  commentInsideInlineField: H + "[I:MIDI program 73 % flute] CDEF|\n",
   noProgram: H + "CDEF|\n",
   chordSymbolsNoProgram: H + '"C"CDEF|"G"GABc|\n',
 };
