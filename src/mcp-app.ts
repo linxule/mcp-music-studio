@@ -46,6 +46,12 @@ import {
   screenAvailHeight,
 } from "./frame-size";
 import { USER_SCROLL_GRACE_MS, followScrollTarget } from "./sheet-follow";
+import {
+  alignTimerWithSwing,
+  type FlatEvent,
+  type NoteMapNote,
+  type TimingEventLike,
+} from "./swing-timing";
 import { VERSION } from "./version";
 
 // =============================================================================
@@ -212,7 +218,60 @@ function currentSynthOptions(): Record<string, unknown> {
   // two bars before the sound did. Every setTune() reads this first.
   cursorControl.extraMeasuresAtBeginning =
     typeof options.drumIntro === "number" ? options.drumIntro : 0;
+  // Swing moves only the audio. Collect abcjs's swung note map so onReady can
+  // move the highlight timer to match (#34, followSwing below).
+  if (typeof options.swing === "number") {
+    options.sequenceCallback = captureSwungNoteMap;
+    options.callbackContext = { swung: null } satisfies SwingCapture;
+  }
   return options;
+}
+
+/**
+ * Where `sequenceCallback` leaves abcjs's note map AFTER `addSwing()`. Each
+ * setTune() gets a fresh one. A warp change re-primes with the same options,
+ * and each prime overwrites it before `go()` builds the timer and calls
+ * `onReady`.
+ */
+interface SwingCapture {
+  swung: NoteMapNote[][] | null;
+}
+
+function captureSwungNoteMap(tracks: NoteMapNote[][], context: SwingCapture): NoteMapNote[][] {
+  context.swung = tracks;
+  return tracks;
+}
+
+/**
+ * Move the note highlight onto abcjs's swung timeline (#34; the matching is in
+ * src/swing-timing.ts). `go()` calls `onReady` after every prime: the first ▶,
+ * `setTune(…, true)`, and a warp change. Each time the TimingCallbacks is
+ * freshly built on the straight grid, so the shift never compounds.
+ */
+function followSwing(controller: unknown): void {
+  const raw = controller as {
+    timer?: { noteTimings?: TimingEventLike[] } | null;
+    midiBuffer?: {
+      flattened?: { tracks?: FlatEvent[][] };
+      callbackContext?: SwingCapture;
+      millisecondsPerMeasure?: number;
+      meterSize?: number;
+    } | null;
+  } | null;
+  const buffer = raw?.midiBuffer;
+  const capture = buffer?.callbackContext;
+  const timings = raw?.timer?.noteTimings;
+  const flattened = buffer?.flattened?.tracks;
+  if (!buffer || !capture?.swung || !timings || !flattened) return;
+  const swungTracks = capture.swung;
+  capture.swung = null; // consumed: one prime, one shift
+  alignTimerWithSwing({
+    timings,
+    flattenedTracks: flattened,
+    swungTracks,
+    millisecondsPerMeasure: buffer.millisecondsPerMeasure ?? 0,
+    meterSize: buffer.meterSize ?? 0,
+  });
 }
 
 /**
@@ -293,6 +352,12 @@ const cursorControl: CursorControl & { extraMeasuresAtBeginning?: number } = {
   onFinished() {
     clearHighlights();
     resetFollow();
+  },
+
+  // abcjs passes the controller (synth-controller.js `go()`), although its
+  // published type declares no parameter.
+  onReady(controller?: unknown) {
+    followSwing(controller);
   },
 };
 
@@ -1179,6 +1244,9 @@ function midiExportOptions(): ABCJS.MidiFileOptions {
   const {
     soundFontUrl: _soundFontUrl,
     soundFontVolumeMultiplier: _soundFontVolumeMultiplier,
+    // The swing capture only matters to prime(); the writer never swings.
+    sequenceCallback: _sequenceCallback,
+    callbackContext: _callbackContext,
     ...musical
   } = currentSynthOptions();
   return {
