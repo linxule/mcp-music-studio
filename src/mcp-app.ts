@@ -206,8 +206,18 @@ function releaseStaleControl(
     owner: synthControlOwner,
     generation,
   });
-  if (action === "retire") retireSynthControl();
-  else if (action === "destroy") destroySynthControl(control);
+  if (action === "retire") {
+    // Ours, and our generation is gone. Only a teardown ends the widget,
+    // though: after a cancel the score and abcjs's ▶ stay on screen, wired to
+    // this controller, and retiring it left a dead transport (measured in
+    // WebKit: a tap released the parked autoplay, which retired it; ▶ then did
+    // nothing and the clock sat at 0:00). Stop what it started, keep it.
+    if (disposed) retireSynthControl();
+    else {
+      pauseTransport(control);
+      clearHighlights();
+    }
+  } else if (action === "destroy") destroySynthControl(control);
 }
 
 /**
@@ -952,7 +962,9 @@ function scheduleEditRender(): void {
 let transposeNote: string | null = null;
 
 function withTransposeNote(text: string): string {
-  return transposeNote ? `${text} ${transposeNote}` : text;
+  // A separator, since the status rarely ends in punctuation ("Paused",
+  // "Click ▶ to play") and ran straight into "Transposed the AUDIO…".
+  return transposeNote ? `${text} · ${transposeNote}` : text;
 }
 
 /** Tell the model the printed score was NOT transposed, only the playback. */
@@ -1496,6 +1508,9 @@ function onTransportEvent(
       setStatus(withTransposeNote(LOAD_FAILED_STATUS), true);
       return;
     case "started":
+      // A cancelled autoplay that a gesture released: its continuation stops
+      // it at once, and the canceller's status stays up.
+      if (pendingAutoplay?.control === control && isStale(pendingAutoplay.generation)) return;
       return showTransportStatus("Playing...");
     case "paused":
       return showTransportStatus("Paused");

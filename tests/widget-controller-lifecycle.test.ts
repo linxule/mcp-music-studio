@@ -251,3 +251,27 @@ describe("an audio-only transposition is said out loud (Codex #5)", () => {
     expect(ABC_APP).toContain("transposeNote = null;");
   });
 });
+
+describe("a cancel leaves a playable transport", () => {
+  const release = ABC_APP.slice(
+    ABC_APP.indexOf("function releaseStaleControl("),
+    ABC_APP.indexOf("\n}\n", ABC_APP.indexOf("function releaseStaleControl(")),
+  );
+
+  it("retires the controller only on teardown; after a cancel it pauses and keeps it", () => {
+    // Retiring after a cancel destroyed the controller abcjs's ▶ is wired to:
+    // in WebKit a tap released the parked autoplay, which retired it, and ▶
+    // did nothing from then on.
+    expect(release).toMatch(/if \(disposed\) retireSynthControl\(\);\s*else \{\s*pauseTransport\(control\);/);
+  });
+
+  it("doesn't announce a cancelled autoplay's start", () => {
+    expect(ABC_APP).toMatch(
+      /case "started":[\s\S]{0,200}if \(pendingAutoplay\?\.control === control && isStale\(pendingAutoplay\.generation\)\) return;/,
+    );
+  });
+
+  it("separates the status from the transposition caveat", () => {
+    expect(ABC_APP).toContain("return transposeNote ? `${text} · ${transposeNote}` : text;");
+  });
+});

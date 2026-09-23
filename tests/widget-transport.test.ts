@@ -158,7 +158,7 @@ describe("sheet music transport", () => {
     expect(handler).toContain('classList.remove("abcjs-loading")');
     expect(handler).toContain("setStatus(withTransposeNote(LOAD_FAILED_STATUS), true);");
     // …and takes it down when a ▶ retries it successfully.
-    expect(handler).toContain('case "started":\n      return showTransportStatus("Playing...");');
+    expect(handler).toMatch(/case "started":[\s\S]{0,240}?return showTransportStatus\("Playing\.\.\."\);/);
     expect(body(ABC, "function showTransportStatus(")).toContain(
       "if (error && !statusEl.textContent?.startsWith(LOAD_FAILED_STATUS)) return;",
     );
