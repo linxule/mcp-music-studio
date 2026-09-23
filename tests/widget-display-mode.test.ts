@@ -77,16 +77,15 @@ describe("both widgets toggle the display mode the same way", () => {
 });
 
 describe("applySettings is serialised against rapid selector changes", () => {
-  it("chains each call behind the one in flight", () => {
-    expect(ABC).toContain("let applySettingsChain: Promise<void> = Promise.resolve()");
-    // …behind any load already in flight (#33): settleTransport first; then
-    // the optional `prepare` step (the #25 instrument re-engrave) and the re-prime.
-    expect(ABC).toContain("const next = applySettingsChain.then(settleTransport).then(() => {");
-    expect(ABC).toContain("    prepare?.();\n    return applySettingsNow();");
-  });
-
-  it("keeps the chain alive when a link rejects", () => {
-    expect(ABC).toContain("applySettingsChain = next.catch(() => {})");
+  it("queues each call behind the one in flight", () => {
+    // TransportQueue (src/synth-transport.ts, tested in synth-transport.test.ts)
+    // chains its steps, keeps the chain alive when one rejects, and waits out
+    // any load in flight (#33) before each. Then the optional `prepare` step
+    // (the #25 instrument re-engrave) and the re-prime.
+    expect(ABC).toContain(
+      "const transportQueue = new TransportQueue(() => state.synthControl, () => !disposed);",
+    );
+    expect(ABC).toContain("return transportQueue.run(() => {\n    prepare?.();\n    return applySettingsNow();");
   });
 
   it("re-reads the current selector values inside the chained call", () => {

@@ -51,14 +51,15 @@ import {
 import { USER_SCROLL_GRACE_MS, followScrollTarget } from "./sheet-follow";
 import { OVERHANG_TEXT_SELECTOR, paddingRightToFit } from "./score-fit";
 import {
+  TransportQueue,
   carryWarp,
   keepLoopLitThroughWarp,
   pauseTransport,
+  queueWarp,
   readTransport,
   reprime,
   restoreLoop,
   trackTransport,
-  whenTransportIdle,
   type TransportState,
 } from "./synth-transport";
 import {
@@ -598,31 +599,26 @@ function reengraveForInstrument(): void {
  * or ⌘↵ in the editor).
  */
 /**
- * Serialises {@link applySettings}. `setTune()` pauses, rewinds and re-primes
- * the transport, so two of them overlapping (a user flicking through the
- * instrument selector, where every change fires one) interleave a rewind with
- * another prime and can leave the primed buffer disagreeing with the selector.
- * Each call waits for the one in flight and then re-reads the CURRENT selector
- * values, so a burst collapses to "prime whatever was chosen last" instead of
- * priming every intermediate choice.
+ * Serialises everything that re-primes the live controller: settings changes,
+ * edits and the % field. `setTune()` pauses, rewinds and re-primes, so two of
+ * them overlapping (a user flicking through the instrument selector, where
+ * every change fires one) interleave a rewind with another prime and can
+ * leave the primed buffer disagreeing with the selector. Each step first waits
+ * out whatever the controller is already loading (#33): `setTune(…, true)`
+ * starts a load at once, and one landing on top of the autoplay's put two
+ * init + prime runs on the same buffer.
  */
-let applySettingsChain: Promise<void> = Promise.resolve();
+const transportQueue = new TransportQueue(() => state.synthControl, () => !disposed);
 
 function applySettings(prepare?: () => void): Promise<void> {
   wakeAudio();
-  // Each link first waits out whatever the controller is already loading
-  // (#33): setTune(…, true) starts a load at once, and one landing on top of
-  // the autoplay's put two init + prime runs on the same buffer. `prepare`
-  // then runs right before the re-prime reads `state.visualObj` (the
-  // instrument re-engrave, #25).
-  const next = applySettingsChain.then(settleTransport).then(() => {
+  // Each step re-reads the CURRENT selector values, so a burst collapses to
+  // "prime whatever was chosen last". `prepare` runs right before the re-prime
+  // reads `state.visualObj` (the instrument re-engrave, #25).
+  return transportQueue.run(() => {
     prepare?.();
     return applySettingsNow();
   });
-  // Keep the chain alive even if a link rejects — applySettingsNow already
-  // swallows its own errors, so this is only belt and braces.
-  applySettingsChain = next.catch(() => {});
-  return next;
 }
 
 /** abcjs's AudioContext, created on first call; null without Web Audio. */
@@ -657,13 +653,6 @@ function wakeAudio(): void {
 // pointerup/touchend carry user activation.
 for (const type of ["pointerdown", "keydown", "pointerup", "touchend"]) {
   document.addEventListener(type, wakeAudio, { capture: true, passive: true });
-}
-
-/** Wait until the live controller has finished loading (and starting). */
-function settleTransport(): Promise<void> {
-  const control = state.synthControl;
-  if (!control) return Promise.resolve();
-  return whenTransportIdle(control, () => state.synthControl === control && !disposed);
 }
 
 async function applySettingsNow(): Promise<void> {
@@ -1015,9 +1004,6 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     return;
   }
 
-  const transport = readTransport(state.synthControl);
-  const { wasPlaying } = transport;
-
   // The user's edit is the newest intent, so it supersedes any partial render
   // still queued from a stream. Everything after an await re-checks this.
   const generation = newGeneration();
@@ -1027,6 +1013,26 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
   // re-prime and keep playing.
   ownSynthControl(synthControl, generation);
   cancelPartialRender();
+
+  // setTune(…, true) starts a load at once, so an edit waits its turn behind
+  // any load or change in flight, like a settings change.
+  const edit = { abc, effective, messages, forcePlay, generation, synthControl };
+  await transportQueue.run(() => (isStale(generation) ? undefined : primeEdit(edit)));
+}
+
+/** The re-render half of {@link applyEditorAbc}, run by `transportQueue`. */
+async function primeEdit(edit: {
+  abc: string;
+  effective: string;
+  messages: string[];
+  forcePlay: boolean;
+  generation: number;
+  synthControl: ABCJS.SynthObjectController;
+}): Promise<void> {
+  const { abc, effective, messages, forcePlay, generation, synthControl } = edit;
+  // Read after the wait: an autoplay that was still loading is playing now.
+  const transport = readTransport(synthControl);
+  const { wasPlaying } = transport;
 
   try {
     clearHighlights();
@@ -1527,6 +1533,7 @@ async function renderAbc(
     keepLoopLitThroughWarp(synthControl);
     // Before load(), which hands the Play button `self.play` by reference.
     trackTransport(synthControl);
+    queueWarp(synthControl, transportQueue);
     synthControl.load(audioControlsEl, cursorControl, {
       displayLoop: true,
       displayPlay: true,

@@ -60,12 +60,23 @@ describe("sheet music transport", () => {
   it("queues a settings change behind any load already in flight (#33)", () => {
     const fn = body(ABC, "function applySettings(");
     expect(fn).toContain("wakeAudio();");
-    expect(fn).toContain("applySettingsChain.then(settleTransport).then(() => {");
-    // The #25 re-engrave runs AFTER the wait, inside the same link.
-    expect(fn).toMatch(/settleTransport\)\.then\(\(\) => \{\s*prepare\?\.\(\);\s*return applySettingsNow\(\);/);
+    // The #25 re-engrave runs AFTER the wait, inside the same step.
+    expect(fn).toMatch(/transportQueue\.run\(\(\) => \{\s*prepare\?\.\(\);\s*return applySettingsNow\(\);/);
     expect(body(ABC, "async function renderAbc(")).toMatch(
-      /trackTransport\(synthControl\);\s*synthControl\.load\(/,
+      /trackTransport\(synthControl\);\s*queueWarp\(synthControl, transportQueue\);\s*synthControl\.load\(/,
     );
+  });
+
+  it("queues an edit's re-prime and a tempo change the same way", () => {
+    // Both used to start a load straight away: setTune(…, true) in the edit,
+    // go() inside abcjs's setWarp().
+    expect(body(ABC, "async function applyEditorAbc(")).toContain(
+      "await transportQueue.run(() => (isStale(generation) ? undefined : primeEdit(edit)));",
+    );
+    const prime = body(ABC, "async function primeEdit(");
+    // The transport is read after the wait, and the load starts inside the step.
+    expect(prime.indexOf("readTransport(synthControl)")).toBeGreaterThanOrEqual(0);
+    expect(prime).toContain("await synthControl.setTune(");
   });
 
   it("a cancel's pause is recorded, so nothing later reads the widget as playing", () => {
@@ -75,7 +86,7 @@ describe("sheet music transport", () => {
   });
 
   it("keeps Loop through an edit too", () => {
-    expect(body(ABC, "async function applyEditorAbc(")).toContain(
+    expect(body(ABC, "async function primeEdit(")).toContain(
       "restoreLoop(synthControl, transport);",
     );
   });

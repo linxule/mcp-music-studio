@@ -184,7 +184,7 @@ describe("mcp-app.ts routes every stale cleanup through the decision (Codex #3)"
 
   it("uses releaseStaleControl at every post-await stale branch", () => {
     // renderAbc: after setTune, and in the autoplay continuation.
-    // applyEditorAbc: after setTune, and after play().
+    // primeEdit (applyEditorAbc's queued half): after setTune, and after play().
     expect(
       ABC_APP.match(/releaseStaleControl\(synthControl, generation\);/g),
     ).toHaveLength(4);

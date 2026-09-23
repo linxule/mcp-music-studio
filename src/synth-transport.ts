@@ -271,6 +271,72 @@ export async function whenTransportIdle(
   }
 }
 
+const noop = () => {};
+
+/**
+ * Transport changes, one at a time, each run once the live controller is idle.
+ *
+ * Every change that re-primes goes through here: instrument and sound changes,
+ * edits, and the % field. The live controller is re-read after each wait: one
+ * replaced mid-wait (a new tool call, a Style re-render) may be loading its own
+ * autoplay, and a change run on it then was the #33 double load again, on the
+ * replacement.
+ */
+export class TransportQueue {
+  private tail: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    /** The widget's live controller, if any. */
+    private readonly current: () => object | null,
+    /** False once the widget is torn down. */
+    private readonly alive: () => boolean = () => true,
+  ) {}
+
+  /** Run `step` after every earlier step, once the live controller is idle. */
+  run<T>(step: () => T | PromiseLike<T>): Promise<T> {
+    const next = this.tail.then(() => this.settle()).then(step);
+    this.tail = next.then(noop, noop);
+    return next;
+  }
+
+  /** Is `control` still the widget's live controller? */
+  isCurrent(control: object): boolean {
+    return this.alive() && this.current() === control;
+  }
+
+  private async settle(): Promise<void> {
+    let control = this.current();
+    while (control && this.alive()) {
+      const waitingOn = control;
+      await whenTransportIdle(waitingOn, () => this.isCurrent(waitingOn));
+      control = this.current();
+      if (control === waitingOn) return;
+    }
+  }
+}
+
+/**
+ * Send the % field's tempo changes through `queue`.
+ *
+ * abcjs's `setWarp()` calls `go()` directly, so a change made while a load was
+ * in flight (the autoplay, a sound change, an edit, the previous tempo) put a
+ * second init + prime on the same buffer. The field reaches it as
+ * `self.setWarp` (`onWarp`), an instance lookup. A burst from the field's
+ * spinner collapses to its last value, and a change for a controller that
+ * has since been replaced is dropped.
+ */
+export function queueWarp(control: object, queue: TransportQueue): void {
+  const raw = internals(control);
+  const setWarp = raw.setWarp;
+  let latest = 0;
+  raw.setWarp = (warp: unknown) => {
+    const request = ++latest;
+    return queue.run(() =>
+      request === latest && queue.isCurrent(control) ? setWarp(warp) : undefined,
+    );
+  };
+}
+
 // =============================================================================
 // Re-priming for new settings
 // =============================================================================

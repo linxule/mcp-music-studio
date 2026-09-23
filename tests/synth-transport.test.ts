@@ -14,9 +14,11 @@
 import ABCJS from "abcjs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  TransportQueue,
   carryWarp,
   keepLoopLitThroughWarp,
   pauseTransport,
+  queueWarp,
   readTransport,
   reprime,
   restoreLoop,
@@ -336,6 +338,114 @@ describe("one load at a time (#33)", () => {
     await reprime(h.ctrl, { prime: () => h.ctrl.setTune(TUNE, true), stillWanted: () => true });
     await spinning;
     expect(h.ctrl.isStarted).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Edits and tempo changes wait their turn too (TransportQueue, queueWarp)
+// -----------------------------------------------------------------------------
+
+describe("TransportQueue: one re-prime at a time, on the live controller", () => {
+  /** A tracked controller whose autoplay's load waits on `first`. */
+  async function loading(first: ReturnType<typeof gate>) {
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    const autoplay = h.ctrl.play() as unknown as Promise<unknown>;
+    return { ...h, autoplay };
+  }
+
+  it("upstream: a tempo change starts a second load on top of one in flight", async () => {
+    const first = gate();
+    const h = await loading(first);
+    const warp = h.ctrl.setWarp(150);
+    expect(h.loads.max).toBe(2);
+    first.release();
+    await Promise.all([h.autoplay, warp]);
+  });
+
+  it("a queued re-prime (an edit's setTune) waits for the autoplay, then keeps it playing", async () => {
+    const first = gate();
+    const h = await loading(first);
+    const queue = new TransportQueue(() => h.ctrl);
+    const edit = queue.run(() =>
+      reprime(h.ctrl, { prime: () => h.ctrl.setTune(TUNE, true), stillWanted: () => true }),
+    );
+    await sleep(20);
+    expect(h.loads.calls).toBe(1);
+    first.release();
+    await edit;
+    expect(h.loads.max).toBe(1);
+    expect(h.loads.calls).toBe(2);
+    expect(h.ctrl.isStarted).toBe(true);
+  });
+
+  it("a tempo change through queueWarp waits too", async () => {
+    const first = gate();
+    const h = await loading(first);
+    queueWarp(h.ctrl, new TransportQueue(() => h.ctrl));
+    const warp = h.ctrl.setWarp(150);
+    await sleep(20);
+    expect(h.loads.calls).toBe(1);
+    first.release();
+    await Promise.all([h.autoplay, warp]);
+    expect(h.loads.max).toBe(1);
+    expect(h.ctrl.warp).toBe(150);
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(h.ui.warpField).toBe(150);
+  });
+
+  it("a burst from the % field's spinner re-primes once, at the last value", async () => {
+    const first = gate();
+    const h = await loading(first);
+    queueWarp(h.ctrl, new TransportQueue(() => h.ctrl));
+    const burst = [110, 120, 130, 140].map((warp) => h.ctrl.setWarp(warp));
+    first.release();
+    await Promise.all([h.autoplay, ...burst]);
+    expect(h.loads.max).toBe(1);
+    expect(h.loads.calls).toBe(2);
+    expect(h.ctrl.warp).toBe(140);
+  });
+
+  it("drops a queued tempo change for a controller that has been replaced", async () => {
+    const first = gate();
+    const h = await loading(first);
+    let current: object = h.ctrl;
+    queueWarp(h.ctrl, new TransportQueue(() => current));
+    const warp = h.ctrl.setWarp(150);
+    current = harness().ctrl; // a new tool call built another
+    first.release();
+    await Promise.all([h.autoplay, warp]);
+    expect(h.loads.calls).toBe(1);
+    expect(h.ctrl.warp).toBe(100);
+  });
+
+  it("settles on the replacement too: its own autoplay may still be loading", async () => {
+    const firstA = gate();
+    const a = await loading(firstA);
+    const firstB = gate();
+    const b = await loading(firstB); // B's autoplay is loading
+    let current: object = a.ctrl;
+    const queue = new TransportQueue(() => current);
+    const change = queue.run(() => {
+      const control = current as Harness["ctrl"];
+      return control.setTune(TUNE, true);
+    });
+    await sleep(20);
+    current = b.ctrl; // replaced while the change waits on A
+    firstA.release();
+    await sleep(150);
+    expect(b.loads.calls).toBe(1); // still waiting, on B now
+    firstB.release();
+    await Promise.all([change, a.autoplay, b.autoplay]);
+    expect(b.loads.max).toBe(1);
+    expect(b.loads.calls).toBe(2);
+  });
+
+  it("keeps going after a step throws", async () => {
+    const queue = new TransportQueue(() => null);
+    await expect(queue.run(() => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
+    await expect(queue.run(() => 7)).resolves.toBe(7);
   });
 });
 
