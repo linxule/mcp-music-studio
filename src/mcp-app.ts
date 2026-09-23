@@ -42,6 +42,7 @@ import {
   screenAvailHeight,
 } from "./frame-size";
 import { USER_SCROLL_GRACE_MS, followScrollTarget } from "./sheet-follow";
+import { OVERHANG_TEXT_SELECTOR, paddingRightToFit } from "./score-fit";
 import {
   carryWarp,
   keepLoopLitThroughWarp,
@@ -833,10 +834,7 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
 
   try {
     clearHighlights();
-    const visualObj = ABCJS.renderAbc(sheetMusicEl, effective, {
-      responsive: "resize",
-      add_classes: true,
-    });
+    const visualObj = engraveScore(effective);
     // abcjs types the return as a 1-tuple, but unparseable input really does
     // come back empty at runtime — hence the widened length check.
     if (!visualObj || (visualObj as unknown as unknown[]).length === 0) {
@@ -1210,6 +1208,44 @@ function setLoading(text: string): void {
   }
 }
 
+const SCORE_RENDER_OPTIONS = { responsive: "resize", add_classes: true } as const;
+
+/**
+ * Engrave `abc` (the effective notation, style already applied) into the
+ * sheet. Every render of the score goes through here.
+ *
+ * abcjs reserves no room for text it hangs off a note, so a long annotation
+ * in a line's last bar ran past the SVG and was clipped (#28). If any such
+ * text overhangs, engrave once more with the right padding widened to fit it:
+ * the same layout, scaled down a little, and only when it has to be.
+ */
+function engraveScore(abc: string): ABCJS.TuneObject[] {
+  const tunes = ABCJS.renderAbc(sheetMusicEl, abc, SCORE_RENDER_OPTIONS);
+  const paddingright = overhangPadding(tunes);
+  return paddingright === null
+    ? tunes
+    : ABCJS.renderAbc(sheetMusicEl, abc, { ...SCORE_RENDER_OPTIONS, paddingright });
+}
+
+/** The right padding the engraved score needs, or null if it already fits. */
+function overhangPadding(tunes: ABCJS.TuneObject[]): number | null {
+  // The tune's own %%rightmargin outranks the option: nothing to gain.
+  if (tunes[0]?.formatting?.rightmargin !== undefined) return null;
+  const svg = sheetMusicEl.querySelector("svg");
+  const width = svg?.viewBox?.baseVal?.width;
+  if (!svg || !width) return null;
+  const edges: number[] = [];
+  for (const el of svg.querySelectorAll<SVGGraphicsElement>(OVERHANG_TEXT_SELECTOR)) {
+    try {
+      const box = el.getBBox(); // SVG user units, whatever the frame's width
+      edges.push(box.x + box.width);
+    } catch {
+      // Not rendered (a hidden frame): nothing to measure.
+    }
+  }
+  return paddingRightToFit(edges, width);
+}
+
 /** What a full render does about the transport it replaces (#26). */
 interface RenderTransport {
   /** Start playing once primed: a tool call does, a Style change only if it was. */
@@ -1275,10 +1311,7 @@ async function renderAbc(
 
     const abcWithStyle = applyStyleToAbc(abcNotation, state.currentStyle);
 
-    state.visualObj = ABCJS.renderAbc(sheetMusicEl, abcWithStyle, {
-      responsive: "resize",
-      add_classes: true,
-    });
+    state.visualObj = engraveScore(abcWithStyle);
 
     if (!state.visualObj || state.visualObj.length === 0) {
       throw new Error("Failed to parse music notation");
@@ -1491,10 +1524,7 @@ app.ontoolinputpartial = (params) => {
     try {
       const abcWithStyle = applyStyleToAbc(abcNotation, state.currentStyle);
       // Render in place — ABCJS replaces the target element's content
-      ABCJS.renderAbc(sheetMusicEl, abcWithStyle, {
-        responsive: "resize",
-        add_classes: true,
-      });
+      engraveScore(abcWithStyle);
       // Keep the newest notation in view as it streams in — unless the
       // reader has scrolled back to look at something.
       if (!userIsScrolling()) {

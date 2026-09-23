@@ -110,6 +110,35 @@ describe("sheet music widget", () => {
     expect(css).toMatch(/\.sheet-section \{\s*overflow-x: hidden;/);
   });
 
+  it("makes room for a long line-end annotation instead of letting it clip (#28)", () => {
+    // Every engraving goes through engraveScore(): two renderAbc calls, both
+    // in it (the plain one, and the re-engrave with a wider paddingright).
+    const calls = ABC.match(/ABCJS\.renderAbc\(/g) ?? [];
+    expect(calls).toHaveLength(2);
+    const fn = ABC.slice(ABC.indexOf("function engraveScore("));
+    const engrave = fn.slice(0, fn.indexOf("\n}\n"));
+    expect(engrave.match(/ABCJS\.renderAbc\(/g)).toHaveLength(2);
+    expect(engrave).toContain("{ ...SCORE_RENDER_OPTIONS, paddingright }");
+    expect(ABC).toContain(
+      'const SCORE_RENDER_OPTIONS = { responsive: "resize", add_classes: true } as const;',
+    );
+    // Full renders, the editor and the streaming preview all use it.
+    expect(ABC).toContain("state.visualObj = engraveScore(abcWithStyle);");
+    expect(ABC).toContain("const visualObj = engraveScore(effective);");
+    expect(ABC).toMatch(/partialRenderTimer = setTimeout\([\s\S]*?engraveScore\(abcWithStyle\);/);
+    // Measured in SVG user units, against the viewBox.
+    const measure = ABC.slice(ABC.indexOf("function overhangPadding("));
+    expect(measure.slice(0, measure.indexOf("\n}\n"))).toMatch(
+      /querySelectorAll<SVGGraphicsElement>\(OVERHANG_TEXT_SELECTOR\)[\s\S]*?getBBox\(\)[\s\S]*?paddingRightToFit\(edges, width\)/,
+    );
+  });
+
+  it("tells the model to keep section labels off a line's last bar", () => {
+    expect(read("src/abc-guide.ts")).toContain(
+      "Put section labels on the first bar of a line and keep them short",
+    );
+  });
+
   it("keeps the score keyboard-scrollable", () => {
     expect(ABC_HTML).toContain('<section class="sheet-section" tabindex="0" aria-label="Sheet music">');
   });
