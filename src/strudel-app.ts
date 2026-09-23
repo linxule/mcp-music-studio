@@ -21,13 +21,24 @@ import {
 import { detectViz } from "./shared/viz-detect";
 import { injectTempo } from "./shared/tempo";
 import { applyVisualPreset } from "./shared/visual-presets";
+import {
+  STRUDEL_INLINE_CAP,
+  applyFrameSize,
+  resolveFrameSize,
+  screenAvailHeight,
+} from "./frame-size";
 import { audioBufferToWavBase64 } from "./wav-encoder";
 import { sanitizeFileStem } from "./bytes-to-base64";
 import { VERSION } from "./version";
 
 const STRUDEL_CDN = "https://unpkg.com/@strudel/repl@1.3.0";
 
-const app = new App({ name: "Strudel Live Pattern", version: VERSION });
+// The spec has views declare the display modes they support; a host may
+// refuse to switch a view into one it didn't list.
+const app = new App(
+  { name: "Strudel Live Pattern", version: VERSION },
+  { availableDisplayModes: ["inline", "fullscreen"] },
+);
 
 const playBtn = document.getElementById("play-btn") as HTMLButtonElement;
 const recordBtn = document.getElementById("record-btn") as HTMLButtonElement;
@@ -293,15 +304,9 @@ function fixLayout(): void {
     }
   });
 
-  // The editor content is placed as a sibling AFTER <strudel-editor>
-  // Make sure it's visible and properly sized
-  if (editorEl?.nextElementSibling) {
-    const sibling = editorEl.nextElementSibling as HTMLElement;
-    if (sibling.querySelector(".cm-editor")) {
-      sibling.style.minHeight = "200px";
-      sibling.style.flex = "1";
-    }
-  }
+  // The editor content is a sibling AFTER <strudel-editor>. Its size is owned
+  // by strudel-app.css (it fills the stage and scrolls inside it); an inline
+  // min-height here used to let a long pattern grow the whole frame.
 }
 
 // =============================================================================
@@ -1601,8 +1606,8 @@ function installEvaluateHook(editor: any): void {
  * message per evaluation), so this listener handles the state changes we did
  * NOT initiate — a pattern calling hush(), the scheduler stopping — keeping the
  * Play button honest and telling the model the music has stopped (debounced, and
- * skipped when the evaluate report already said so). It deliberately leaves the
- * status text alone so it can't overwrite an error.
+ * skipped when the evaluate report already said so). It touches the status
+ * text only to say a stop happened, and never over an error.
  */
 function installStateListener(element: HTMLElement): void {
   if ((element as any).__musicStudioStateHooked) return;
@@ -1613,6 +1618,12 @@ function installStateListener(element: HTMLElement): void {
     isPlaying = started;
     playBtn.classList.toggle("playing", started);
     playBtn.textContent = started ? "Playing" : "Play";
+    // A stop nobody announced (hush(), the editor's own stop key) left the
+    // status reading "Playing..." over silence. An error stays up, and so does
+    // the recording status.
+    if (!started && !isRecording && !statusEl.classList.contains("error")) {
+      setStatus("Ready", "normal");
+    }
     scheduleStateReport();
   });
 }
@@ -2109,6 +2120,24 @@ fullscreenBtn.addEventListener("click", () => {
 let displayMode: "inline" | "fullscreen" | "pip" = "inline";
 let availableDisplayModes: readonly string[] | null = null;
 
+/**
+ * Size the stage to the host's container (src/frame-size.ts). Inline it is a
+ * FIXED height — the host's max or a share of the screen — and the code
+ * scrolls inside it, so the frame can never grow to the length of the pattern
+ * (which is what put the visuals below the fold). Fullscreen or a fixed
+ * container, it fills the frame. The canvases follow via the ResizeObserver.
+ */
+function syncFrameSize(): void {
+  applyFrameSize(
+    resolveFrameSize(
+      { ...app.getHostContext(), displayMode },
+      screenAvailHeight(),
+      STRUDEL_INLINE_CAP,
+    ),
+  );
+}
+syncFrameSize();
+
 function syncFullscreenButton(): void {
   const isFullscreen = displayMode === "fullscreen";
   fullscreenBtn.classList.toggle("active", isFullscreen);
@@ -2127,6 +2156,7 @@ async function toggleDisplayMode(): Promise<void> {
     // Trust what was GRANTED, not what was asked for.
     if (result?.mode) displayMode = result.mode;
     syncFullscreenButton();
+    syncFrameSize();
     // Fullscreen changes the frame, so the backdrop needs a new backing store.
     requestAnimationFrame(syncVizCanvasSize);
   } catch {
@@ -2213,9 +2243,18 @@ app.ontoolinputpartial = (params) => {
   void startStreamingBoot();
 };
 
-// Generation cancelled — clear the stuck "Composing pattern..." status
-// (mirrors the ABC widget).
+// Generation cancelled — clear the stuck "Composing pattern..." status and,
+// like the ABC widget, make it stick: a renderPattern() still waiting on the
+// CDN or the editor used to carry on to evaluate(true) and start the pattern
+// the user had just cancelled. Bumping the generation stops it at its next
+// checkpoint, and a streaming boot in flight no longer writes its half-pattern.
 app.ontoolcancelled = (params) => {
+  renderGeneration++;
+  pendingPartialCode = "";
+  streamingBoot = null;
+  if (isRecording) stopRecording();
+  getEditor()?.stop?.();
+  updatePlayState(false);
   const reason = params?.reason ? ` (${params.reason})` : "";
   setStatus(`Generation cancelled${reason}.`, "normal");
 };
@@ -2301,6 +2340,7 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
     mainEl.style.paddingBottom = `${ctx.safeAreaInsets.bottom}px`;
     mainEl.style.paddingLeft = `${ctx.safeAreaInsets.left}px`;
   }
+  if (ctx.displayMode || ctx.containerDimensions) syncFrameSize();
 }
 
 app.onhostcontextchanged = handleHostContextChanged;

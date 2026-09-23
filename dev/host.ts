@@ -27,6 +27,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const widgetSel = $<HTMLSelectElement>("widget");
 const presetSel = $<HTMLSelectElement>("preset");
 const widthSel = $<HTMLSelectElement>("frame-width");
+const sizingSel = $<HTMLSelectElement>("host-sizing");
 const sandboxCb = $<HTMLInputElement>("sandboxed");
 const argsTa = $<HTMLTextAreaElement>("args");
 const logEl = $<HTMLPreElement>("log");
@@ -41,6 +42,66 @@ const WIDGET_SRC: Record<string, string> = {
 let bridge: AppBridge | null = null;
 let iframe: HTMLIFrameElement | null = null;
 let ready = false;
+
+// -----------------------------------------------------------------------------
+// Host sizing — what a real host does with the frame's height
+//
+// A real host (Claude, per the ext-apps spec's "Container Dimensions") sizes an
+// inline frame from the widget's `ui/notifications/size-changed` reports, up to
+// the `containerDimensions.maxHeight` it advertises, and gives a fullscreen
+// frame a fixed height. This harness used to pin the frame at a fixed 520px+
+// regardless, which hid every bug that only shows up when the frame follows the
+// widget (a sheet that never scrolls, a Strudel stage as tall as its code).
+// -----------------------------------------------------------------------------
+
+type DisplayMode = "inline" | "fullscreen";
+let displayMode: DisplayMode = "inline";
+/** Height the widget last asked for via size-changed. */
+let reportedHeight: number | null = null;
+
+function frameFills(): boolean {
+  return displayMode === "fullscreen" || sizingSel.value === "fixed";
+}
+
+function sizingMaxHeight(): number | undefined {
+  if (sizingSel.value === "max640") return 640;
+  if (sizingSel.value === "max420") return 420;
+  return undefined;
+}
+
+function hostContext() {
+  const width = Math.round(frameWrap.clientWidth);
+  const containerDimensions = frameFills()
+    ? { height: Math.round(frameWrap.clientHeight), width }
+    : { maxHeight: sizingMaxHeight(), width };
+  return {
+    theme: "dark" as const,
+    displayMode,
+    availableDisplayModes: ["inline", "fullscreen"] as DisplayMode[],
+    containerDimensions,
+  };
+}
+
+/** Apply the current sizing policy to the frame (no remount). */
+function applyFrameSizing(): void {
+  if (!iframe) return;
+  frameWrap.classList.toggle("fills", frameFills());
+  if (frameFills()) {
+    iframe.style.height = "";
+    iframe.style.minHeight = "";
+    iframe.style.boxSizing = "";
+  } else {
+    // Before the first report the browser default (150px) is what a host shows.
+    const wanted = reportedHeight ?? 150;
+    const max = sizingMaxHeight();
+    iframe.style.minHeight = "0";
+    // content-box: the reported height is the DOCUMENT's; the frame's border
+    // goes on top of it, as it would around a borderless host frame.
+    iframe.style.boxSizing = "content-box";
+    iframe.style.height = `${max ? Math.min(wanted, max) : wanted}px`;
+  }
+  bridge?.setHostContext(hostContext());
+}
 
 // -----------------------------------------------------------------------------
 // Log
@@ -146,6 +207,9 @@ async function mountFrame(): Promise<void> {
   frameWrap.style.width = w ? `${w}px` : "100%";
   frameWrap.appendChild(frame);
   iframe = frame;
+  displayMode = "inline";
+  reportedHeight = null;
+  applyFrameSizing();
 
   // Attach the transport BEFORE navigating so the view's `initialize` request
   // can never race ahead of our listener.
@@ -159,7 +223,7 @@ async function mountFrame(): Promise<void> {
       message: { text: {}, image: {}, resource: {} },
       updateModelContext: { text: {}, structuredContent: {} },
     },
-    { hostContext: { theme: "dark", displayMode: "inline" } },
+    { hostContext: hostContext() },
   );
   wireBridge(b);
   await b.connect(new PostMessageTransport(frame.contentWindow!, frame.contentWindow!));
@@ -201,6 +265,8 @@ function wireBridge(b: AppBridge): void {
 
   b.onsizechange = ({ width, height }) => {
     log("in", `ui/notifications/size-changed w=${width ?? "-"} h=${height ?? "-"}`);
+    if (typeof height === "number") reportedHeight = height;
+    applyFrameSizing();
   };
 
   b.onmessage = async ({ role, content }) => {
@@ -226,9 +292,11 @@ function wireBridge(b: AppBridge): void {
 
   b.onrequestdisplaymode = async ({ mode }) => {
     log("in", `ui/request-display-mode ${mode}`);
-    // Report back what we actually granted; the harness frame never goes
-    // fullscreen, so echo the request and note it.
-    b.setHostContext({ theme: "dark", displayMode: mode });
+    // "Fullscreen" here means the frame gets the whole pane at a fixed height,
+    // which is the part of fullscreen a widget can observe.
+    if (mode !== "inline" && mode !== "fullscreen") return { mode: displayMode };
+    displayMode = mode;
+    applyFrameSizing();
     return { mode };
   };
 
@@ -283,7 +351,10 @@ widthSel.addEventListener("change", () => {
   // Resize WITHOUT remounting, so a running pattern keeps playing — this is how
   // we exercise the widget's ResizeObserver / Hydra setResolution path.
   frameWrap.style.width = widthSel.value ? `${widthSel.value}px` : "100%";
+  applyFrameSizing();
 });
+sizingSel.addEventListener("change", applyFrameSizing);
+window.addEventListener("resize", applyFrameSizing);
 sandboxCb.addEventListener("change", () => void mountFrame());
 $("reload").addEventListener("click", () => void mountFrame());
 $("send").addEventListener("click", () => void sendToolInput());
@@ -323,6 +394,12 @@ void mountFrame();
     argsTa.value = JSON.stringify(args, null, 2);
   },
   get ready() { return ready; },
+  get displayMode() { return displayMode; },
+  get reportedHeight() { return reportedHeight; },
+  setSizing(value: string) {
+    sizingSel.value = value;
+    applyFrameSizing();
+  },
   waitForReady,
   /**
    * Select a preset the way the UI does — INCLUDING the remount.

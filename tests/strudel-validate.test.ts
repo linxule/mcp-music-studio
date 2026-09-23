@@ -77,6 +77,28 @@ describe("what the report says", () => {
     expect(v.visuals).toEqual(["pianoroll"]);
   });
 
+  // Each of these plays in the widget's @strudel/repl@1.3.0 bundle; the
+  // validator used to report them as "failed to evaluate — nothing will play".
+  it.each([
+    ['note("c e g").s("sawtooth").tscope()', "tscope"],
+    ['note("c e g").s("sawtooth").fscope()', "fscope"],
+    ['note("c e g").s("sawtooth")._pianoroll()', "_pianoroll"],
+    ['s("bd sd")._scope()', "_scope"],
+    ['s("bd sd")._punchcard()', "_punchcard"],
+  ])("accepts the widget's draw method in %s", async (code, visual) => {
+    const v = await validateStrudelCode(code);
+    expect(v.ok).toBe(true);
+    expect(v.visuals).toEqual([visual]);
+  });
+
+  it("accepts slider(), evaluating it at its starting value", async () => {
+    const v = await validateStrudelCode(
+      'note("c e g").s("sawtooth").lpf(slider(800, 200, 4000))',
+    );
+    expect(v.ok).toBe(true);
+    expect(v.eventsPerCycle).toBe(3);
+  });
+
   it("records initHydra as a Hydra background", async () => {
     const v = await validateStrudelCode(
       'await initHydra()\nosc(10, 0.1, 1.2).kaleid(5).out()\ns("bd*4, hh*8")',

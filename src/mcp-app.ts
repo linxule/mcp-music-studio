@@ -35,6 +35,13 @@ import {
 } from "./abc-edit";
 import { audioBufferToWavBase64 } from "./wav-encoder";
 import { bytesToBase64, sanitizeFileStem } from "./bytes-to-base64";
+import {
+  SHEET_INLINE_CAP,
+  applyFrameSize,
+  resolveFrameSize,
+  screenAvailHeight,
+} from "./frame-size";
+import { USER_SCROLL_GRACE_MS, followScrollTarget } from "./sheet-follow";
 import { VERSION } from "./version";
 
 // =============================================================================
@@ -182,11 +189,20 @@ let hasPrimedAudio = false;
  * exercises (this wrapper needs a DOM, that function doesn't).
  */
 function currentSynthOptions(): Record<string, unknown> {
-  return buildSynthOptions({
+  const options = buildSynthOptions({
     instrument: state.currentInstrument,
     soundFont: state.currentSoundFont,
     toolSynthOptions: state.toolSynthOpts,
   });
+  // abcjs offsets its note timer by a count-in ONLY when the cursor control
+  // says so (synth-controller.js hands `cursorControl.extraMeasuresAtBeginning`
+  // to TimingCallbacks; `drumIntro` itself never reaches the timer). Without
+  // this, a `drumIntro: 2` tune lit — and scrolled to — its first notes during
+  // the count-in, stayed two bars ahead of the audio, and ended the transport
+  // two bars before the sound did. Every setTune() reads this first.
+  cursorControl.extraMeasuresAtBeginning =
+    typeof options.drumIntro === "number" ? options.drumIntro : 0;
+  return options;
 }
 
 // =============================================================================
@@ -197,6 +213,8 @@ const mainEl = document.querySelector(".main") as HTMLElement;
 const statusEl = document.getElementById("status")!;
 const pieceTitleEl = document.getElementById("piece-title")!;
 const sheetMusicEl = document.getElementById("sheet-music")!;
+/** The score's scroll container — the only thing the note-follow scrolls. */
+const sheetSectionEl = document.querySelector(".sheet-section") as HTMLElement;
 const audioControlsEl = document.getElementById("audio-controls")!;
 const instrumentSelectorEl = document.getElementById("instrument-selector")!;
 const styleSelectorEl = document.getElementById("style-selector")!;
@@ -228,31 +246,128 @@ function clearHighlights(): void {
   state.highlightedEls = [];
 }
 
-const cursorControl: CursorControl = {
+/**
+ * `extraMeasuresAtBeginning` is read by abcjs at runtime (synth-controller.js)
+ * but missing from its published CursorControl type.
+ */
+const cursorControl: CursorControl & { extraMeasuresAtBeginning?: number } = {
   onEvent(ev: NoteTimingEvent) {
     clearHighlights();
 
-    if (!ev.elements) return;
-
-    for (const group of ev.elements) {
+    for (const group of ev.elements ?? []) {
       for (const el of group) {
         el.classList.add("note-playing");
         state.highlightedEls.push(el);
       }
     }
 
-    if (state.highlightedEls.length > 0) {
-      state.highlightedEls[0].scrollIntoView({
-        behavior: "smooth",
-        block: "nearest",
-      });
-    }
+    followPlayback(ev);
   },
 
   onFinished() {
     clearHighlights();
+    resetFollow();
   },
 };
+
+// =============================================================================
+// Score follow — keeps the playing system in view
+// =============================================================================
+//
+// The policy (which system, when to move, where to) is `followScrollTarget()`
+// in src/sheet-follow.ts, which also records what the old
+// `scrollIntoView({ block: "nearest" })` on the first notehead got wrong. This
+// half measures, and keeps out of the reader's way: any hand scroll of the
+// score suspends the follow for USER_SCROLL_GRACE_MS.
+
+const reducedMotionQuery =
+  typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-reduced-motion: reduce)")
+    : null;
+
+/** Line (system) index of the last event, so a new line can be told apart. */
+let followLine: number | null = null;
+let lastUserScrollAt = Number.NEGATIVE_INFINITY;
+
+const SCROLL_KEYS = new Set([
+  "ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ",
+]);
+
+function noteUserScroll(): void {
+  lastUserScrollAt = performance.now();
+}
+
+sheetSectionEl.addEventListener("wheel", noteUserScroll, { passive: true });
+sheetSectionEl.addEventListener("touchmove", noteUserScroll, { passive: true });
+sheetSectionEl.addEventListener("keydown", (event) => {
+  if (SCROLL_KEYS.has(event.key)) noteUserScroll();
+});
+sheetSectionEl.addEventListener("pointerdown", (event) => {
+  // A press on the scroller itself rather than the score inside it is the
+  // scrollbar being dragged.
+  if (event.target === sheetSectionEl) noteUserScroll();
+});
+
+function userIsScrolling(): boolean {
+  return performance.now() - lastUserScrollAt < USER_SCROLL_GRACE_MS;
+}
+
+function resetFollow(): void {
+  followLine = null;
+}
+
+/**
+ * The playing system's extent, in the scroller's content coordinates.
+ *
+ * abcjs puts the system's `top` and `height` on every timing event — first
+ * staff to last, so both hands of a piano part — in SVG user units. With
+ * `responsive: "resize"` the SVG's viewBox is `0 0 w h` scaled to the
+ * container's width, so one factor converts them.
+ */
+function playingSystemBox(ev: NoteTimingEvent): { top: number; bottom: number } | null {
+  const view = sheetSectionEl.getBoundingClientRect();
+  const origin = view.top + sheetSectionEl.clientTop - sheetSectionEl.scrollTop;
+  const svg = sheetMusicEl.querySelector("svg");
+  const viewBoxWidth = svg?.viewBox?.baseVal?.width;
+  if (svg && viewBoxWidth && typeof ev.top === "number" && typeof ev.height === "number") {
+    const rect = svg.getBoundingClientRect();
+    const scale = rect.width / viewBoxWidth;
+    const top = rect.top - origin + ev.top * scale;
+    return { top, bottom: top + ev.height * scale };
+  }
+  // No system geometry on the event: fall back to what is lit up.
+  if (state.highlightedEls.length === 0) return null;
+  let top = Number.POSITIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  for (const el of state.highlightedEls) {
+    const rect = el.getBoundingClientRect();
+    top = Math.min(top, rect.top);
+    bottom = Math.max(bottom, rect.bottom);
+  }
+  return { top: top - origin, bottom: bottom - origin };
+}
+
+function followPlayback(ev: NoteTimingEvent): void {
+  const box = playingSystemBox(ev);
+  if (!box) return;
+  const line = typeof ev.line === "number" ? ev.line : Math.round(box.top);
+  const lineChanged = line !== followLine;
+  followLine = line;
+  if (userIsScrolling()) return;
+  const target = followScrollTarget({
+    systemTop: box.top,
+    systemBottom: box.bottom,
+    scrollTop: sheetSectionEl.scrollTop,
+    viewHeight: sheetSectionEl.clientHeight,
+    scrollHeight: sheetSectionEl.scrollHeight,
+    lineChanged,
+  });
+  if (target === null) return;
+  sheetSectionEl.scrollTo({
+    top: target,
+    behavior: reducedMotionQuery?.matches ? "auto" : "smooth",
+  });
+}
 
 const instrumentSelect = document.createElement("select");
 instrumentSelect.id = "instrument-select";
@@ -318,15 +433,47 @@ function applySettings(): Promise<void> {
   return next;
 }
 
+/** What `setTune()` throws away that the listener would want kept. */
+interface TransportState {
+  wasPlaying: boolean;
+  wasLooping: boolean;
+}
+
+function readTransport(control: ABCJS.SynthObjectController): TransportState {
+  const raw = control as unknown as { isStarted?: boolean; isLooping?: boolean };
+  return { wasPlaying: Boolean(raw.isStarted), wasLooping: Boolean(raw.isLooping) };
+}
+
+/**
+ * `setTune()` pauses, rewinds, and switches Loop off (abcjs
+ * synth-controller.js: `pause()`, `resetAll()`, `isLooping = false`). Put Loop
+ * back; the caller decides whether to play again.
+ */
+function restoreLoop(control: ABCJS.SynthObjectController, { wasLooping }: TransportState): void {
+  const raw = control as unknown as { isLooping?: boolean; toggleLoop?: () => void };
+  if (wasLooping && !raw.isLooping) raw.toggleLoop?.();
+}
+
 async function applySettingsNow(): Promise<void> {
-  if (!state.synthControl || !state.visualObj?.[0]) return;
+  const control = state.synthControl;
+  if (!control || !state.visualObj?.[0]) return;
+  // An instrument or sound change made mid-tune used to STOP the music:
+  // setTune() pauses and rewinds, and nothing started it again. Like an edit
+  // (applyEditorAbc), it now carries on from the top — and keeps Loop.
+  const transport = readTransport(control);
   try {
-    await state.synthControl.setTune(
+    await control.setTune(
       state.visualObj[0],
       true,
       currentSynthOptions() as SynthOptions,
     );
     hasPrimedAudio = true;
+    // A newer render may have replaced the controller while we primed.
+    if (state.synthControl !== control) return;
+    restoreLoop(control, transport);
+    if (transport.wasPlaying) {
+      await (control.play() as unknown as Promise<unknown> | undefined);
+    }
   } catch (error) {
     console.error("Failed to apply settings:", error);
   }
@@ -639,9 +786,8 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     return;
   }
 
-  const wasPlaying = Boolean(
-    (state.synthControl as unknown as { isStarted?: boolean }).isStarted,
-  );
+  const transport = readTransport(state.synthControl);
+  const { wasPlaying } = transport;
 
   // The user's edit is the newest intent, so it supersedes any partial render
   // still queued from a stream. Everything after an await re-checks this.
@@ -667,6 +813,7 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
 
     // The edit is now the source of truth for the title, both download stems
     // and send-to-chat.
+    resetFollow();
     state.visualObj = visualObj;
     state.currentAbc = abc;
     lastEditRendered = abc;
@@ -691,6 +838,7 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     downloadBtn.disabled = !downloadSupported;
     midiBtn.disabled = !downloadSupported;
     sendBtn.disabled = !messageSupported;
+    restoreLoop(synthControl, transport);
 
     if (wasPlaying || forcePlay) {
       await (synthControl.play() as unknown as Promise<unknown> | undefined);
@@ -749,6 +897,21 @@ toolbarEl.appendChild(fullscreenBtn);
 let displayMode: "inline" | "fullscreen" | "pip" = "inline";
 let availableDisplayModes: readonly string[] | null = null;
 
+/**
+ * Size the widget to the host's container (src/frame-size.ts): inline, grow
+ * with the score up to the host's max or most of the screen, and scroll the
+ * sheet inside that; fullscreen or a fixed container, fill it. Our own
+ * `displayMode` wins over the context's, since a host may grant a mode change
+ * before (or without) sending the context update for it.
+ */
+function syncFrameSize(): void {
+  const ctx = appInstance?.getHostContext();
+  applyFrameSize(
+    resolveFrameSize({ ...ctx, displayMode }, screenAvailHeight(), SHEET_INLINE_CAP),
+  );
+}
+syncFrameSize();
+
 function syncFullscreenButton(): void {
   const isFullscreen = displayMode === "fullscreen";
   fullscreenBtn.setAttribute("aria-pressed", String(isFullscreen));
@@ -767,6 +930,7 @@ async function toggleDisplayMode(): Promise<void> {
     const result = await app.requestDisplayMode({ mode: wanted });
     if (result?.mode) displayMode = result.mode;
     syncFullscreenButton();
+    syncFrameSize();
     // The score reflows on its own: renderAbc runs with responsive: "resize",
     // so abcjs's own window-resize handler re-lays the SVG to the new frame.
   } catch {
@@ -1049,6 +1213,7 @@ async function renderAbc(
     state.currentAbc = abcNotation;
     renderTitle();
     clearHighlights();
+    resetFollow();
     sheetMusicEl.innerHTML = "";
     audioControlsEl.innerHTML = "";
 
@@ -1135,7 +1300,12 @@ async function renderAbc(
 // MCP Apps SDK Integration
 // =============================================================================
 
-const app = new App({ name: "Music Studio", version: VERSION });
+// The spec has views declare the display modes they support; a host may
+// refuse to switch a view into one it didn't list.
+const app = new App(
+  { name: "Music Studio", version: VERSION },
+  { availableDisplayModes: ["inline", "fullscreen"] },
+);
 appInstance = app;
 
 // Handle complete tool input
@@ -1251,12 +1421,10 @@ app.ontoolinputpartial = (params) => {
         responsive: "resize",
         add_classes: true,
       });
-      // Scroll to show the latest notation at the bottom
-      sheetMusicEl.scrollTop = sheetMusicEl.scrollHeight;
-      // Also scroll the sheet section into view if needed
-      const sheetSection = sheetMusicEl.closest(".sheet-section");
-      if (sheetSection) {
-        sheetSection.scrollTop = sheetSection.scrollHeight;
+      // Keep the newest notation in view as it streams in — unless the
+      // reader has scrolled back to look at something.
+      if (!userIsScrolling()) {
+        sheetSectionEl.scrollTop = sheetSectionEl.scrollHeight;
       }
       setStatus("Composing...");
     } catch {
@@ -1339,6 +1507,7 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
     mainEl.style.paddingBottom = `${ctx.safeAreaInsets.bottom}px`;
     mainEl.style.paddingLeft = `${ctx.safeAreaInsets.left}px`;
   }
+  if (ctx.displayMode || ctx.containerDimensions) syncFrameSize();
 }
 
 app.onhostcontextchanged = handleHostContextChanged;

@@ -33,6 +33,13 @@ so what you test is what the MCP server ships. Re-run `bun run build` and hit
   notifications.
 - **frame width** resizes the iframe *without* remounting, which is how you
   exercise the widget's `ResizeObserver` and Hydra's `setResolution`.
+- **host sizing** decides the frame's height the way a real host does (the
+  spec's "Container Dimensions"): *auto height* follows the widget's
+  `ui/notifications/size-changed` reports, optionally capped by a
+  `containerDimensions.maxHeight`; *fixed* fills the pane and sends a fixed
+  `height`. The ⛶ button's `ui/request-display-mode` is honoured: fullscreen
+  gives the frame the whole pane at a fixed height. The harness used to pin the
+  frame at 520px+ whatever the widget reported, which hid every sizing bug.
 - The log panel prints everything the widget sends the host: `ui/message`,
   `ui/update-model-context`, `ui/download-file` (mime type and byte size only,
   never the base64), `ui/open-link`, `ui/request-display-mode` and size changes.

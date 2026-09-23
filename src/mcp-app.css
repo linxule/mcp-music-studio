@@ -63,6 +63,17 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* Inline: grow with the score up to this cap, then the sheet scrolls inside
+     it. Set from the host's containerDimensions / the screen by
+     applyFrameSize() (src/frame-size.ts) — never from vh, which in a frame the
+     host sizes to our own report is a feedback loop, not the screen. */
+  max-height: var(--frame-max-height, none);
+}
+
+/* Fullscreen or a fixed-height container: fill it; the sheet takes the rest. */
+:root[data-frame="fill"] .main {
+  height: var(--frame-height, 100vh);
+  max-height: none;
 }
 
 /* Header */
@@ -70,6 +81,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 /* Piece title — the tool's `title` argument, else the ABC's T: header.
@@ -212,6 +224,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 /* `display: flex` above would otherwise defeat the `hidden` attribute. */
@@ -320,19 +333,27 @@ body {
   stroke: var(--color-primary) !important;
 }
 
-/* Sheet Music Section */
+/* Sheet Music Section — the score's one scroll container. It takes whatever
+   height .main leaves (flex), so it scrolls when the score is taller than the
+   frame. The note-follow in src/mcp-app.ts scrolls it explicitly (and only
+   it), so there is no scroll-behavior here to fight a hand scroll. */
 .sheet-section {
+  flex: 1 1 auto;
   background: var(--color-card-bg);
   border-radius: 8px;
   padding: 16px;
   border: 1px solid var(--color-border);
-  min-height: 200px;
-  max-height: 80vh;
+  min-height: 140px;
   overflow-y: auto;
-  scroll-behavior: smooth;
 
   .sheet-music-container {
     width: 100%;
     overflow-x: auto;
   }
+}
+
+/* Focusable (tabindex) so the score scrolls from the keyboard too. */
+.sheet-section:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }

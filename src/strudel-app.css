@@ -77,11 +77,22 @@ html, body {
   color: var(--text);
 }
 
+/* The widget's height is a DECISION, not the code's length (src/frame-size.ts,
+   applied by syncFrameSize()). Inline: a fixed stage — the host's maxHeight or
+   a share of the screen — with the code scrolling inside it. The ext-apps SDK
+   reports our intrinsic height to the host, and that used to be every line of
+   the pattern: the first re-measure (a resize, entering fullscreen) grew the
+   frame, and the visuals with it, past the bottom of the screen. */
 .main {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  height: var(--frame-max-height, 100%);
   min-height: 200px;
+}
+
+/* Fullscreen or a fixed-height container: fill the frame exactly. */
+:root[data-frame="fill"] .main {
+  height: var(--frame-height, 100vh);
 }
 
 .header {
@@ -183,7 +194,7 @@ html, body {
   flex: 1;
   position: relative;   /* positioning context for the backdrop canvas */
   overflow: hidden;     /* the editor scrolls inside #strudel-container */
-  min-height: 350px;
+  min-height: 0;        /* the stage is whatever .main leaves; never content-sized */
 }
 
 .viz-canvas {
@@ -218,7 +229,6 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: auto;
-  min-height: 350px;
 }
 
 /* Visuals active: reveal the backdrop and make the editor translucent so the
@@ -320,7 +330,7 @@ html, body {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  min-height: 350px;
+  min-height: 100%;
   padding: 24px;
   text-align: center;
   color: var(--text-secondary);
@@ -368,18 +378,18 @@ strudel-editor {
   width: 100%;
 }
 
-/* Ensure the CodeMirror editor (in the sibling div) is visible */
+/* The CodeMirror editor (in the sibling div) fills the stage and scrolls
+   INSIDE it. These used to be min-heights, which made the pattern's length the
+   widget's height. */
 .strudel-container > div:has(.cm-editor) {
-  min-height: 350px !important;
+  height: 100% !important;
   width: 100% !important;
 }
 
-/* CodeMirror editor sizing */
 .cm-editor {
-  min-height: 350px !important;
+  height: 100% !important;
 }
 
 .cm-scroller {
-  min-height: 300px !important;
   overflow: auto !important;
 }
