@@ -311,3 +311,25 @@ describe("applySwingToTimings mechanics", () => {
     expect(timings[0]!.milliseconds).toBeCloseTo(83.333 + 0.02 * (1000 / 0.75), 3);
   });
 });
+
+// The tests above prove the alignment; these pin that the widget still runs
+// it (Codex review of #34: deleting the hookup from src/mcp-app.ts left every
+// test green while bringing the early highlight back).
+describe("the sheet widget wires the swing capture into its timer", () => {
+  const widget = readFileSync(new URL("../src/mcp-app.ts", import.meta.url), "utf8");
+
+  it("captures abcjs's swung note map whenever swing is set", () => {
+    expect(widget).toMatch(
+      /if \(typeof options\.swing === "number"\) \{\s*options\.sequenceCallback = captureSwungNoteMap;/,
+    );
+  });
+
+  it("shifts the timer from onReady, which go() calls after every prime", () => {
+    expect(widget).toMatch(/onReady\(controller\?: unknown\) \{\s*followSwing\(controller\);/);
+    expect(widget).toMatch(/alignTimerWithSwing\(\{/);
+  });
+
+  it("keeps the capture out of the MIDI writer", () => {
+    expect(widget).toContain("sequenceCallback: _sequenceCallback,");
+  });
+});

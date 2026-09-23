@@ -69,6 +69,8 @@ const INLINE_FIELD_RE = /^\[([A-Za-z]):([^\]]*)\]/;
 const INLINE_PROGRAM_RE =
   /^\[I:\s*MIDI\s*=?\s*program\s+(-?\d+)(?:\s+(-?\d+))?\s*\]/i;
 const SCORE_RE = /^%%\s*(?:score|staves)\b(.*)$/i;
+/** Blocks abcjs consumes whole as text / PostScript, never as music or MIDI. */
+const BLOCK_RE = /^%%\s*begin(text|ps)\b/i;
 const NOTE_CHARS = /[A-Ga-gzZxX]/;
 
 interface ProgramArgs {
@@ -130,6 +132,40 @@ function voiceCandidate(args: ProgramArgs, directive: string): LeadingProgram {
   };
 }
 
+/**
+ * Indices of the lines abcjs parses as the FIRST tune, in order.
+ *
+ * Mirrors parse/abc_parse_book.js: the (trimmed) book splits at every line
+ * that starts `X:`; with more than one tune, text before the first `X:` is
+ * "intertune", and only its `%%` directives are carried into the tune (ahead
+ * of it); and a tune ends at its first empty line — another tune's intertune
+ * text (a `%%score` for the next piece, say) must not be read as this one's.
+ */
+function firstTuneLineIndices(rawLines: readonly string[]): number[] {
+  let start = 0;
+  while (start < rawLines.length && rawLines[start]!.trim() === "") start++;
+  const tuneStarts: number[] = [];
+  for (let i = start + 1; i < rawLines.length; i++) {
+    if (rawLines[i]!.startsWith("X:")) tuneStarts.push(i);
+  }
+  const indices: number[] = [];
+  let tuneStart = start;
+  let tuneEnd = tuneStarts[0] ?? rawLines.length;
+  if (tuneStarts.length > 0 && !rawLines[start]!.startsWith("X:")) {
+    for (let i = start; i < tuneStarts[0]!; i++) {
+      if (rawLines[i]!.startsWith("%%")) indices.push(i);
+    }
+    tuneStart = tuneStarts[0]!;
+    tuneEnd = tuneStarts[1] ?? rawLines.length;
+  }
+  for (let i = tuneStart; i < tuneEnd; i++) {
+    // abcjs cuts at the raw "\n\n", so a CRLF blank line ("\r") doesn't end it.
+    if (i > tuneStart && rawLines[i] === "") break;
+    indices.push(i);
+  }
+  return indices;
+}
+
 /** First voice id named by `%%score` / `%%staves`, if the tune has one. */
 function scoreFirstVoice(lines: readonly string[]): string | null {
   for (const line of lines) {
@@ -159,19 +195,9 @@ export function findLeadingProgram(abc: string): LeadingProgram | null {
     offsets.push(cursor);
     cursor += raw.length + 1;
   }
-  const lines = rawLines.map((raw) => raw.replace(/\r$/, ""));
-
-  // Only the first tune reaches the widget.
-  let tuneEnd = lines.length;
-  let seenKey = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (seenKey && lines[i]!.startsWith("X:")) {
-      tuneEnd = i;
-      break;
-    }
-    if (lines[i]!.startsWith("K:")) seenKey = true;
-  }
-  const tune = lines.slice(0, tuneEnd);
+  // Only the first tune reaches the widget; `tune[i]` sits at `offsets[at[i]]`.
+  const at = firstTuneLineIndices(rawLines);
+  const tune = at.map((i) => rawLines[i]!.replace(/\r$/, ""));
 
   let voice0: string | null = scoreFirstVoice(tune);
   let inHeader = true;
@@ -188,7 +214,17 @@ export function findLeadingProgram(abc: string): LeadingProgram | null {
 
   for (let i = 0; i < tune.length; i++) {
     const line = tune[i]!;
-    const offset = offsets[i]!;
+    const offset = offsets[at[i]!]!;
+
+    // A text or PostScript block is prose to abcjs (parse_directive.js
+    // `begintext` / `beginps`), however much it looks like music or MIDI.
+    const block = BLOCK_RE.exec(line);
+    if (block) {
+      const end = `%%end${block[1]!.toLowerCase()}`;
+      while (i + 1 < tune.length && !tune[i + 1]!.toLowerCase().startsWith(end)) i++;
+      i++; // the %%end line itself
+      continue;
+    }
 
     if (line.startsWith("%%")) {
       const match = DIRECTIVE_RE.exec(line);
@@ -212,9 +248,10 @@ export function findLeadingProgram(abc: string): LeadingProgram | null {
     if (body[1] === ":" && KNOWN_FIELDS.has(body[0]!)) {
       const field = body[0];
       if (field === "K" && inHeader) {
+        // The header's last V: stays the current voice: abcjs's K: handler
+        // (parse_header.js) ends the header without selecting a voice, so
+        // music straight after K: belongs to that voice, not to voice 0.
         inHeader = false;
-        // Header V: lines only declare voices; the body starts in voice 0.
-        currentIsVoice0 = true;
       } else if (field === "V") {
         switchVoice(voiceId(body.slice(2)));
         if (!inHeader) musicStarted = true;

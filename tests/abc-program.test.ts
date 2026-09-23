@@ -77,6 +77,17 @@ const LAYOUTS: Record<string, string> = {
   spacedOut: H + "%%  MIDI   program   73\nCDEF|\n",
   crlf: "X:1\r\nM:4/4\r\nL:1/4\r\nK:C\r\n%%MIDI program 73\r\nCDEF|\r\n",
   secondTuneIgnored: H + "%%MIDI program 73\nCDEF|\n\nX:2\nK:C\n%%MIDI program 40\nCDEF|\n",
+  // From the Codex review of #25: all three disagreed with the sequencer.
+  headerVoicesThenMusic:
+    "X:1\n%%score (1 2)\nV:1\nV:2\nK:C\nCDEF|\nV:1\n%%MIDI program 73\nCDEF|\n",
+  headerVoicesThenMusicNoScore: "X:1\nV:1\nV:2\nK:C\nCDEF|\nV:1\n%%MIDI program 73\nCDEF|\n",
+  textBlockBeforeProgram:
+    "X:1\n%%begintext\nWritten for flute\n%%endtext\n%%MIDI program 73\nK:C\nCDEF|\n",
+  programInsideTextBlock: "X:1\n%%begintext\n%%MIDI program 40\n%%endtext\nK:C\nCDEF|\n",
+  intertuneAfterBlankLine:
+    H + "V:1\n%%MIDI program 73\nCDEF|\nV:2\n%%MIDI program 32\nC,D,E,F,|\n\n%%score (2 1)\nX:2\nK:C\nCDEF|\n",
+  blankLineEndsTune: H + "CDEF|\n\n%%MIDI program 73\nCDEF|\n",
+  fileHeaderDirective: "%%MIDI program 73\n\nX:1\nK:C\nCDEF|\n\nX:2\nK:C\nCDEF|\n",
   noProgram: H + "CDEF|\n",
   chordSymbolsNoProgram: H + '"C"CDEF|"G"GABc|\n',
 };
