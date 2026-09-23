@@ -27,8 +27,9 @@ import {
   resolveFrameSize,
   screenAvailHeight,
 } from "./frame-size";
-import { audioBufferToWavBase64 } from "./wav-encoder";
-import { sanitizeFileStem } from "./bytes-to-base64";
+import { audioBufferToWavBytesAsync } from "./wav-encoder";
+import { bytesToBase64Async, sanitizeFileStem } from "./bytes-to-base64";
+import { nativeExportStatus, planRecordingExport } from "./recording-export";
 import {
   GestureAudioLatch,
   playTapAction,
@@ -2086,6 +2087,33 @@ function stopRecording(reason?: "time" | "size"): void {
   }
 }
 
+/**
+ * Resolve once the browser has had a chance to paint — a frame, then a task —
+ * so a "..." set just before heavy work is on screen. Capped, because
+ * requestAnimationFrame never fires in a hidden or throttled frame.
+ */
+function afterNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    requestAnimationFrame(() => setTimeout(finish, 0));
+    setTimeout(finish, 100);
+  });
+}
+
+/**
+ * Export the last recording through ONE `ui/download-file` message (#32).
+ *
+ * WAV when it fits under MAX_WAV_BASE64_CHARS (≈ 2 min of 48 kHz stereo),
+ * otherwise the recorder's native container as-is (src/recording-export.ts).
+ * The size is known from the decoded buffer before anything is encoded, and
+ * the encoding yields between time slices, so the frame keeps painting and
+ * taking input instead of freezing while minutes of audio are converted.
+ */
 async function handleDownload(): Promise<void> {
   const recording = lastRecording;
   if (!recording || recording.chunks.length === 0) return;
@@ -2097,27 +2125,42 @@ async function handleDownload(): Promise<void> {
   downloadBtn.disabled = true;
   downloadBtn.textContent = "...";
   try {
-    // Decode the recording (WebM/Opus, MP4/AAC, whatever was negotiated) →
-    // AudioBuffer → WAV, so the exported format is the same everywhere.
+    await afterNextPaint();
     const blob = new Blob(recording.chunks, { type: recording.mimeType });
-    const arrayBuf = await blob.arrayBuffer();
-    const audioCtx: AudioContext | undefined = (window as any).getAudioContext?.();
+    const audioCtx = replAudioContext();
     if (!audioCtx) throw new Error("No audio context");
-    const audioBuffer = await audioCtx.decodeAudioData(arrayBuf);
-    const wavBase64 = audioBufferToWavBase64(audioBuffer);
+    // decodeAudioData() detaches the buffer it is handed; the blob keeps the
+    // bytes for a native export.
+    let decoded: AudioBuffer | null = await audioCtx.decodeAudioData(await blob.arrayBuffer());
+    const plan = planRecordingExport(decoded, recording.mimeType);
+    let bytes: Uint8Array;
+    if (plan.format === "wav") {
+      bytes = await audioBufferToWavBytesAsync(decoded);
+    } else {
+      bytes = new Uint8Array(await blob.arrayBuffer());
+    }
+    // Let the decoded float samples go before the base64 exists, rather than
+    // holding all three at once.
+    decoded = null;
+    const base64 = await bytesToBase64Async(bytes);
 
-    await app.downloadFile({
+    const result = await app.downloadFile({
       contents: [
         {
           type: "resource",
           resource: {
-            uri: `file:///${recordingFileStem()}.wav`,
-            mimeType: "audio/wav",
-            blob: wavBase64,
+            uri: `file:///${recordingFileStem()}.${plan.extension}`,
+            mimeType: plan.mimeType,
+            blob: base64,
           },
         },
       ],
     });
+    if (result?.isError) {
+      setStatus("Download was cancelled or refused by the host", "normal");
+    } else if (plan.format === "native") {
+      setStatus(nativeExportStatus(plan), "normal");
+    }
   } catch (err) {
     setStatus(`Download failed: ${(err as Error).message}`, "error");
   } finally {
