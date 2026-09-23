@@ -790,6 +790,8 @@ function retireSoundFontSelector(): void {
   soundFontLabel.title = soundFontSelect.title;
 }
 
+const LOADING_SOUNDS = "Loading sounds…";
+
 soundFontSelect.addEventListener("change", () => {
   const previous = state.currentSoundFont;
   state.currentSoundFont = soundFontSelect.value as SoundFontName;
@@ -813,9 +815,16 @@ soundFontSelect.addEventListener("change", () => {
   // Drop every cached sample so init()/prime() refetch from the new bank.
   resetSoundsCache();
 
-  setStatus("Loading sounds…");
+  setStatus(LOADING_SOUNDS);
   applySettings()
-    .then(() => setStatus("Click ▶ to play"))
+    .then(() => {
+      // The re-prime plays on if the tune was playing. Say which, unless
+      // something newer has taken the status line.
+      const control = state.synthControl;
+      if (!control || statusEl.textContent !== LOADING_SOUNDS) return;
+      const playing = readTransport(control).wasPlaying;
+      setStatus(withTransposeNote(playing ? "Playing..." : "Click ▶ to play"));
+    })
     .catch((err) =>
       setStatus(`Sound change failed: ${(err as Error).message}`, true),
     );

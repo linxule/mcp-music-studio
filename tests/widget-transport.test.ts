@@ -124,6 +124,15 @@ describe("sheet music transport", () => {
     expect(calls.length).toBe(explicit.length);
   });
 
+  it("after a Sound change, says whether the tune plays on (not always 'Click ▶ to play')", () => {
+    const handler = ABC.slice(ABC.indexOf('soundFontSelect.addEventListener("change"'));
+    const fn = handler.slice(0, handler.indexOf("\n});\n"));
+    expect(fn).not.toContain('.then(() => setStatus("Click ▶ to play"))');
+    expect(fn).toMatch(
+      /if \(!control \|\| statusEl\.textContent !== LOADING_SOUNDS\) return;\s*const playing = readTransport\(control\)\.wasPlaying;\s*setStatus\(withTransposeNote\(playing \? "Playing\.\.\." : "Click ▶ to play"\)\);/,
+    );
+  });
+
   it("says so when autoplay is blocked, instead of leaving 'Rendering...' up", () => {
     // A blocked play() never rejects, it waits: the check is on the context.
     const render = body(ABC, "async function renderAbc(");
