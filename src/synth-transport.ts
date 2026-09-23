@@ -183,7 +183,8 @@ function track(set: Set<Promise<unknown>>, result: unknown): void {
 }
 
 /**
- * Record every load and every play on `control`, for {@link whenTransportIdle}.
+ * Record every load and every play on `control`, for {@link whenTransportIdle},
+ * and let a second ▶ join a play that is still starting.
  *
  * Call it BEFORE `load()`: `load()` hands the Play button and the progress bar
  * `self.play` and `self.randomAccess` by reference. `go()` and `setWarp()` are
@@ -205,6 +206,33 @@ export function trackTransport(control: object): void {
   };
   wrap("go", state.loads);
   for (const name of PLAYING_CALLS) wrap(name, state.calls);
+  joinPendingPlay(raw);
+}
+
+/**
+ * A `play()` while another is still starting joins it.
+ *
+ * `_play()` toggles `isStarted`, so a second play() queued behind a load
+ * (runWhenReady polls every 500 ms) switched the tune off within half a second
+ * of it starting. That is what the ▶ you are told to press did to an autoplay
+ * parked on blocked audio, and to a slow first load clicked twice.
+ */
+function joinPendingPlay(raw: Record<string, unknown>): void {
+  const play = raw.play as () => unknown;
+  let starting: Promise<unknown> | null = null;
+  raw.play = () => {
+    if (starting) return starting;
+    const result = play();
+    if (result && typeof (result as Promise<unknown>).then === "function") {
+      const pending = result as Promise<unknown>;
+      starting = pending;
+      const done = () => {
+        if (starting === pending) starting = null;
+      };
+      pending.then(done, done);
+    }
+    return result;
+  };
 }
 
 /**

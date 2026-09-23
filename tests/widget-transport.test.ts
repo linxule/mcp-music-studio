@@ -113,6 +113,21 @@ describe("sheet music transport", () => {
     expect(calls.length).toBe(explicit.length);
   });
 
+  it("says so when autoplay is blocked, instead of leaving 'Rendering...' up", () => {
+    // A blocked play() never rejects, it waits: the check is on the context.
+    const render = body(ABC, "async function renderAbc(");
+    expect(render).toMatch(
+      /resumeAudioContext\(audioContext\(\), AUDIO_SETTLE_MS\)\.then\(\(running\) => \{\s*if \(!running && autoplayLoading\(synthControl\)\) \{\s*setStatus\(withTransposeNote\("Click ▶ to play"\)\);/,
+    );
+  });
+
+  it("any gesture in the widget resumes audio, so a parked autoplay can start", () => {
+    expect(ABC).toMatch(
+      /for \(const type of \["pointerdown", "keydown", "pointerup", "touchend"\]\) \{\s*document\.addEventListener\(type, wakeAudio, \{ capture: true, passive: true \}\);/,
+    );
+    expect(body(ABC, "function wakeAudio()")).toContain("resumeAudioContext(audioContext(),");
+  });
+
   it("keeps the Loop button lit through a tempo change on every controller it builds (#31)", () => {
     // One construction site, and it wraps setWarp before anything can call it.
     expect(ABC.match(/new ABCJS\.synth\.SynthController\(\)/g)).toHaveLength(1);

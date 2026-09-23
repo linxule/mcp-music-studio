@@ -340,6 +340,45 @@ describe("one load at a time (#33)", () => {
 });
 
 // -----------------------------------------------------------------------------
+// A ▶ pressed while a play is still starting (a parked autoplay)
+// -----------------------------------------------------------------------------
+
+describe("a ▶ while a play is still starting", () => {
+  /** An autoplay whose load waits on `first`, and a ▶ pressed meanwhile. */
+  async function autoplayThenClick(track: boolean) {
+    const first = gate();
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    if (track) trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    const autoplay = h.ctrl.play() as unknown as Promise<unknown>;
+    const click = h.ctrl.play() as unknown as Promise<unknown>;
+    first.release();
+    await Promise.all([autoplay, click]);
+    return h;
+  }
+
+  it("upstream: the ▶ switches the tune off as soon as the autoplay starts it", async () => {
+    // runWhenReady polls isLoading every 500 ms, then _play() toggles.
+    const h = await autoplayThenClick(false);
+    expect(h.ctrl.isStarted).toBe(false);
+    expect(h.ui.play).toBe(false);
+  });
+
+  it("joins the autoplay instead: one load, and it keeps playing", async () => {
+    const h = await autoplayThenClick(true);
+    expect(h.loads.calls).toBe(1);
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(h.ui.play).toBe(true);
+  });
+
+  it("the next ▶ after it has started still pauses", async () => {
+    const h = await autoplayThenClick(true);
+    await h.ctrl.play();
+    expect(h.ctrl.isStarted).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
 // reprime — the settings change itself
 // -----------------------------------------------------------------------------
 

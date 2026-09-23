@@ -38,6 +38,7 @@ import {
   hasFatalAbcWarning,
   staleControlAction,
 } from "./abc-edit";
+import { resumeAudioContext } from "./audio-unlock";
 import { audioBufferToWavBase64 } from "./wav-encoder";
 import { bytesToBase64, sanitizeFileStem } from "./bytes-to-base64";
 import {
@@ -624,18 +625,38 @@ function applySettings(prepare?: () => void): Promise<void> {
   return next;
 }
 
+/** abcjs's AudioContext, created on first call; null without Web Audio. */
+function audioContext(): AudioContext | null {
+  try {
+    return ABCJS.synth.activeAudioContext() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** A gesture's resume() is never waited on longer than this. */
+const AUDIO_RESUME_TIMEOUT_MS = 1500;
 /**
- * Resume the AudioContext from the gesture that changed a setting. A load
- * started while autoplay was blocked is parked on `AudioContext.resume()`,
- * which stays pending until a resume made during a user gesture. The change
- * waits for that load, so this gesture has to be the one that releases it.
+ * How long an autoplay's context gets to reach "running" before the status
+ * says it is blocked. A blocked resume() never settles (src/audio-unlock.ts).
+ */
+const AUDIO_SETTLE_MS = 300;
+
+/**
+ * Resume the AudioContext from a user gesture. A load started while autoplay
+ * was blocked is parked on `AudioContext.resume()`, which stays pending until
+ * a resume made during a user gesture. Settings changes wait for that load, so
+ * their gesture has to be the one that releases it.
  */
 function wakeAudio(): void {
-  try {
-    void ABCJS.synth.activeAudioContext()?.resume().catch(() => {});
-  } catch {
-    // No Web Audio: renderAbc already reported it.
-  }
+  void resumeAudioContext(audioContext(), AUDIO_RESUME_TIMEOUT_MS);
+}
+
+// Any gesture in the widget releases a parked autoplay, not only ▶. Capture
+// phase, so no control's own handler can swallow it; on touch only
+// pointerup/touchend carry user activation.
+for (const type of ["pointerdown", "keydown", "pointerup", "touchend"]) {
+  document.addEventListener(type, wakeAudio, { capture: true, passive: true });
 }
 
 /** Wait until the live controller has finished loading (and starting). */
@@ -1575,6 +1596,14 @@ async function renderAbc(
         console.debug("Autoplay blocked:", e);
         setStatus(withTransposeNote("Click ▶ to play"));
       });
+    // A blocked autoplay never rejects: go() waits on AudioContext.resume(),
+    // which stays pending until a gesture resumes the context, and "Rendering..."
+    // stayed up. A context that is merely starting gets a moment first.
+    void resumeAudioContext(audioContext(), AUDIO_SETTLE_MS).then((running) => {
+      if (!running && autoplayLoading(synthControl)) {
+        setStatus(withTransposeNote("Click ▶ to play"));
+      }
+    });
   } catch (error) {
     if (isStale(generation)) return;
     console.error("Render error:", error);
