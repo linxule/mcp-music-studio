@@ -387,6 +387,10 @@ function clearHighlights(): void {
  */
 const cursorControl: CursorControl & { extraMeasuresAtBeginning?: number } = {
   onEvent(ev: NoteTimingEvent) {
+    // A timer still primed for the score an edit just replaced (its re-prime
+    // is queued behind a load): its notes are no longer on the page.
+    const first = ev.elements?.[0]?.[0] as Element | undefined;
+    if (first && !first.isConnected) return;
     clearHighlights();
 
     for (const group of ev.elements ?? []) {
@@ -680,6 +684,9 @@ const AUDIO_SETTLE_MS = 300;
  * their gesture has to be the one that releases it.
  */
 function wakeAudio(): void {
+  // Teardown is terminal: a gesture must not release a load parked on a
+  // retired controller (Kimi review).
+  if (disposed) return;
   void resumeAudioContext(audioContext(), AUDIO_RESUME_TIMEOUT_MS);
 }
 
@@ -1017,11 +1024,13 @@ function reportTransposeToModel(warning: string | null): void {
 }
 
 /** Tell the model the score on screen is no longer the one it wrote. */
-function reportEditToModel(abc: string): void {
+function reportEditToModel(abc: string, soundsLoaded = true): void {
   if (!contextUpdateSupported || abc === lastEditReported) return;
   lastEditReported = abc;
   void app
-    .updateModelContext({ content: [{ type: "text", text: editContextText(abc) }] })
+    .updateModelContext({
+      content: [{ type: "text", text: editContextText(abc, soundsLoaded) }],
+    })
     .catch(() => {
       /* context updates are best-effort */
     });
@@ -1078,45 +1087,65 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
   ownSynthControl(synthControl, generation);
   cancelPartialRender();
 
-  // setTune(…, true) starts a load at once, so an edit waits its turn behind
-  // any load or change in flight, like a settings change.
-  const edit = { abc, effective, messages, forcePlay, generation, synthControl };
-  await transportQueue.run(() => (isStale(generation) ? undefined : primeEdit(edit)));
+  // The score is drawn now; only the audio waits its turn. setTune(…, true)
+  // starts a load at once, so the re-prime queues behind any load or change
+  // in flight, like a settings change. Queueing the engrave too (Kimi review)
+  // left the OLD score up for the whole load, up to 15 s.
+  let visualObj: ABCJS.TuneObject[];
+  try {
+    visualObj = engraveEdit(abc, effective, messages);
+  } catch (error) {
+    console.error("Edit render error:", error);
+    setEditorMessage(`Edit not applied: ${(error as Error).message}`, "error");
+    setStatus(`Edit not applied: ${(error as Error).message}`, true);
+    return;
+  }
+  const edit = { abc, visualObj, forcePlay, generation, synthControl };
+  // Skipped only when a newer edit or render has the controller. After a
+  // cancel it still re-primes, without playing: the new score is on screen,
+  // and the next ▶ must not play the old tune under it.
+  await transportQueue.run(() =>
+    !disposed && state.synthControl === synthControl && synthControlOwner === generation
+      ? primeEdit(edit)
+      : undefined,
+  );
 }
 
-/** The re-render half of {@link applyEditorAbc}, run by `transportQueue`. */
+/** Draw an edit and make it the widget's score. Throws if it won't engrave. */
+function engraveEdit(abc: string, effective: string, messages: string[]): ABCJS.TuneObject[] {
+  clearHighlights();
+  const visualObj = engraveScore(effective);
+  // abcjs types the return as a 1-tuple, but unparseable input really does
+  // come back empty at runtime — hence the widened length check.
+  if (!visualObj || (visualObj as unknown as unknown[]).length === 0) {
+    throw new Error("Failed to parse music notation");
+  }
+  // The edit is now the source of truth for the title, both download stems
+  // and send-to-chat.
+  resetFollow();
+  state.visualObj = visualObj;
+  state.currentAbc = abc;
+  lastEditRendered = abc;
+  renderTitle();
+  syncInstrumentSelect();
+  setEditorMessage(messages.length > 0 ? messages.join("\n") : null, "warn");
+  return visualObj;
+}
+
+/** The audio half of {@link applyEditorAbc}, run by `transportQueue`. */
 async function primeEdit(edit: {
   abc: string;
-  effective: string;
-  messages: string[];
+  visualObj: ABCJS.TuneObject[];
   forcePlay: boolean;
   generation: number;
   synthControl: ABCJS.SynthObjectController;
 }): Promise<void> {
-  const { abc, effective, messages, forcePlay, generation, synthControl } = edit;
+  const { abc, visualObj, forcePlay, generation, synthControl } = edit;
   // Read after the wait: an autoplay that was still loading is playing now.
   const transport = readTransport(synthControl);
   const { wasPlaying } = transport;
 
   try {
-    clearHighlights();
-    const visualObj = engraveScore(effective);
-    // abcjs types the return as a 1-tuple, but unparseable input really does
-    // come back empty at runtime — hence the widened length check.
-    if (!visualObj || (visualObj as unknown as unknown[]).length === 0) {
-      throw new Error("Failed to parse music notation");
-    }
-
-    // The edit is now the source of truth for the title, both download stems
-    // and send-to-chat.
-    resetFollow();
-    state.visualObj = visualObj;
-    state.currentAbc = abc;
-    lastEditRendered = abc;
-    renderTitle();
-    syncInstrumentSelect();
-    setEditorMessage(messages.length > 0 ? messages.join("\n") : null, "warn");
-
     // The edit is on screen whatever happens to the sounds: a failed load is
     // reported by onTransportEvent (▶ retries), not as "Edit not applied".
     const primed = await synthControl
@@ -1150,7 +1179,7 @@ async function primeEdit(edit: {
     } else if (primed) {
       setStatus("Edit applied — click ▶ to play");
     }
-    reportEditToModel(abc);
+    reportEditToModel(abc, primed);
   } catch (error) {
     if (isStale(generation)) return;
     console.error("Edit render error:", error);

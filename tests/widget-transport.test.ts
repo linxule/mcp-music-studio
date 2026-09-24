@@ -70,13 +70,27 @@ describe("sheet music transport", () => {
   it("queues an edit's re-prime and a tempo change the same way", () => {
     // Both used to start a load straight away: setTune(…, true) in the edit,
     // go() inside abcjs's setWarp().
-    expect(body(ABC, "async function applyEditorAbc(")).toContain(
-      "await transportQueue.run(() => (isStale(generation) ? undefined : primeEdit(edit)));",
+    const apply = body(ABC, "async function applyEditorAbc(");
+    // The score is drawn at once; only the audio queues (Kimi review: queueing
+    // the engrave left the old score up for the whole load).
+    expect(apply.indexOf("visualObj = engraveEdit(abc, effective, messages);")).toBeGreaterThan(0);
+    expect(apply.indexOf("visualObj = engraveEdit(")).toBeLessThan(apply.indexOf("await transportQueue.run("));
+    // Skipped only when a newer edit/render took over; a cancel still re-primes.
+    expect(apply).toMatch(
+      /await transportQueue\.run\(\(\) =>\s*!disposed && state\.synthControl === synthControl && synthControlOwner === generation\s*\? primeEdit\(edit\)/,
     );
     const prime = body(ABC, "async function primeEdit(");
     // The transport is read after the wait, and the load starts inside the step.
     expect(prime.indexOf("readTransport(synthControl)")).toBeGreaterThanOrEqual(0);
     expect(prime).toMatch(/await synthControl\s*\.setTune\(/);
+  });
+
+  it("ignores timer events from a score an edit has already replaced", () => {
+    expect(ABC).toMatch(/onEvent\(ev: NoteTimingEvent\) \{[\s\S]{0,300}if \(first && !first\.isConnected\) return;/);
+  });
+
+  it("a gesture after teardown releases nothing", () => {
+    expect(body(ABC, "function wakeAudio()")).toContain("if (disposed) return;");
   });
 
   it("a cancel's pause is recorded, so nothing later reads the widget as playing", () => {
