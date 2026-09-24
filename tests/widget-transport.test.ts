@@ -75,11 +75,19 @@ describe("sheet music transport", () => {
     // the engrave left the old score up for the whole load).
     expect(apply.indexOf("visualObj = engraveEdit(abc, effective, messages);")).toBeGreaterThan(0);
     expect(apply.indexOf("visualObj = engraveEdit(")).toBeLessThan(apply.indexOf("await transportQueue.run("));
-    // Skipped only when a newer edit/render took over; a cancel still re-primes.
+    // Re-primed whenever its score is still on screen (a cancel, or a ▶ since,
+    // must not leave the old tune under it); skipped once a newer one replaced it.
     expect(apply).toMatch(
-      /await transportQueue\.run\(\(\) =>\s*!disposed && state\.synthControl === synthControl && synthControlOwner === generation\s*\? primeEdit\(edit\)/,
+      /await transportQueue\.run\(\(\) =>\s*!disposed && state\.synthControl === synthControl && state\.visualObj === visualObj\s*\? primeEdit\(edit\)/,
     );
     const prime = body(ABC, "async function primeEdit(");
+    // Loop is put back before any early return (Codex final review).
+    expect(prime.indexOf("restoreLoop(synthControl, transport);")).toBeLessThan(
+      prime.indexOf("if (state.visualObj !== visualObj) {"),
+    );
+    // Two quick edits don't stop the music: the replaced one hands "it was playing" on.
+    expect(prime).toContain("supersededEditWasPlaying = wasPlaying;");
+    expect(prime).toContain("const wasPlaying = transport.wasPlaying || supersededEditWasPlaying;");
     // The transport is read after the wait, and the load starts inside the step.
     expect(prime.indexOf("readTransport(synthControl)")).toBeGreaterThanOrEqual(0);
     expect(prime).toMatch(/await synthControl\s*\.setTune\(/);

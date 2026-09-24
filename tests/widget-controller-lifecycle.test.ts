@@ -184,10 +184,16 @@ describe("mcp-app.ts routes every stale cleanup through the decision (Codex #3)"
 
   it("uses releaseStaleControl at every post-await stale branch", () => {
     // renderAbc: after setTune, and in the autoplay continuation.
-    // primeEdit (applyEditorAbc's queued half): after setTune, and after play().
     expect(
       ABC_APP.match(/releaseStaleControl\(synthControl, generation\);/g),
-    ).toHaveLength(4);
+    ).toHaveLength(2);
+    // primeEdit (applyEditorAbc's queued half) asks what is on screen instead of
+    // which generation owns the controller: a ▶ after a cancel takes ownership,
+    // and an ownership check then left the old tune under the new score.
+    const prime = ABC_APP.slice(ABC_APP.indexOf("async function primeEdit("));
+    const body = prime.slice(0, prime.indexOf("\n}\n"));
+    expect(body).toContain("if (disposed || state.synthControl !== synthControl) return;");
+    expect(body.match(/if \(ownerCancelled\(synthControl\)\) \{\s*silence\(synthControl\);/g)).toHaveLength(2);
   });
 
   it("clears the owner when the controller is retired", () => {

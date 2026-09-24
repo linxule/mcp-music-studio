@@ -1100,16 +1100,25 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     setStatus(`Edit not applied: ${(error as Error).message}`, true);
     return;
   }
-  const edit = { abc, visualObj, forcePlay, generation, synthControl };
-  // Skipped only when a newer edit or render has the controller. After a
-  // cancel it still re-primes, without playing: the new score is on screen,
-  // and the next ▶ must not play the old tune under it.
+  const edit = { abc, visualObj, forcePlay, synthControl };
+  // Re-prime whenever this edit's score is still the one on screen, so ▶
+  // never plays an old tune under it — after a cancel, or a ▶ pressed since
+  // (which takes ownership, so an ownership check skipped it: Codex review).
+  // Skipped only once a newer edit or render has replaced it.
   await transportQueue.run(() =>
-    !disposed && state.synthControl === synthControl && synthControlOwner === generation
+    !disposed && state.synthControl === synthControl && state.visualObj === visualObj
       ? primeEdit(edit)
       : undefined,
   );
 }
+
+/**
+ * "It was playing", from an edit that paused the transport to re-prime and
+ * was then replaced on screen by a newer edit. The newer edit reads the
+ * transport after that pause, so without this two quick edits stopped the
+ * music.
+ */
+let supersededEditWasPlaying = false;
 
 /** Draw an edit and make it the widget's score. Throws if it won't engrave. */
 function engraveEdit(abc: string, effective: string, messages: string[]): ABCJS.TuneObject[] {
@@ -1137,13 +1146,13 @@ async function primeEdit(edit: {
   abc: string;
   visualObj: ABCJS.TuneObject[];
   forcePlay: boolean;
-  generation: number;
   synthControl: ABCJS.SynthObjectController;
 }): Promise<void> {
-  const { abc, visualObj, forcePlay, generation, synthControl } = edit;
+  const { abc, visualObj, forcePlay, synthControl } = edit;
   // Read after the wait: an autoplay that was still loading is playing now.
   const transport = readTransport(synthControl);
-  const { wasPlaying } = transport;
+  const wasPlaying = transport.wasPlaying || supersededEditWasPlaying;
+  supersededEditWasPlaying = false;
 
   try {
     // The edit is on screen whatever happens to the sounds: a failed load is
@@ -1156,23 +1165,30 @@ async function primeEdit(edit: {
       );
     if (primed) hasPrimedAudio = true;
 
-    // New tool input, a cancel or a teardown landed while setTune was priming.
-    // The controller we just re-primed may already have been retired; don't
-    // wire it back up, and don't let it start playing.
-    if (isStale(generation)) {
-      releaseStaleControl(synthControl, generation);
+    // A teardown, or a new render that has already retired this controller.
+    if (disposed || state.synthControl !== synthControl) return;
+    // setTune() switched Loop off. The listener's Loop stands whatever happens
+    // next: a cancelled edit used to return before this and lose it.
+    restoreLoop(synthControl, transport);
+    // A newer edit is on screen and re-primes next; it carries on playing.
+    if (state.visualObj !== visualObj) {
+      supersededEditWasPlaying = wasPlaying;
+      return;
+    }
+    // Cancelled while it primed, and no ▶ since: stay quiet.
+    if (ownerCancelled(synthControl)) {
+      silence(synthControl);
       return;
     }
 
     downloadBtn.disabled = !downloadSupported;
     midiBtn.disabled = !downloadSupported;
     sendBtn.disabled = !messageSupported;
-    restoreLoop(synthControl, transport);
 
     if (primed && (wasPlaying || forcePlay)) {
       await (synthControl.play() as unknown as Promise<unknown> | undefined);
-      if (isStale(generation)) {
-        releaseStaleControl(synthControl, generation);
+      if (ownerCancelled(synthControl)) {
+        silence(synthControl);
         return;
       }
       setStatus("Playing...");
@@ -1181,7 +1197,7 @@ async function primeEdit(edit: {
     }
     reportEditToModel(abc, primed);
   } catch (error) {
-    if (isStale(generation)) return;
+    if (state.visualObj !== visualObj) return;
     console.error("Edit render error:", error);
     setEditorMessage(`Edit not applied: ${(error as Error).message}`, "error");
     setStatus(`Edit not applied: ${(error as Error).message}`, true);
