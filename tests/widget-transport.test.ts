@@ -63,7 +63,7 @@ describe("sheet music transport", () => {
     // The #25 re-engrave runs AFTER the wait, inside the same step.
     expect(fn).toMatch(/transportQueue\.run\(\(\) => \{\s*prepare\?\.\(\);\s*return applySettingsNow\(\);/);
     expect(body(ABC, "async function renderAbc(")).toMatch(
-      /trackTransport\(synthControl, [^\n]*\);\s*queueWarp\(synthControl, transportQueue\);\s*synthControl\.load\(/,
+      /trackTransport\(synthControl, [^\n]*\);\s*queueWarp\(synthControl, transportQueue, [\s\S]{0,400}?\}\);\s*synthControl\.load\(/,
     );
   });
 
@@ -158,7 +158,7 @@ describe("sheet music transport", () => {
     expect(handler).toContain('classList.remove("abcjs-loading")');
     expect(handler).toContain("setStatus(withTransposeNote(LOAD_FAILED_STATUS), true);");
     // …and takes it down when a ▶ retries it successfully.
-    expect(handler).toMatch(/case "started":[\s\S]{0,240}?return showTransportStatus\("Playing\.\.\."\);/);
+    expect(handler).toMatch(/case "started":[\s\S]{0,500}?return showTransportStatus\("Playing\.\.\."\);/);
     expect(body(ABC, "function showTransportStatus(")).toContain(
       "if (error && !statusEl.textContent?.startsWith(LOAD_FAILED_STATUS)) return;",
     );

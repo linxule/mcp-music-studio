@@ -262,13 +262,34 @@ describe("a cancel leaves a playable transport", () => {
     // Retiring after a cancel destroyed the controller abcjs's ▶ is wired to:
     // in WebKit a tap released the parked autoplay, which retired it, and ▶
     // did nothing from then on.
-    expect(release).toMatch(/if \(disposed\) retireSynthControl\(\);\s*else \{\s*pauseTransport\(control\);/);
+    expect(release).toMatch(/if \(disposed\) retireSynthControl\(\);\s*else silence\(control\);/);
+    expect(ABC_APP).toMatch(/function silence\(control: ABCJS\.SynthObjectController\): void \{\s*pauseTransport\(control\);/);
   });
 
-  it("doesn't announce a cancelled autoplay's start", () => {
+  it("doesn't announce a start that a cancel superseded", () => {
+    expect(ABC_APP).toMatch(/case "started":[\s\S]{0,300}if \(ownerCancelled\(control\)\) return;/);
+  });
+
+  it("silences a controller whose newer owner was cancelled too (Codex review)", () => {
+    // An edit queued behind the autoplay, then a cancel: the autoplay found a
+    // newer owner, kept its hands off, and played on.
+    expect(release).toMatch(/\} else if \(ownerCancelled\(control\)\) \{[\s\S]{0,300}silence\(control\);/);
+  });
+
+  it("a ▶ press takes the controller back after a cancel", () => {
     expect(ABC_APP).toMatch(
-      /case "started":[\s\S]{0,200}if \(pendingAutoplay\?\.control === control && isStale\(pendingAutoplay\.generation\)\) return;/,
+      /audioControlsEl\.addEventListener\(\s*"click",[\s\S]{0,300}closest\("\.abcjs-midi-start"\)[\s\S]{0,200}ownSynthControl\(state\.synthControl, renderGeneration\)/,
     );
+  });
+
+  it("a tempo change can't undo a cancel", () => {
+    expect(ABC_APP).toMatch(
+      /queueWarp\(synthControl, transportQueue, \(\) => \{[\s\S]{0,300}if \(isStale\(requested\) && ownerCancelled\(synthControl\)\) silence\(synthControl\);/,
+    );
+  });
+
+  it("notes each press, so the ▶ that released a parked autoplay doesn't pause it", () => {
+    expect(ABC_APP).toMatch(/for \(const type of \["pointerdown", "keydown"\]\) \{\s*document\.addEventListener\(type, \(\) => noteGestureStart\(\)/);
   });
 
   it("separates the status from the transposition caveat", () => {

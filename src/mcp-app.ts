@@ -58,6 +58,7 @@ import {
   TransportQueue,
   carryWarp,
   keepLoopLitThroughWarp,
+  noteGestureStart,
   pauseTransport,
   queueWarp,
   readTransport,
@@ -213,11 +214,30 @@ function releaseStaleControl(
     // WebKit: a tap released the parked autoplay, which retired it; ▶ then did
     // nothing and the clock sat at 0:00). Stop what it started, keep it.
     if (disposed) retireSynthControl();
-    else {
-      pauseTransport(control);
-      clearHighlights();
-    }
-  } else if (action === "destroy") destroySynthControl(control);
+    else silence(control);
+  } else if (action === "destroy") {
+    destroySynthControl(control);
+  } else if (ownerCancelled(control)) {
+    // A newer generation took the controller over (an edit) and was itself
+    // cancelled while it waited its turn: nobody live wants this music, which
+    // the autoplay started anyway (Codex review).
+    silence(control);
+  }
+}
+
+/**
+ * After a cancel nobody live owns the controller: the cancel keeps it (the
+ * score and ▶ stay usable) but wants it quiet. A ▶ press takes it over again
+ * (see the audio-controls click listener).
+ */
+function ownerCancelled(control: ABCJS.SynthObjectController): boolean {
+  return !disposed && state.synthControl === control && isStale(synthControlOwner);
+}
+
+/** Stop what a superseded continuation started, keeping the controller. */
+function silence(control: ABCJS.SynthObjectController): void {
+  pauseTransport(control);
+  clearHighlights();
 }
 
 /**
@@ -669,6 +689,23 @@ function wakeAudio(): void {
 for (const type of ["pointerdown", "keydown", "pointerup", "touchend"]) {
   document.addEventListener(type, wakeAudio, { capture: true, passive: true });
 }
+// So a ▶ whose own press released the parked autoplay doesn't toggle it off.
+for (const type of ["pointerdown", "keydown"]) {
+  document.addEventListener(type, () => noteGestureStart(), { capture: true, passive: true });
+}
+
+// The listener's ▶ is the newest intent: it takes the controller over, so a
+// continuation a cancel superseded no longer stops the music it asked for.
+// Capture phase: before abcjs's own click handler calls play().
+audioControlsEl.addEventListener(
+  "click",
+  (event) => {
+    const target = event.target as Element | null;
+    if (!target?.closest(".abcjs-midi-start") || disposed || !state.synthControl) return;
+    if (isStale(synthControlOwner)) ownSynthControl(state.synthControl, renderGeneration);
+  },
+  { capture: true },
+);
 
 async function applySettingsNow(): Promise<void> {
   const control = state.synthControl;
@@ -1508,9 +1545,10 @@ function onTransportEvent(
       setStatus(withTransposeNote(LOAD_FAILED_STATUS), true);
       return;
     case "started":
-      // A cancelled autoplay that a gesture released: its continuation stops
-      // it at once, and the canceller's status stays up.
-      if (pendingAutoplay?.control === control && isStale(pendingAutoplay.generation)) return;
+      // Started by a continuation a cancel superseded (a parked autoplay a tap
+      // released, a tempo change): it is stopped at once, and the canceller's
+      // status stays up. The user's own ▶ takes ownership first, so it reads.
+      if (ownerCancelled(control)) return;
       return showTransportStatus("Playing...");
     case "paused":
       return showTransportStatus("Paused");
@@ -1602,7 +1640,13 @@ async function renderAbc(
     keepLoopLitThroughWarp(synthControl);
     // Before load(), which hands the Play button `self.play` by reference.
     trackTransport(synthControl, (event) => onTransportEvent(synthControl, event));
-    queueWarp(synthControl, transportQueue);
+    queueWarp(synthControl, transportQueue, () => {
+      const requested = renderGeneration;
+      // A cancel landed while the change ran, and setWarp() played on anyway.
+      return () => {
+        if (isStale(requested) && ownerCancelled(synthControl)) silence(synthControl);
+      };
+    });
     synthControl.load(audioControlsEl, cursorControl, {
       displayLoop: true,
       displayPlay: true,

@@ -169,6 +169,28 @@ interface Tracked {
 
 const tracked = new WeakMap<object, Tracked>();
 
+/**
+ * `_play()` calls not yet settled, per controller. `_play()` resumes the
+ * AudioContext BEFORE it flips `isStarted`, so a play can be past its load
+ * (`isLoading` false) and still not started.
+ */
+const playsInFlight = new WeakMap<object, number>();
+
+/** When the gesture in progress began (pointerdown / keydown). */
+let gestureStartedAt = Number.NEGATIVE_INFINITY;
+
+/** A click follows its own press within this; later, it is a new gesture. */
+const PRESS_TO_CLICK_MS = 1000;
+
+/**
+ * Note the start of a user gesture, from a capture-phase pointerdown/keydown
+ * listener. {@link joinPendingPlay} uses it to recognise the ▶ press that
+ * released a parked autoplay.
+ */
+export function noteGestureStart(now = performance.now()): void {
+  gestureStartedAt = now;
+}
+
 /** Transport calls whose promise outlives the load (`_play()`, a seek). */
 const PLAYING_CALLS = ["play", "setWarp", "randomAccess"] as const;
 
@@ -273,11 +295,20 @@ function reportPlayback(
   const play = raw._play as () => unknown;
   raw._play = () => {
     const wasStarted = Boolean(raw.isStarted);
-    return Promise.resolve(play()).then((value) => {
-      if (!wasStarted && raw.isStarted) onEvent({ type: "started" });
-      else if (wasStarted && !raw.isStarted) onEvent({ type: "paused" });
-      return value;
-    });
+    playsInFlight.set(raw, (playsInFlight.get(raw) ?? 0) + 1);
+    const settled = () => playsInFlight.set(raw, (playsInFlight.get(raw) ?? 1) - 1);
+    return Promise.resolve(play()).then(
+      (value) => {
+        settled();
+        if (!wasStarted && raw.isStarted) onEvent({ type: "started" });
+        else if (wasStarted && !raw.isStarted) onEvent({ type: "paused" });
+        return value;
+      },
+      (error: unknown) => {
+        settled();
+        throw error;
+      },
+    );
   };
   const finished = raw.finished as () => unknown;
   raw.finished = () => {
@@ -304,14 +335,29 @@ function reportPlayback(
 function joinPendingPlay(raw: Record<string, unknown>): void {
   const play = raw.play as () => unknown;
   let starting: Promise<unknown> | null = null;
+  /** When the last play() that went through here settled. */
+  let settledAt = Number.NEGATIVE_INFINITY;
   raw.play = () => {
-    if (starting && raw.isLoading) return starting;
+    // Still loading, or loaded and inside _play() resuming the context before
+    // it flips isStarted: the second toggle would switch the first one off.
+    if (starting && (raw.isLoading || (playsInFlight.get(raw) ?? 0) > 0)) return starting;
+    // The press that released a parked autoplay. Its pointerdown woke the
+    // audio, the load (samples already cached) finished before the click, and
+    // the click's play() toggled the tune straight off again (Codex review).
+    // A start that landed during this very gesture is what the press asked for.
+    const now = performance.now();
+    if (raw.isStarted && settledAt > gestureStartedAt && now - gestureStartedAt < PRESS_TO_CLICK_MS) {
+      settledAt = Number.NEGATIVE_INFINITY;
+      return Promise.resolve({ status: "joined" });
+    }
     const result = play();
     if (result && typeof (result as Promise<unknown>).then === "function") {
       const pending = result as Promise<unknown>;
       starting = pending;
       const done = () => {
-        if (starting === pending) starting = null;
+        if (starting !== pending) return;
+        starting = null;
+        settledAt = performance.now();
       };
       pending.then(done, done);
     }
@@ -399,7 +445,7 @@ function settledWithin(promise: Promise<unknown>, ms: number): Promise<void> {
  * replacement.
  */
 export class TransportQueue {
-  private tail: Promise<unknown> = Promise.resolve();
+  private tail: Promise<void> = Promise.resolve();
 
   constructor(
     /** The widget's live controller, if any. */
@@ -409,11 +455,28 @@ export class TransportQueue {
     private readonly limitMs = TRANSPORT_WAIT_LIMIT_MS,
   ) {}
 
-  /** Run `step` after every earlier step, once the live controller is idle. */
+  /**
+   * Run `step` after every earlier step, once the live controller is idle.
+   *
+   * Strictly one at a time: the next step's turn comes when this one settles,
+   * or `limitMs` after it STARTED if it never does (its setTune stuck on a dead
+   * sample request). Deadlines used to count from when a step was queued, so
+   * every step behind a hung one timed out together and three re-primes ran
+   * side by side on one buffer (Codex review).
+   */
   run<T>(step: () => T | PromiseLike<T>): Promise<T> {
-    const next = this.waitTurn(this.tail).then(step);
-    this.tail = next.then(noop, noop);
-    return next;
+    const previous = this.tail;
+    let release: () => void = noop;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return previous
+      .then(() => this.waitIdle())
+      .then(() => {
+        const result = Promise.resolve().then(step);
+        void settledWithin(result, this.limitMs).then(release);
+        return result;
+      });
   }
 
   /** Is `control` still the widget's live controller? */
@@ -421,9 +484,9 @@ export class TransportQueue {
     return this.alive() && this.current() === control;
   }
 
-  private async waitTurn(previous: Promise<unknown>): Promise<void> {
+  /** Wait, from this step's turn, until the live controller is idle. */
+  private async waitIdle(): Promise<void> {
     const deadline = Date.now() + this.limitMs;
-    await settledWithin(previous, this.limitMs);
     let control = this.current();
     while (control && this.alive() && Date.now() < deadline) {
       const waitingOn = control;
@@ -447,15 +510,29 @@ export class TransportQueue {
  * spinner collapses to its last value, and a change for a controller that
  * has since been replaced is dropped.
  */
-export function queueWarp(control: object, queue: TransportQueue): void {
+export function queueWarp(
+  control: object,
+  queue: TransportQueue,
+  /**
+   * Asked when the % field is changed; the answer is called once the change
+   * has run. setWarp() plays on regardless of what happened meanwhile (it
+   * restarts whatever was playing when it BEGAN), so the widget uses this to
+   * stop a tempo change from undoing a cancel.
+   */
+  watch?: () => () => void,
+): void {
   const raw = internals(control);
   const setWarp = raw.setWarp;
   let latest = 0;
   raw.setWarp = (warp: unknown) => {
     const request = ++latest;
-    return queue.run(() =>
-      request === latest && queue.isCurrent(control) ? setWarp(warp) : undefined,
-    );
+    const after = watch?.();
+    return queue.run(async () => {
+      if (request !== latest || !queue.isCurrent(control)) return undefined;
+      const result = await setWarp(warp);
+      after?.();
+      return result;
+    });
   };
 }
 

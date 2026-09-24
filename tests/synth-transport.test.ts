@@ -17,6 +17,7 @@ import {
   TransportQueue,
   carryWarp,
   keepLoopLitThroughWarp,
+  noteGestureStart,
   pauseTransport,
   queueWarp,
   readTransport,
@@ -326,21 +327,28 @@ describe("one load at a time (#33)", () => {
 
   it("waiting on a load that never settles subscribes nothing new to it", async () => {
     // A stalled sample request: abcjs's XHR has no timeout.
-    const hung = new Promise<never>(() => {});
-    let subscriptions = 0;
-    const then = hung.then.bind(hung);
-    Object.assign(hung, {
-      then: (...args: Parameters<typeof then>) => {
-        subscriptions += 1;
-        return then(...args);
-      },
-    });
     const h = harness();
     h.ctrl.go = () => {
       h.ctrl.isLoading = true;
-      return hung;
+      return new Promise<never>(() => {});
     };
     trackTransport(h.ctrl);
+    // Count subscriptions on the promise tracking actually STORES (the
+    // failed-load recovery wraps go()'s own promise), not on go()'s: watching
+    // the inner one let the old per-poll Promise.allSettled() pass (Codex).
+    let subscriptions = 0;
+    const trackedGo = h.ctrl.go;
+    h.ctrl.go = () => {
+      const stored = trackedGo() as Promise<unknown>;
+      const then = stored.then.bind(stored);
+      Object.assign(stored, {
+        then: (...args: Parameters<typeof then>) => {
+          subscriptions += 1;
+          return then(...args);
+        },
+      });
+      return stored;
+    };
     await h.ctrl.setTune(TUNE, false);
     void h.ctrl.setTune(TUNE, true);
     const before = subscriptions;
@@ -579,6 +587,22 @@ describe("TransportQueue: one re-prime at a time, on the live controller", () =>
     expect(h.ctrl.warp).toBe(140);
   });
 
+  it("asks the watcher at the change and calls back once it has run", async () => {
+    const first = gate();
+    const h = await loading(first);
+    const seen: string[] = [];
+    queueWarp(h.ctrl, new TransportQueue(() => h.ctrl), () => {
+      seen.push("asked");
+      return () => seen.push(`after:${h.ctrl.warp}:${h.ctrl.isStarted}`);
+    });
+    const warp = h.ctrl.setWarp(150);
+    expect(seen).toEqual(["asked"]);
+    first.release();
+    await Promise.all([h.autoplay, warp]);
+    // setWarp() had already played on, which is why the widget may stop it.
+    expect(seen).toEqual(["asked", "after:150:true"]);
+  });
+
   it("drops a queued tempo change for a controller that has been replaced", async () => {
     const first = gate();
     const h = await loading(first);
@@ -641,6 +665,35 @@ describe("TransportQueue: one re-prime at a time, on the live controller", () =>
     await next;
   });
 
+  it("behind a hung load, queued changes still run one at a time", async () => {
+    // Deadlines counted from the queueing timed out together, and three
+    // re-primes ran side by side on one buffer (Codex review).
+    const h = harness((call) => (call === 1 ? gate().promise : sleep(40)));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    void h.ctrl.play(); // the autoplay, stuck on a dead sample request
+    const queue = new TransportQueue(() => h.ctrl, () => true, 60);
+    const steps = [1, 2, 3].map(() => queue.run(() => h.ctrl.setTune(TUNE, true)));
+    await Promise.all(steps);
+    expect(h.loads.calls).toBe(4);
+    expect(h.loads.max).toBe(2); // the dead one, plus one live re-prime at a time
+  });
+
+  it("a step that hangs holds the queue for the limit from ITS start", async () => {
+    const queue = new TransportQueue(() => null, () => true, 60);
+    const started: number[] = [];
+    const t0 = Date.now();
+    void queue.run(() => {
+      started.push(Date.now() - t0);
+      return new Promise<never>(() => {});
+    });
+    const second = queue.run(() => {
+      started.push(Date.now() - t0);
+    });
+    await second;
+    expect(started[1]! - started[0]!).toBeGreaterThanOrEqual(55);
+  });
+
   it("keeps going after a step throws", async () => {
     const queue = new TransportQueue(() => null);
     await expect(queue.run(() => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
@@ -695,6 +748,49 @@ describe("a ▶ while a play is still starting", () => {
 
   it("the next ▶ after it has started still pauses", async () => {
     const h = await autoplayThenClick(true);
+    noteGestureStart(); // a new press
+    await h.ctrl.play();
+    expect(h.ctrl.isStarted).toBe(false);
+  });
+
+  it("joins a play that has loaded but is still resuming audio in _play()", async () => {
+    // _play() resumes the context BEFORE it flips isStarted, so isLoading is
+    // already false while the first play is still starting.
+    const ctx = (globalThis as any).window.abcjsAudioContext;
+    const resumed = gate();
+    const resume = ctx.resume;
+    ctx.resume = () => resumed.promise;
+    try {
+      const h = harness();
+      trackTransport(h.ctrl);
+      await h.ctrl.setTune(TUNE, false);
+      const autoplay = h.ctrl.play() as unknown as Promise<unknown>;
+      await sleep(10);
+      expect(h.ctrl.isLoading).toBe(false);
+      const click = h.ctrl.play() as unknown as Promise<unknown>;
+      resumed.release();
+      await Promise.all([autoplay, click]);
+      expect(h.ctrl.isStarted).toBe(true);
+    } finally {
+      ctx.resume = resume;
+    }
+  });
+
+  it("the press that released a parked autoplay doesn't switch it off", async () => {
+    // Its pointerdown woke the audio and the (cached) load finished before the
+    // click: without this the click's play() toggled the tune straight off.
+    const first = gate();
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    const autoplay = h.ctrl.play() as unknown as Promise<unknown>;
+    noteGestureStart(); // pointerdown
+    first.release();
+    await autoplay; // started between the pointerdown and the click
+    expect(h.ctrl.isStarted).toBe(true);
+    await h.ctrl.play(); // the click
+    expect(h.ctrl.isStarted).toBe(true);
+    noteGestureStart(); // the NEXT press
     await h.ctrl.play();
     expect(h.ctrl.isStarted).toBe(false);
   });
