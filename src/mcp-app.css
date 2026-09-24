@@ -48,6 +48,18 @@
   --color-border: #e5e7eb;
 }
 
+/* Never let the document itself pan sideways. If anything ever ends up wider
+   than the frame (a WebKit layout quirk, a long label), iOS otherwise pans the
+   WHOLE widget, cutting off the left of everything; clipping the overflow keeps
+   the rest in place. `clip` (not `hidden`) where supported, so no scroll
+   container is created. text-size-adjust stops iOS inflating small text. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overflow-x: hidden;
+  overflow-x: clip;
+}
+
 html,
 body {
   margin: 0;
@@ -59,10 +71,28 @@ body {
 .main {
   width: 100%;
   margin: 0 auto;
-  padding: 8px;
+  /* The gutter plus the host's safe-area insets (applySafeAreaInsets). */
+  padding: calc(8px + var(--safe-top, 0px)) calc(8px + var(--safe-right, 0px))
+    calc(8px + var(--safe-bottom, 0px)) calc(8px + var(--safe-left, 0px));
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* Inline: grow with the score up to this cap, then the sheet scrolls inside
+     it. Set from the host's containerDimensions / the screen by
+     applyFrameSize() (src/frame-size.ts) — never from vh, which in a frame the
+     host sizes to our own report is a feedback loop, not the screen. */
+  max-height: var(--frame-max-height, none);
+  /* Safety net: if the chrome, an open editor and the score's floor together
+     exceed the cap (a phone, a 420px host cap), scroll the column rather than
+     push the score out of the frame, where it used to vanish entirely. */
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Fullscreen or a fixed-height container: fill it; the sheet takes the rest. */
+:root[data-frame="fill"] .main {
+  height: var(--frame-height, 100vh);
+  max-height: none;
 }
 
 /* Header */
@@ -70,6 +100,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 /* Piece title — the tool's `title` argument, else the ABC's T: header.
@@ -99,6 +130,7 @@ body {
 
 .audio-controls {
   width: 100%;
+  min-width: 0;
 
   .abcjs-inline-audio {
     border-radius: 8px;
@@ -135,7 +167,8 @@ body {
   align-items: center;
   gap: 6px;
   flex: 1;
-  min-width: 140px;
+  /* min(): never wider than the row on a very narrow frame. */
+  min-width: min(140px, 100%);
 }
 
 .control-label {
@@ -212,6 +245,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 /* `display: flex` above would otherwise defeat the `hidden` attribute. */
@@ -224,14 +258,17 @@ body {
   box-sizing: border-box;
   /* ~6 rows; `rows="6"` is the no-CSS floor, this is the visual one. */
   min-height: 9.5rem;
+  /* A hand-resized editor may take at most 40% of the frame budget, so the
+     score keeps the rest. */
+  max-height: calc(var(--frame-max-height, var(--frame-height, 100vh)) * 0.4);
   resize: vertical;
   padding: 8px 10px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-card-bg);
   color: var(--color-text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace);
   font-size: 0.8125rem;
   line-height: 1.5;
   tab-size: 2;
@@ -320,19 +357,40 @@ body {
   stroke: var(--color-primary) !important;
 }
 
-/* Sheet Music Section */
+/* Sheet Music Section — the score's one scroll container. It takes whatever
+   height .main leaves (flex), so it scrolls when the score is taller than the
+   frame. The note-follow in src/mcp-app.ts scrolls it explicitly (and only
+   it), so there is no scroll-behavior here to fight a hand scroll. */
 .sheet-section {
+  flex: 1 1 auto;
   background: var(--color-card-bg);
   border-radius: 8px;
   padding: 16px;
   border: 1px solid var(--color-border);
-  min-height: 200px;
-  max-height: 80vh;
+  min-height: 140px;
   overflow-y: auto;
-  scroll-behavior: smooth;
 
   .sheet-music-container {
     width: 100%;
     overflow-x: auto;
   }
+}
+
+/* abcjs clips its SVG a few px past the last barline, so a text annotation that
+   starts in a line's last bar ("^Stretto: truth in augmentation") lost its last
+   letters. Let it spill into the card's padding. The card clips anything
+   beyond that (overflow-x: hidden) instead of growing a sideways scrollbar. */
+.sheet-section {
+  overflow-x: hidden;
+}
+
+.sheet-section #sheet-music,
+.sheet-section #sheet-music svg {
+  overflow: visible !important;
+}
+
+/* Focusable (tabindex) so the score scrolls from the keyboard too. */
+.sheet-section:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }

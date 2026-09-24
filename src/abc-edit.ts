@@ -215,13 +215,17 @@ export function staleControlAction(state: {
  * One honest sentence for `ui/update-model-context` after an edit lands, so the
  * model knows the score it proposed is no longer the score on screen.
  */
-export function editContextText(abc: string): string {
+export function editContextText(abc: string, soundsLoaded = true): string {
   const { bars, key } = describeAbc(abc);
   const barPart = `${bars} bar${bars === 1 ? "" : "s"}`;
   const keyPart = key ? `, key ${key}` : "";
+  const now = soundsLoaded
+    ? "The edited notation is what is now displayed, played and exported; "
+    : "The edited notation is what is now displayed and exported, but its sounds " +
+      "failed to load, so it plays only once the user retries ▶; ";
   return (
     `Sheet-music widget: user edited the ABC (${barPart}${keyPart}). ` +
-    `The edited notation is what is now displayed, played and exported; ` +
+    now +
     `the widget's send-to-chat button will paste the exact text.`
   );
 }

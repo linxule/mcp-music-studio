@@ -68,6 +68,29 @@ export function resetSoundsCache(): number {
   return keys.length;
 }
 
+/**
+ * Forget every sample whose load failed, so the next prime asks for it again.
+ *
+ * abcjs caches the REJECTED promise (load-note.js), so after a 404 or a
+ * dropped connection every retry found the failed notes "cached" and failed
+ * again without a single request. Only note entries go: the instrument keys
+ * stay, so the cache still reads as live to {@link soundsCacheLooksLive}.
+ * Resolves once every entry has settled; a load still pending is forgotten
+ * when it fails.
+ */
+export function forgetFailedSounds(): Promise<void> {
+  const checks: Promise<void>[] = [];
+  for (const notes of Object.values(abcjsSoundsCache)) {
+    for (const [name, entry] of Object.entries(notes)) {
+      const forget = () => {
+        if (notes[name] === entry) delete notes[name];
+      };
+      checks.push(Promise.resolve(entry).then(() => {}, forget));
+    }
+  }
+  return Promise.all(checks).then(() => {});
+}
+
 /** Number of instruments currently cached. */
 export function soundsCacheSize(): number {
   return Object.keys(abcjsSoundsCache).length;

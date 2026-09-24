@@ -233,6 +233,9 @@ describe("GET /play", () => {
     expect(csp).toContain("https://unpkg.com");
     expect(csp).toContain("https://felixroos.github.io");
     expect(csp).toContain("frame-ancestors 'none'");
+    // superdough's AudioWorklets load from a data: URL; without this the
+    // worklet synths (supersaw, pulse, crush…) are silent on this page.
+    expect(csp).toMatch(/script-src[^;]*data:/);
   });
 
   it("asks not to be indexed", async () => {
@@ -287,6 +290,8 @@ describe("GET /score", () => {
     )!;
     expect(csp).toContain("https://cdn.jsdelivr.net");
     expect(csp).toContain("https://paulrosen.github.io");
+    // No worklets on the sheet page, so no data: scripts either.
+    expect(csp).not.toMatch(/script-src[^;]*data:/);
   });
 
   it("400s on a malformed payload and 413s on an oversized one", async () => {

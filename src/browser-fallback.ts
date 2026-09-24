@@ -20,6 +20,11 @@ import { ABCJS_CDN_BASE } from "./abcjs-version.js";
 // One implementation, shared with the Strudel page: this file used to carry a
 // byte-identical private copy, which is exactly how the two drift apart.
 import { safeJsonForScript } from "./shared/safe-json.js";
+import {
+  ABCJS_SCREEN_PADDING_RIGHT,
+  OVERHANG_MARGIN,
+  OVERHANG_TEXT_SELECTOR,
+} from "./score-fit.js";
 
 export interface BrowserPlayerOptions {
   abcNotation: string;
@@ -393,6 +398,38 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
     // isLoaded starts false on a new one. Called from the button's own click
     // handler, so sticky user activation carries through the awaits and the
     // AudioContext is allowed to resume.
+    // abcjs reserves no room for text it hangs off a note, so a long
+    // annotation in a line's last bar ran past the SVG and was clipped (#28).
+    // Same rule as the widget (src/score-fit.ts): if any such text overhangs,
+    // engrave once more with the right padding widened to fit it.
+    function engrave(el, abc) {
+      var opts = { responsive: 'resize', add_classes: true };
+      var tunes = ABCJS.renderAbc(el, abc, opts);
+      var pad = overhangPadding(el, tunes);
+      if (pad === null) return tunes;
+      opts.paddingright = pad;
+      return ABCJS.renderAbc(el, abc, opts);
+    }
+
+    function overhangPadding(el, tunes) {
+      // A tune's own %%rightmargin outranks the option: nothing to gain.
+      if (!tunes || !tunes.length) return null;
+      if (tunes[0].formatting && tunes[0].formatting.rightmargin !== undefined) return null;
+      var svg = el.querySelector('svg');
+      var width = svg && svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal.width : 0;
+      if (!(width > 0)) return null;
+      var right = -Infinity;
+      svg.querySelectorAll(${JSON.stringify(OVERHANG_TEXT_SELECTOR)}).forEach(function (t) {
+        try {
+          var box = t.getBBox();
+          if (box.x + box.width > right) right = box.x + box.width;
+        } catch (e) { /* not rendered */ }
+      });
+      var overhang = right - width;
+      if (!(overhang > 0.5)) return null;
+      return Math.ceil(${ABCJS_SCREEN_PADDING_RIGHT} + overhang + ${OVERHANG_MARGIN});
+    }
+
     async function render(startPlaying) {
       var style = document.getElementById('style-select').value;
       var program = parseInt(document.getElementById('instrument-select').value);
@@ -404,9 +441,7 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
       audioEl.innerHTML = '';
 
       var fullAbc = applyStyle(currentAbc, style);
-      var visualObj = ABCJS.renderAbc(sheetEl, fullAbc, {
-        responsive: 'resize', add_classes: true
-      });
+      var visualObj = engrave(sheetEl, fullAbc);
       if (!visualObj || !visualObj.length) return;
 
       synthControl = new ABCJS.synth.SynthController();

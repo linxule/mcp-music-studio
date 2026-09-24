@@ -160,6 +160,34 @@ describe("play-sheet-music handler", () => {
       expect(text).toContain("GM program 64");
     });
 
+    // #25: `instrument` is only abcjs's STARTING program, so a score that sets
+    // its first voice's own %%MIDI program outranks it.
+    it("says when the score's own %%MIDI program outranks the instrument", async () => {
+      const result = await handlePlaySheetMusic(
+        { abcNotation: "X:1\nK:C\n%%MIDI program 73\nCDEF|", instrument: "Violin" },
+        parseOnly,
+      );
+      const text = result.content[0]?.text ?? "";
+      expect(text).toContain('the ABC\'s own "%%MIDI program 73" (Flute, GM program 73)');
+      expect(text).toContain('takes precedence over instrument "Violin"');
+    });
+
+    it("stays quiet when the score's program agrees, or only a later voice sets one", async () => {
+      const agrees = await handlePlaySheetMusic(
+        { abcNotation: "X:1\nK:C\n%%MIDI program 73\nCDEF|", instrument: "flute" },
+        parseOnly,
+      );
+      expect(agrees.content[0]?.text ?? "").not.toContain("takes precedence");
+      const laterVoice = await handlePlaySheetMusic(
+        {
+          abcNotation: "X:1\nK:C\nV:1\nCDEF|\nV:2\n%%MIDI program 32\nC,D,E,F,|",
+          instrument: "Violin",
+        },
+        parseOnly,
+      );
+      expect(laterVoice.content[0]?.text ?? "").not.toContain("Instrument:");
+    });
+
     it("reports the instrument alongside non-fatal parse warnings too", async () => {
       const warn: ParseOnlyFn = () => [{ warnings: ["Measure overflow warning"] }];
       const result = await handlePlaySheetMusic(

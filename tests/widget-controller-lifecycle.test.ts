@@ -184,10 +184,16 @@ describe("mcp-app.ts routes every stale cleanup through the decision (Codex #3)"
 
   it("uses releaseStaleControl at every post-await stale branch", () => {
     // renderAbc: after setTune, and in the autoplay continuation.
-    // applyEditorAbc: after setTune, and after play().
     expect(
       ABC_APP.match(/releaseStaleControl\(synthControl, generation\);/g),
-    ).toHaveLength(4);
+    ).toHaveLength(2);
+    // primeEdit (applyEditorAbc's queued half) asks what is on screen instead of
+    // which generation owns the controller: a ▶ after a cancel takes ownership,
+    // and an ownership check then left the old tune under the new score.
+    const prime = ABC_APP.slice(ABC_APP.indexOf("async function primeEdit("));
+    const body = prime.slice(0, prime.indexOf("\n}\n"));
+    expect(body).toContain("if (disposed || state.synthControl !== synthControl) return;");
+    expect(body.match(/if \(ownerCancelled\(synthControl\)\) \{\s*silence\(synthControl\);/g)).toHaveLength(2);
   });
 
   it("clears the owner when the controller is retired", () => {
@@ -213,7 +219,7 @@ describe("the editor text follows external input only (Codex #4)", () => {
       ABC_APP.indexOf('styleSelect.addEventListener("change"'),
       ABC_APP.indexOf("const styleLabel"),
     );
-    expect(handler).toContain("renderAbc(state.currentAbc)");
+    expect(handler).toContain("renderAbc(state.currentAbc, undefined, { autoplay, carry })");
     expect(handler).not.toContain("syncEditor");
     expect(handler).not.toContain("editorEl.value =");
   });
@@ -249,5 +255,50 @@ describe("an audio-only transposition is said out loud (Codex #5)", () => {
 
   it("resets the caveat on every new tool call", () => {
     expect(ABC_APP).toContain("transposeNote = null;");
+  });
+});
+
+describe("a cancel leaves a playable transport", () => {
+  const release = ABC_APP.slice(
+    ABC_APP.indexOf("function releaseStaleControl("),
+    ABC_APP.indexOf("\n}\n", ABC_APP.indexOf("function releaseStaleControl(")),
+  );
+
+  it("retires the controller only on teardown; after a cancel it pauses and keeps it", () => {
+    // Retiring after a cancel destroyed the controller abcjs's ▶ is wired to:
+    // in WebKit a tap released the parked autoplay, which retired it, and ▶
+    // did nothing from then on.
+    expect(release).toMatch(/if \(disposed\) retireSynthControl\(\);\s*else silence\(control\);/);
+    expect(ABC_APP).toMatch(/function silence\(control: ABCJS\.SynthObjectController\): void \{\s*pauseTransport\(control\);/);
+  });
+
+  it("doesn't announce a start that a cancel superseded", () => {
+    expect(ABC_APP).toMatch(/case "started":[\s\S]{0,300}if \(ownerCancelled\(control\)\) return;/);
+  });
+
+  it("silences a controller whose newer owner was cancelled too (Codex review)", () => {
+    // An edit queued behind the autoplay, then a cancel: the autoplay found a
+    // newer owner, kept its hands off, and played on.
+    expect(release).toMatch(/\} else if \(ownerCancelled\(control\)\) \{[\s\S]{0,300}silence\(control\);/);
+  });
+
+  it("a ▶ press takes the controller back after a cancel", () => {
+    expect(ABC_APP).toMatch(
+      /audioControlsEl\.addEventListener\(\s*"click",[\s\S]{0,300}closest\("\.abcjs-midi-start"\)[\s\S]{0,200}ownSynthControl\(state\.synthControl, renderGeneration\)/,
+    );
+  });
+
+  it("a tempo change can't undo a cancel", () => {
+    expect(ABC_APP).toMatch(
+      /queueWarp\(synthControl, transportQueue, \(\) => \{[\s\S]{0,300}if \(isStale\(requested\) && ownerCancelled\(synthControl\)\) silence\(synthControl\);/,
+    );
+  });
+
+  it("notes each press, so the ▶ that released a parked autoplay doesn't pause it", () => {
+    expect(ABC_APP).toMatch(/for \(const type of \["pointerdown", "keydown"\]\) \{\s*document\.addEventListener\(type, \(\) => noteGestureStart\(\)/);
+  });
+
+  it("separates the status from the transposition caveat", () => {
+    expect(ABC_APP).toContain("return transposeNote ? `${text} · ${transposeNote}` : text;");
   });
 });

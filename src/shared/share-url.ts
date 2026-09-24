@@ -464,11 +464,24 @@ export function isValidShareId(id: string): boolean {
  * is code by definition. The value of the header is therefore not script
  * containment but egress containment: `connect-src` pins where a page may talk
  * to, and `frame-ancestors 'none'` stops the page being framed elsewhere.
+ *
+ * `dataScripts` adds `data:` to `script-src`, which `AudioWorklet.addModule()`
+ * is checked against. `@strudel/repl@1.3.0` loads superdough's worklets from a
+ * hard-coded `data:text/javascript;base64,…` URL (there is no hook to point it
+ * elsewhere), so without it supersaw, pulse, bytebeat, crush, coarse, shape and
+ * the ladder filter/LFO/envelope were silent on the Strudel page while the
+ * status said "Playing…" (measured in Chromium: `addModule` → AbortError). Given
+ * `'unsafe-inline'` above it widens nothing an injected script couldn't already
+ * do, and it matches the ext-apps reference host, whose widget-frame
+ * `script-src` carries `blob: data:`.
  */
-export function buildPlayerCsp(domains: {
-  resourceDomains?: string[];
-  connectDomains?: string[];
-}): string {
+export function buildPlayerCsp(
+  domains: {
+    resourceDomains?: string[];
+    connectDomains?: string[];
+  },
+  { dataScripts = false }: { dataScripts?: boolean } = {},
+): string {
   const resource = domains.resourceDomains ?? [];
   const connect = domains.connectDomains ?? [];
   const join = (...parts: (string | string[])[]) =>
@@ -476,7 +489,7 @@ export function buildPlayerCsp(domains: {
 
   return [
     "default-src 'none'",
-    join("script-src 'self' 'unsafe-inline' 'unsafe-eval'", resource),
+    join("script-src 'self' 'unsafe-inline' 'unsafe-eval'", dataScripts ? "data:" : "", resource),
     join("style-src 'self' 'unsafe-inline'", resource),
     join("font-src 'self' data:", resource),
     "img-src 'self' data: blob:",

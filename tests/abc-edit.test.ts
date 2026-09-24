@@ -149,6 +149,13 @@ describe("editContextText", () => {
     expect(text).toContain("key G");
   });
 
+  it("doesn't claim a tune whose sounds failed to load is playing (Kimi review)", () => {
+    const text = editContextText(ONE_VOICE, false);
+    expect(text).not.toContain("displayed, played and exported");
+    expect(text).toContain("sounds failed to load");
+    expect(editContextText(ONE_VOICE)).toContain("displayed, played and exported");
+  });
+
   it("singularises a one-bar edit and omits an absent key", () => {
     expect(editContextText("C D E F |")).toContain("(0 bars)");
     expect(editContextText("X:1\nK:C\nC D E F |")).toContain("(1 bar, key C)");

@@ -48,11 +48,22 @@ import { transpiler } from "@strudel/transpiler";
 type Any = Record<string, any>;
 const C = core as unknown as Any;
 
-/** Draw methods live in @strudel/draw (canvas/WebGL). No-op them onto Pattern. */
+/**
+ * Draw methods live in @strudel/draw (canvas/WebGL). No-op them onto Pattern.
+ *
+ * Every name the widget's @strudel/repl@1.3.0 bundle puts on Pattern belongs
+ * here, or a pattern that plays in the widget is reported to the model as
+ * "failed to evaluate — nothing will play": `tscope`/`fscope` (the scope's
+ * time- and frequency-domain forms) and the underscore INLINE widgets
+ * (`registerWidget("_pianoroll", …)` etc.), which draw inside the editor and
+ * are all over the strudel.cc docs.
+ */
 export const DRAW_METHODS = [
   "pianoroll",
   "punchcard",
   "scope",
+  "tscope",
+  "fscope",
   "spectrum",
   "spiral",
   "pitchwheel",
@@ -61,6 +72,12 @@ export const DRAW_METHODS = [
   "draw",
   "onPaint",
   "animate",
+  "_pianoroll",
+  "_punchcard",
+  "_scope",
+  "_spectrum",
+  "_spiral",
+  "_pitchwheel",
 ] as const;
 
 /**
@@ -307,6 +324,13 @@ export function setupStrudel(): Promise<void> {
         return undefined;
       },
       registerSound: () => undefined,
+      // slider(value, min, max) is an editor widget: the transpiler rewrites
+      // it to sliderWithID(id, value, min, max), which the REPL resolves to a
+      // pattern of the slider's live value. Here the value never moves, so its
+      // starting value is the faithful stand-in. Without these, every pattern
+      // with a slider was reported as "sliderWithID is not defined".
+      sliderWithID: (_id: unknown, value: unknown) => C.pure(value),
+      slider: (value: unknown) => C.pure(value),
       // Same function, wrapped only to count how many layers were stacked.
       stack: (...pats: unknown[]) => {
         if (active) active.stackArity = Math.max(active.stackArity, pats.length);

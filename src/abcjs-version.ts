@@ -10,7 +10,7 @@
  * `tests/abcjs-version.test.ts` pins this to the installed package version, so
  * a dependency bump that forgets this constant fails the suite.
  */
-export const ABCJS_CDN_VERSION = "6.7.0";
+export const ABCJS_CDN_VERSION = "6.7.1";
 
 /** jsDelivr base for the pinned release (no trailing slash). */
 export const ABCJS_CDN_BASE = `https://cdn.jsdelivr.net/npm/abcjs@${ABCJS_CDN_VERSION}`;

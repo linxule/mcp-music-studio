@@ -15,19 +15,40 @@ import "./strudel-app.css";
 import {
   App,
   applyDocumentTheme,
+  applyHostFonts,
   applyHostStyleVariables,
   type McpUiHostContext,
 } from "@modelcontextprotocol/ext-apps";
 import { detectViz } from "./shared/viz-detect";
 import { injectTempo } from "./shared/tempo";
 import { applyVisualPreset } from "./shared/visual-presets";
-import { audioBufferToWavBase64 } from "./wav-encoder";
-import { sanitizeFileStem } from "./bytes-to-base64";
+import {
+  STRUDEL_INLINE_CAP,
+  applyFrameSize,
+  applySafeAreaInsets,
+  resolveFrameSize,
+  screenAvailHeight,
+} from "./frame-size";
+import { audioBufferToWavBytesAsync } from "./wav-encoder";
+import { bytesToBase64Async, sanitizeFileStem } from "./bytes-to-base64";
+import { nativeExportStatus, planRecordingExport } from "./recording-export";
+import {
+  GestureAudioLatch,
+  playTapAction,
+  playbackState,
+  resumeAudioContext,
+  type PlaybackState,
+} from "./audio-unlock";
 import { VERSION } from "./version";
 
 const STRUDEL_CDN = "https://unpkg.com/@strudel/repl@1.3.0";
 
-const app = new App({ name: "Strudel Live Pattern", version: VERSION });
+// The spec has views declare the display modes they support; a host may
+// refuse to switch a view into one it didn't list.
+const app = new App(
+  { name: "Strudel Live Pattern", version: VERSION },
+  { availableDisplayModes: ["inline", "fullscreen"] },
+);
 
 const playBtn = document.getElementById("play-btn") as HTMLButtonElement;
 const recordBtn = document.getElementById("record-btn") as HTMLButtonElement;
@@ -38,7 +59,6 @@ const vizBtn = document.getElementById("viz-btn") as HTMLButtonElement;
 const stageBtn = document.getElementById("stage-btn") as HTMLButtonElement;
 const titleEl = document.getElementById("pattern-title") as HTMLElement;
 const replSection = document.querySelector(".repl-section") as HTMLElement;
-const mainEl = document.querySelector(".main") as HTMLElement;
 const vizCanvas = document.getElementById("test-canvas") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 const container = document.getElementById("strudel-container")!;
@@ -199,19 +219,172 @@ function watchPrebake(editor: any): void {
   );
 }
 
-function setStatus(text: string, type: "normal" | "playing" | "error" = "normal") {
+type StatusType = "normal" | "playing" | "error";
+
+function setStatus(text: string, type: StatusType = "normal") {
   statusEl.textContent = text;
   statusEl.className = `status ${type}`;
 }
 
 function updatePlayState(playing: boolean) {
   isPlaying = playing;
-  playBtn.classList.toggle("playing", playing);
-  playBtn.textContent = playing ? "Playing" : "Play";
+  audioBlocked = playing && audioIsBlockedNow();
+  audibleStatus = null;
+  renderPlayButton();
   if (!isRecording) {
-    setStatus(playing ? "Playing..." : "Ready", playing ? "playing" : "normal");
+    if (playing) showPlayingStatus("Playing...", "playing");
+    else setStatus("Ready", "normal");
   }
 }
+
+/** "Playing" only when it can be heard: over blocked audio the tap is still Play. */
+function renderPlayButton(): void {
+  const audible = isPlaying && !audioBlocked;
+  playBtn.classList.toggle("playing", audible);
+  playBtn.textContent = audible ? "Playing" : "Play";
+}
+
+// =============================================================================
+// Audio unlock (#30) — src/audio-unlock.ts has why the context starts suspended
+// and why nothing upstream ever resumes it.
+//
+// Every gesture inside the widget resumes the context (capture phase, so it runs
+// before any control's own handler and no handler can swallow it). After an
+// evaluation, a running scheduler over a context that is still not running shows
+// "Tap Play to start audio" instead of "Playing...", and the tap that follows
+// resumes audio and keeps the pattern going instead of stopping it. The
+// context's statechange puts the normal status back once sound can play.
+//
+// The gesture listeners stay installed rather than firing once: a gesture before
+// the REPL has loaded has no context to resume, and on iOS the context can be
+// suspended again later (an interruption), after which the next tap must work.
+// =============================================================================
+
+/** A gesture's resume() can never hold the Play button longer than this. */
+const AUDIO_RESUME_TIMEOUT_MS = 1500;
+/**
+ * After an evaluation, how long a context that is merely still starting gets to
+ * reach "running" before it counts as blocked. A blocked resume() never settles
+ * (measured, WebKit and Chromium), so this is also how long "Tap Play" takes to
+ * appear when autoplay was refused.
+ */
+const AUDIO_SETTLE_MS = 300;
+const AUDIO_BLOCKED_STATUS = "Tap Play to start audio";
+
+/** True while the scheduler runs over a context that is not running. */
+let audioBlocked = false;
+/** The status an evaluation wanted to show, held back while audio is blocked. */
+let audibleStatus: { text: string; type: StatusType } | null = null;
+const gestureLatch = new GestureAudioLatch();
+let watchedAudioContext: AudioContext | null = null;
+
+/**
+ * The REPL's AudioContext, or null before the CDN has loaded.
+ *
+ * superdough's getAudioContext() CREATES the context on first call, so only
+ * call this where creating one is fine (inside a gesture, which is the best
+ * moment to create it) or where one already exists (the scheduler has started:
+ * its clock reads currentTime).
+ */
+function replAudioContext(): AudioContext | null {
+  try {
+    return (window as any).getAudioContext?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Scheduler running, context not: nothing can sound. Never creates a context. */
+function audioIsBlockedNow(): boolean {
+  return currentPlaybackState() === "audio-blocked";
+}
+
+function currentPlaybackState(): PlaybackState {
+  const started = isSchedulerStarted();
+  return playbackState(started, started ? replAudioContext()?.state : null);
+}
+
+function watchAudioContext(ctx: AudioContext | null): void {
+  if (!ctx || ctx === watchedAudioContext) return;
+  watchedAudioContext?.removeEventListener("statechange", syncAudioState);
+  ctx.addEventListener("statechange", syncAudioState);
+  watchedAudioContext = ctx;
+}
+
+/**
+ * Resume the REPL's context if it isn't running; resolves to whether it is.
+ * resume() itself runs synchronously, so call this INSIDE the gesture, before
+ * any await.
+ */
+function ensureAudioRunning(timeoutMs = AUDIO_RESUME_TIMEOUT_MS): Promise<boolean> {
+  const ctx = replAudioContext();
+  watchAudioContext(ctx);
+  return resumeAudioContext(ctx, timeoutMs);
+}
+
+/** A status that promises sound — held back behind "Tap Play" while it can't. */
+function showPlayingStatus(text: string, type: StatusType): void {
+  if (audioBlocked) {
+    audibleStatus = { text, type };
+    setStatus(AUDIO_BLOCKED_STATUS, "normal");
+  } else {
+    setStatus(text, type);
+  }
+}
+
+/**
+ * Follow the context between evaluations: audio unlocked by a tap (restore the
+ * held-back status), or suspended under a running pattern by the host or the OS.
+ * One debounced model report per real transition, like the stop reports.
+ */
+function syncAudioState(): void {
+  const blocked = isPlaying && audioIsBlockedNow();
+  if (blocked === audioBlocked) return;
+  audioBlocked = blocked;
+  renderPlayButton();
+  if (blocked) {
+    const text = statusEl.textContent ?? "";
+    if (!isRecording && !statusEl.classList.contains("error") && text !== AUDIO_BLOCKED_STATUS) {
+      showPlayingStatus(text || "Playing...", "playing");
+    }
+  } else {
+    if (statusEl.textContent === AUDIO_BLOCKED_STATUS) {
+      const held = audibleStatus ?? { text: "Playing...", type: "playing" as const };
+      setStatus(held.text, held.type);
+    }
+    audibleStatus = null;
+  }
+  scheduleStateReport();
+}
+
+function onGestureBegin(): void {
+  gestureLatch.begin(isPlaying && audioIsBlockedNow());
+  void ensureAudioRunning();
+}
+
+function onGestureEnd(): void {
+  gestureLatch.extend(isPlaying && audioIsBlockedNow());
+  void ensureAudioRunning();
+}
+
+// pointerdown covers a mouse; on touch only pointerup/touchend carry user
+// activation (HTML's activation-triggering events), so iOS needs those too.
+const GESTURE_BEGIN_EVENTS = ["pointerdown", "keydown"] as const;
+const GESTURE_END_EVENTS = ["pointerup", "touchend"] as const;
+
+function setGestureUnlock(on: boolean): void {
+  const listeners: [readonly string[], () => void][] = [
+    [GESTURE_BEGIN_EVENTS, onGestureBegin],
+    [GESTURE_END_EVENTS, onGestureEnd],
+  ];
+  for (const [types, listener] of listeners) {
+    for (const type of types) {
+      if (on) document.addEventListener(type, listener, { capture: true, passive: true });
+      else document.removeEventListener(type, listener, { capture: true });
+    }
+  }
+}
+setGestureUnlock(true);
 
 // =============================================================================
 // Tempo  (`bpm` tool parameter)
@@ -293,15 +466,9 @@ function fixLayout(): void {
     }
   });
 
-  // The editor content is placed as a sibling AFTER <strudel-editor>
-  // Make sure it's visible and properly sized
-  if (editorEl?.nextElementSibling) {
-    const sibling = editorEl.nextElementSibling as HTMLElement;
-    if (sibling.querySelector(".cm-editor")) {
-      sibling.style.minHeight = "200px";
-      sibling.style.flex = "1";
-    }
-  }
+  // The editor content is a sibling AFTER <strudel-editor>. Its size is owned
+  // by strudel-app.css (it fills the stage and scrolls inside it); an inline
+  // min-height here used to let a long pattern grow the whole frame.
 }
 
 // =============================================================================
@@ -859,21 +1026,75 @@ let currentTheme: string | null = null;
 /** Theme requested by the most recent tool input, applied once an editor exists. */
 let pendingTheme: string | undefined;
 
+/** The REPL's own default, applied when a pattern asks for no theme. */
+const DEFAULT_EDITOR_THEME = "strudelTheme";
+
+/**
+ * Apply one editor setting WITHOUT saving it.
+ *
+ * StrudelMirror.updateSettings() also writes the whole settings object to the
+ * REPL's "codemirror-settings" localStorage entry, which every later
+ * <strudel-editor> on the same origin starts from — so one
+ * `theme: "githubLight"` call used to recolour later widgets that asked for no
+ * theme. changeSetting() reconfigures the same extension (and, for "theme",
+ * runs the same activateTheme()) and stores nothing.
+ */
+function changeEditorSetting(editor: any, key: string, value: unknown): void {
+  if (typeof editor?.changeSetting === "function") {
+    editor.changeSetting(key, value);
+  } else if (typeof editor?.updateSettings === "function") {
+    // Older REPL shape. updateSettings() reads fontSize/fontFamily off the
+    // object it is given, so merge over the element's current settings. This
+    // path DOES persist (it is the only setter those REPLs have); the pinned
+    // @strudel/repl@1.3.0 has changeSetting() and never reaches it.
+    const base = (editorEl as any)?.settings ?? {};
+    editor.updateSettings({ ...base, [key]: value });
+  }
+}
+
 function applyEditorTheme(editor: any, theme: string | undefined): void {
-  if (theme && theme !== currentTheme) {
+  // Always apply one — the default when none was asked for — so a widget never
+  // inherits a theme some earlier widget left in storage.
+  const wanted = theme || DEFAULT_EDITOR_THEME;
+  if (wanted !== currentTheme) {
     try {
-      // updateSettings() also reads fontSize/fontFamily off the object it is
-      // given, so merge over the element's current settings rather than handing
-      // it a lone { theme } and clobbering those with undefined.
-      const base = (editorEl as any)?.settings ?? {};
-      editor.updateSettings({ ...base, theme });
-      currentTheme = theme;
+      changeEditorSetting(editor, "theme", wanted);
+      currentTheme = wanted;
     } catch {
       // An unknown name is non-fatal upstream (activateTheme warns and falls
       // back to strudelTheme); the scrim below still follows whatever landed.
     }
   }
   syncVizTheme();
+}
+
+// -----------------------------------------------------------------------------
+// Narrow stages (phones)
+//
+// The REPL's defaults are for a desktop: 18px monospace, no line wrapping. In a
+// ~390px phone frame that is about 30 characters a line, and every longer line
+// ran off the right edge — only reachable by panning inside the editor. Below
+// NARROW_STAGE_PX the editor wraps and uses a smaller font; nothing is saved,
+// and a wider stage (rotation, fullscreen) puts the element's own settings back.
+// -----------------------------------------------------------------------------
+
+const NARROW_STAGE_PX = 520;
+const NARROW_FONT_SIZE = 14;
+/** The mode last applied to the current editor; starts at its own settings. */
+let editorNarrow = false;
+
+function syncEditorToWidth(): void {
+  const editor = getEditor();
+  const width = replSection.clientWidth;
+  if (!editor || width === 0) return;
+  const narrow = width < NARROW_STAGE_PX;
+  if (narrow === editorNarrow) return;
+  editorNarrow = narrow;
+  const own = (editorEl as any)?.settings ?? {};
+  try {
+    changeEditorSetting(editor, "isLineWrappingEnabled", narrow || own.isLineWrappingEnabled === true);
+    changeEditorSetting(editor, "fontSize", narrow ? NARROW_FONT_SIZE : (own.fontSize ?? 18));
+  } catch { /* cosmetic — the editor still works at its own settings */ }
 }
 
 /** `#abc` / `#aabbcc` / `rgb()` / `rgba()` → [r, g, b], or null if unparseable. */
@@ -1455,8 +1676,8 @@ function reportToModel(text: string): void {
 const MODEL_STATE_DEBOUNCE_MS = 500;
 
 let modelStateTimer: ReturnType<typeof setTimeout> | null = null;
-/** Playing-state the model has been told about, so we only send transitions. */
-let lastReportedPlaying: boolean | null = null;
+/** Playback state the model has been told about, so we only send transitions. */
+let lastReportedState: PlaybackState | null = null;
 /** Error text from the last failed evaluation, carried into stop reports. */
 let lastEvalErrorText: string | null = null;
 
@@ -1468,26 +1689,32 @@ function cancelStateReport(): void {
 }
 
 /** Note a state we have just reported ourselves, so the debounce won't repeat it. */
-function markReportedPlaying(playing: boolean, errorText: string | null): void {
+function markReportedPlaying(state: PlaybackState, errorText: string | null): void {
   cancelStateReport();
-  lastReportedPlaying = playing;
+  lastReportedState = state;
   lastEvalErrorText = errorText;
 }
 
-/** Report a stop/start that no evaluation announced. Debounced, deduplicated. */
+/** Report a stop/start/unlock that no evaluation announced. Debounced, deduplicated. */
 function scheduleStateReport(): void {
   if (!canUpdateModelContext) return;
   cancelStateReport();
   modelStateTimer = setTimeout(() => {
     modelStateTimer = null;
-    const playing = isSchedulerStarted();
-    if (playing === lastReportedPlaying) return;
-    lastReportedPlaying = playing;
+    const state = currentPlaybackState();
+    // Nothing reported yet reads as "stopped": the model has heard of no music.
+    if (state === (lastReportedState ?? "stopped")) return;
+    const previous = lastReportedState;
+    lastReportedState = state;
     const errorNote = lastEvalErrorText ? ` (last error: ${lastEvalErrorText})` : "";
     reportToModel(
-      playing
-        ? `Strudel widget: playing again${errorNote}`
-        : `Strudel widget: playback stopped — nothing is sounding now${errorNote}`,
+      state === "playing"
+        ? previous === "audio-blocked"
+          ? `Strudel widget: audio started — the pattern is audible now${errorNote}`
+          : `Strudel widget: playing again${errorNote}`
+        : state === "audio-blocked"
+          ? `Strudel widget: audio is suspended — the pattern is running but silent until the user taps Play${errorNote}`
+          : `Strudel widget: playback stopped — nothing is sounding now${errorNote}`,
     );
   }, MODEL_STATE_DEBOUNCE_MS);
 }
@@ -1513,18 +1740,24 @@ function reportEvaluation(
     // re-evaluation leaves the PREVIOUS pattern running.
     const playing = isSchedulerStarted();
     isPlaying = playing;
-    playBtn.classList.toggle("playing", playing);
-    playBtn.textContent = playing ? "Playing" : "Play";
-    markReportedPlaying(playing, msg);
+    audioBlocked = playing && audioIsBlockedNow();
+    renderPlayButton();
+    const state = currentPlaybackState();
+    markReportedPlaying(state, msg);
     reportToModel(
       `Strudel widget: pattern failed to evaluate — ${msg}` +
-        (playing ? " (the previous pattern is still playing)" : " (nothing is playing)"),
+        (state === "playing"
+          ? " (the previous pattern is still playing)"
+          : state === "audio-blocked"
+            ? " (the previous pattern is still running, but not audible until the user taps Play)"
+            : " (nothing is playing)"),
     );
     return;
   }
 
   updatePlayState(isSchedulerStarted());
-  markReportedPlaying(isPlaying, null);
+  const state = currentPlaybackState();
+  markReportedPlaying(state, null);
   if (isPlaying && patternIsSilent()) {
     setStatus("Playing — but the pattern produces no events (silent)", "error");
     reportToModel(
@@ -1536,7 +1769,7 @@ function reportEvaluation(
     return;
   }
   if ((soundfontWarning || tempoAtRuntime) && isPlaying) {
-    setStatus(`Playing...${soundfontNote}${tempoNote}`, "playing");
+    showPlayingStatus(`Playing...${soundfontNote}${tempoNote}`, "playing");
   }
   const intent = detectViz(code);
   const layers = [
@@ -1546,10 +1779,62 @@ function reportEvaluation(
   const motionNote = hydraPresetSkippedForMotion
     ? " — hydra preset skipped: this viewer prefers reduced motion"
     : "";
+  // Blocked audio is NOT "playing": the scheduler runs, but nothing can be
+  // heard until the user taps Play — the model must not answer as if it could.
+  const what =
+    state === "playing"
+      ? "playing"
+      : state === "audio-blocked"
+        ? "loaded and running but NOT audible — the browser has not started audio " +
+          "(no user gesture in the widget yet); the widget asks the user to tap Play, " +
+          "and sound starts on that tap"
+        : "loaded, not playing";
   reportToModel(
-    `Strudel widget: ${isPlaying ? "playing" : "loaded, not playing"}` +
+    `Strudel widget: ${what}` +
       ` (visuals: ${layers.length ? layers.join(" + ") : "none"}${motionNote})${soundfontNote}${tempoNote}`,
   );
+}
+
+/** Bumped by every evaluation, so a stale one can tell if a newer one began. */
+let evaluationSeq = 0;
+/** Settles when the evaluation in flight is done; the next one queues on it. */
+let evaluationTail: Promise<void> = Promise.resolve();
+/** How long a queued evaluation waits for a predecessor that never finishes. */
+const EVALUATION_QUEUE_MAX_WAIT_MS = 10_000;
+
+/**
+ * Did a cancel, a teardown or a newer tool input take over (renderGeneration
+ * moved) while this evaluation was in flight?
+ *
+ * repl.evaluate() transpiles and evaluates asynchronously and only calls
+ * scheduler.setPattern(…, autostart) at its END, so a cancel's stop() ran
+ * BEFORE this start: the cancelled pattern played anyway, the status flipped
+ * to "Playing..." and the model was told "playing" (measured in the dev
+ * harness, a cancel during a Hydra pattern's evaluation).
+ *
+ * So a stale evaluation stops what it started — unless a newer evaluation has
+ * begun since, which owns the scheduler now — and reports NOTHING: the
+ * canceller owns the status and the model context.
+ */
+function evaluationSuperseded(editor: any, generation: number, seq: number): boolean {
+  if (generation === renderGeneration) return false;
+  if (seq === evaluationSeq && isSchedulerStarted()) {
+    // Not playing FIRST, so the stop's `update` event is a no-op for the state
+    // listener and cannot write "Ready" over the canceller's status.
+    isPlaying = false;
+    audioBlocked = false;
+    audibleStatus = null;
+    try {
+      editor.stop?.();
+    } catch { /* already stopped */ }
+    // Its shader, if it started one, belongs to the cancelled pattern too.
+    setHydraActive(false);
+    renderPlayButton();
+    // The start this evaluation made may have queued a report; let it settle
+    // on "stopped", which says nothing unless the model was told otherwise.
+    scheduleStateReport();
+  }
+  return true;
 }
 
 /**
@@ -1561,6 +1846,37 @@ function installEvaluateHook(editor: any): void {
   editor.__musicStudioHooked = true;
   const original = editor.evaluate.bind(editor);
   editor.evaluate = async (shouldPlay?: unknown) => {
+    // Checked after every await below (evaluationSuperseded).
+    const generation = renderGeneration;
+    // One evaluation at a time. repl.evaluate() installs its pattern only when
+    // it FINISHES, so two in flight finished in either order: a cancelled one
+    // still loading hydra-synth that landed after a newer one replaced the
+    // newer pattern (and shader) and stayed audible. Queued, a stale
+    // evaluation finishes while it is still the latest, and stops itself.
+    const previous = evaluationTail;
+    let finished!: () => void;
+    evaluationTail = new Promise<void>((resolve) => {
+      finished = resolve;
+    });
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        previous,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, EVALUATION_QUEUE_MAX_WAIT_MS);
+        }),
+      ]);
+      clearTimeout(timer);
+      // Cancelled (or replaced by a newer tool call) while queued: never start.
+      if (generation !== renderGeneration) return;
+      await evaluateNow(shouldPlay, generation);
+    } finally {
+      finished();
+    }
+  };
+
+  async function evaluateNow(shouldPlay: unknown, generation: number): Promise<void> {
+    const seq = ++evaluationSeq;
     // Idempotent, and cheap once it has taken. It must run here rather than at
     // CDN load: initHydra/H only land on globalThis when the REPL's eval scope
     // is published, which is after <strudel-editor> initialises.
@@ -1578,9 +1894,11 @@ function installEvaluateHook(editor: any): void {
     try {
       await original(shouldPlay !== false);
     } catch (err) {
+      if (evaluationSuperseded(editor, generation, seq)) return;
       reportEvaluation(code, err as Error);
       return;
     }
+    if (evaluationSuperseded(editor, generation, seq)) return;
     // Some of the clobbered globals (`time`) are only published onto globalThis
     // by the evaluation itself, so the pre-eval snapshot above cannot see them
     // on a cold widget. This second pass catches them, and no-ops once a
@@ -1591,8 +1909,12 @@ function installEvaluateHook(editor: any): void {
     // The pattern owns the `setcps` name, so the requested bpm could not be
     // written into the source — apply it now that the scheduler is up.
     const tempoAtRuntime = applyRuntimeTempo();
+    // A context that is only still starting gets a moment to come up, so the
+    // one report this evaluation makes says "blocked" only when it is.
+    if (isSchedulerStarted()) await ensureAudioRunning(AUDIO_SETTLE_MS);
+    if (evaluationSuperseded(editor, generation, seq)) return;
     reportEvaluation(code, null, tempoAtRuntime);
-  };
+  }
 }
 
 /**
@@ -1601,8 +1923,8 @@ function installEvaluateHook(editor: any): void {
  * message per evaluation), so this listener handles the state changes we did
  * NOT initiate — a pattern calling hush(), the scheduler stopping — keeping the
  * Play button honest and telling the model the music has stopped (debounced, and
- * skipped when the evaluate report already said so). It deliberately leaves the
- * status text alone so it can't overwrite an error.
+ * skipped when the evaluate report already said so). It touches the status
+ * text only to say a stop happened, and never over an error.
  */
 function installStateListener(element: HTMLElement): void {
   if ((element as any).__musicStudioStateHooked) return;
@@ -1611,8 +1933,17 @@ function installStateListener(element: HTMLElement): void {
     const started = (event as CustomEvent).detail?.started;
     if (typeof started !== "boolean" || started === isPlaying) return;
     isPlaying = started;
-    playBtn.classList.toggle("playing", started);
-    playBtn.textContent = started ? "Playing" : "Play";
+    // The scheduler's clock has created the context by now; follow its state.
+    if (started) watchAudioContext(replAudioContext());
+    audioBlocked = started && audioIsBlockedNow();
+    if (!started) audibleStatus = null;
+    renderPlayButton();
+    // A stop nobody announced (hush(), the editor's own stop key) left the
+    // status reading "Playing..." over silence. An error stays up, and so does
+    // the recording status.
+    if (!started && !isRecording && !statusEl.classList.contains("error")) {
+      setStatus("Ready", "normal");
+    }
     scheduleStateReport();
   });
 }
@@ -1790,12 +2121,39 @@ function stopRecording(reason?: "time" | "size"): void {
     return;
   }
   if (isPlaying) {
-    setStatus("Playing...", "playing");
+    showPlayingStatus("Playing...", "playing");
   } else {
     setStatus("Ready", "normal");
   }
 }
 
+/**
+ * Resolve once the browser has had a chance to paint — a frame, then a task —
+ * so a "..." set just before heavy work is on screen. Capped, because
+ * requestAnimationFrame never fires in a hidden or throttled frame.
+ */
+function afterNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    requestAnimationFrame(() => setTimeout(finish, 0));
+    setTimeout(finish, 100);
+  });
+}
+
+/**
+ * Export the last recording through ONE `ui/download-file` message (#32).
+ *
+ * WAV when it fits under MAX_WAV_BASE64_CHARS (≈ 2 min of 48 kHz stereo),
+ * otherwise the recorder's native container as-is (src/recording-export.ts).
+ * The size is known from the decoded buffer before anything is encoded, and
+ * the encoding yields between time slices, so the frame keeps painting and
+ * taking input instead of freezing while minutes of audio are converted.
+ */
 async function handleDownload(): Promise<void> {
   const recording = lastRecording;
   if (!recording || recording.chunks.length === 0) return;
@@ -1807,27 +2165,42 @@ async function handleDownload(): Promise<void> {
   downloadBtn.disabled = true;
   downloadBtn.textContent = "...";
   try {
-    // Decode the recording (WebM/Opus, MP4/AAC, whatever was negotiated) →
-    // AudioBuffer → WAV, so the exported format is the same everywhere.
+    await afterNextPaint();
     const blob = new Blob(recording.chunks, { type: recording.mimeType });
-    const arrayBuf = await blob.arrayBuffer();
-    const audioCtx: AudioContext | undefined = (window as any).getAudioContext?.();
+    const audioCtx = replAudioContext();
     if (!audioCtx) throw new Error("No audio context");
-    const audioBuffer = await audioCtx.decodeAudioData(arrayBuf);
-    const wavBase64 = audioBufferToWavBase64(audioBuffer);
+    // decodeAudioData() detaches the buffer it is handed; the blob keeps the
+    // bytes for a native export.
+    let decoded: AudioBuffer | null = await audioCtx.decodeAudioData(await blob.arrayBuffer());
+    const plan = planRecordingExport(decoded, recording.mimeType);
+    let bytes: Uint8Array;
+    if (plan.format === "wav") {
+      bytes = await audioBufferToWavBytesAsync(decoded);
+    } else {
+      bytes = new Uint8Array(await blob.arrayBuffer());
+    }
+    // Let the decoded float samples go before the base64 exists, rather than
+    // holding all three at once.
+    decoded = null;
+    const base64 = await bytesToBase64Async(bytes);
 
-    await app.downloadFile({
+    const result = await app.downloadFile({
       contents: [
         {
           type: "resource",
           resource: {
-            uri: `file:///${recordingFileStem()}.wav`,
-            mimeType: "audio/wav",
-            blob: wavBase64,
+            uri: `file:///${recordingFileStem()}.${plan.extension}`,
+            mimeType: plan.mimeType,
+            blob: base64,
           },
         },
       ],
     });
+    if (result?.isError) {
+      setStatus("Download was cancelled or refused by the host", "normal");
+    } else if (plan.format === "native") {
+      setStatus(nativeExportStatus(plan), "normal");
+    }
   } catch (err) {
     setStatus(`Download failed: ${(err as Error).message}`, "error");
   } finally {
@@ -1884,6 +2257,9 @@ function ensureEditorElement(): void {
   const el = document.createElement("strudel-editor");
   container.replaceChildren(el);
   editorEl = el;
+  // A fresh element starts from its own settings, not the last one's.
+  currentTheme = null;
+  editorNarrow = false;
 }
 
 /** One-time per-editor setup: eval hook, prebake watch, theme, layout. */
@@ -1898,6 +2274,7 @@ async function prepareEditor(): Promise<any> {
   watchPrebake(editor);
   // Theme first, then the scrim derived from it.
   applyEditorTheme(editor, pendingTheme);
+  syncEditorToWidth();
   // Make `a` resolvable in the eval scope from the very first evaluation.
   installAudioReactiveGlobals();
   // Fix the broken layout (hide canvas, ensure editor visible)
@@ -2041,8 +2418,20 @@ async function renderPattern(args: Record<string, unknown>) {
 playBtn.addEventListener("click", async () => {
   const editor = getEditor();
   if (!editor) return;
+  // resume() runs here, synchronously inside the gesture — the only place
+  // WebKit honours it. Evaluation below does not wait for it.
+  const audioRunning = ensureAudioRunning();
+  // The capture-phase gesture listener may already have unlocked audio before
+  // this click arrived, so ask what the gesture STARTED over, not the live state.
+  const action = playTapAction(isPlaying, gestureLatch.consume() || audioBlocked);
   try {
-    if (isPlaying) {
+    if (action === "resume-audio") {
+      // The pattern is already running over a suspended context: this tap means
+      // "let me hear it". statechange restores the status once audio runs; if
+      // the browser still refuses, "Tap Play to start audio" stays up.
+      await audioRunning;
+      syncAudioState();
+    } else if (action === "stop") {
       if (isRecording) stopRecording();
       editor.stop();
       updatePlayState(false);
@@ -2109,6 +2498,24 @@ fullscreenBtn.addEventListener("click", () => {
 let displayMode: "inline" | "fullscreen" | "pip" = "inline";
 let availableDisplayModes: readonly string[] | null = null;
 
+/**
+ * Size the stage to the host's container (src/frame-size.ts). Inline it is a
+ * FIXED height — the host's max or a share of the screen — and the code
+ * scrolls inside it, so the frame can never grow to the length of the pattern
+ * (which is what put the visuals below the fold). Fullscreen or a fixed
+ * container, it fills the frame. The canvases follow via the ResizeObserver.
+ */
+function syncFrameSize(): void {
+  applyFrameSize(
+    resolveFrameSize(
+      { ...app.getHostContext(), displayMode },
+      screenAvailHeight(),
+      STRUDEL_INLINE_CAP,
+    ),
+  );
+}
+syncFrameSize();
+
 function syncFullscreenButton(): void {
   const isFullscreen = displayMode === "fullscreen";
   fullscreenBtn.classList.toggle("active", isFullscreen);
@@ -2127,6 +2534,7 @@ async function toggleDisplayMode(): Promise<void> {
     // Trust what was GRANTED, not what was asked for.
     if (result?.mode) displayMode = result.mode;
     syncFullscreenButton();
+    syncFrameSize();
     // Fullscreen changes the frame, so the backdrop needs a new backing store.
     requestAnimationFrame(syncVizCanvasSize);
   } catch {
@@ -2178,7 +2586,10 @@ document.addEventListener("keydown", (event) => {
 syncStageAffordance();
 
 // Keep the canvas backing store DPR-correct as the editor/iframe resizes.
-vizResizeObserver = new ResizeObserver(() => syncVizCanvasSize());
+vizResizeObserver = new ResizeObserver(() => {
+  syncVizCanvasSize();
+  syncEditorToWidth();
+});
 vizResizeObserver.observe(replSection);
 
 // =============================================================================
@@ -2213,9 +2624,18 @@ app.ontoolinputpartial = (params) => {
   void startStreamingBoot();
 };
 
-// Generation cancelled — clear the stuck "Composing pattern..." status
-// (mirrors the ABC widget).
+// Generation cancelled — clear the stuck "Composing pattern..." status and,
+// like the ABC widget, make it stick: a renderPattern() still waiting on the
+// CDN or the editor used to carry on to evaluate(true) and start the pattern
+// the user had just cancelled. Bumping the generation stops it at its next
+// checkpoint, and a streaming boot in flight no longer writes its half-pattern.
 app.ontoolcancelled = (params) => {
+  renderGeneration++;
+  pendingPartialCode = "";
+  streamingBoot = null;
+  if (isRecording) stopRecording();
+  getEditor()?.stop?.();
+  updatePlayState(false);
   const reason = params?.reason ? ` (${params.reason})` : "";
   setStatus(`Generation cancelled${reason}.`, "normal");
 };
@@ -2268,6 +2688,10 @@ app.onteardown = () => {
     setHydraActive(false);
     // Release the analyser tap and take `a` / a0…aN back off the eval scope.
     teardownAudioAnalyser();
+    // A discarded widget must not resume audio on a stray tap.
+    setGestureUnlock(false);
+    watchedAudioContext?.removeEventListener("statechange", syncAudioState);
+    watchedAudioContext = null;
   } catch { /* best-effort cleanup */ }
   return {};
 };
@@ -2295,12 +2719,14 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
   if (ctx.styles?.variables) {
     applyHostStyleVariables(ctx.styles.variables);
   }
-  if (ctx.safeAreaInsets) {
-    mainEl.style.paddingTop = `${ctx.safeAreaInsets.top}px`;
-    mainEl.style.paddingRight = `${ctx.safeAreaInsets.right}px`;
-    mainEl.style.paddingBottom = `${ctx.safeAreaInsets.bottom}px`;
-    mainEl.style.paddingLeft = `${ctx.safeAreaInsets.left}px`;
+  // The host's font faces, so `--font-sans` / `--font-mono` resolve.
+  if (ctx.styles?.css?.fonts) {
+    applyHostFonts(ctx.styles.css.fonts);
   }
+  if (ctx.safeAreaInsets) {
+    applySafeAreaInsets(ctx.safeAreaInsets);
+  }
+  if (ctx.displayMode || ctx.containerDimensions) syncFrameSize();
 }
 
 app.onhostcontextchanged = handleHostContextChanged;

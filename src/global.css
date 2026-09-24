@@ -3,7 +3,7 @@
 }
 
 html, body {
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
   font-size: 1rem;
 }
 

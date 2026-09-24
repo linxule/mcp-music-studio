@@ -1,0 +1,949 @@
+// =============================================================================
+// The sheet-music widget's transport fixes (src/synth-transport.ts), run
+// against abcjs's REAL SynthController.
+//
+// Only the audio is stubbed: `go()` (AudioContext resume + midiBuffer
+// init/prime, which need Web Audio and the network) is replaced by a stand-in
+// that sets the same flags and objects, and the transport UI is a DOM-free
+// copy of create-synth-control.js's button state. Everything else — setTune,
+// setWarp, destroy, play/runWhenReady/_play, pause, toggleLoop — is abcjs's
+// own code, so a test here that pins upstream behaviour fails the day abcjs
+// changes it.
+// =============================================================================
+
+import ABCJS from "abcjs";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  TransportQueue,
+  carryWarp,
+  keepLoopLitThroughWarp,
+  noteGestureStart,
+  pauseTransport,
+  queueWarp,
+  readTransport,
+  reprime,
+  restoreLoop,
+  trackTransport,
+  warpedTempo,
+  whenTransportIdle,
+} from "../src/synth-transport";
+
+const TUNE = ABCJS.parseOnly(`X:1
+T:Transport
+M:4/4
+L:1/8
+Q:1/4=120
+K:G
+G2 B2 d2 B2 | c2 e2 d4 |]`)[0]!;
+
+// abcjs finds its AudioContext on `window.abcjsAudioContext`
+// (active-audio-context.js); _play() resumes it before starting.
+const hadWindow = "window" in globalThis;
+beforeAll(() => {
+  const g = globalThis as { window?: Record<string, unknown> };
+  g.window ??= {};
+  g.window.abcjsAudioContext = { state: "running", resume: () => Promise.resolve() };
+});
+afterAll(() => {
+  if (!hadWindow) delete (globalThis as { window?: unknown }).window;
+});
+
+/** create-synth-control.js without the DOM: which buttons are pushed. */
+function fakeUi() {
+  return {
+    loop: false,
+    play: false,
+    warpField: 100,
+    tempoText: "",
+    disable() {},
+    setProgress() {},
+    setTempo(tempo: number) {
+      this.tempoText = String(Math.round(tempo));
+    },
+    setWarp(tempo: number, warp: number) {
+      this.warpField = Math.round(warp);
+      this.setTempo(tempo);
+    },
+    resetAll() {
+      this.loop = false;
+      this.play = false;
+    },
+    pushPlay(push: boolean) {
+      this.play = push;
+    },
+    pushLoop(push: boolean) {
+      this.loop = push;
+    },
+  };
+}
+
+const noop = () => {};
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** A load that waits until released (or fails). */
+function gate() {
+  let release = noop;
+  let fail: (error: unknown) => void = noop;
+  const promise = new Promise<void>((resolve, reject) => {
+    release = resolve;
+    fail = reject;
+  });
+  return { promise, release: () => release(), fail: (error: unknown) => fail(error) };
+}
+
+interface Harness {
+  ctrl: Record<string, any> & ABCJS.SynthObjectController;
+  ui: ReturnType<typeof fakeUi>;
+  /** go() calls in flight right now, and the most ever at once. */
+  loads: { now: number; max: number; calls: number };
+}
+
+/**
+ * A real SynthController with its audio stubbed. `load()` decides how long
+ * each go() takes (resolve = primed; reject = a failed soundfont fetch).
+ */
+function harness(load: (call: number) => Promise<void> = () => Promise.resolve()): Harness {
+  const ctrl = new ABCJS.synth.SynthController() as Harness["ctrl"];
+  const ui = fakeUi();
+  const loads = { now: 0, max: 0, calls: 0 };
+  ctrl.control = ui; // what load() would have built
+  // Stand-in for synth-controller.js go(): same flags, same objects, no audio.
+  ctrl.go = () => {
+    ctrl.isLoading = true;
+    loads.now += 1;
+    loads.calls += 1;
+    loads.max = Math.max(loads.max, loads.now);
+    ctrl.currentTempo = 120 * (ctrl.warp / 100);
+    ui.setTempo(ctrl.currentTempo);
+    ctrl.midiBuffer ??= { duration: 4, start: noop, pause: noop, stop: noop, seek: noop, finished: noop };
+    return load(loads.calls).then(
+      () => {
+        loads.now -= 1;
+        ctrl.timer = { start: noop, pause: noop, stop: noop, reset: noop, setProgress: noop };
+        ctrl.isLoaded = true;
+        ctrl.isLoading = false; // abcjs clears it only on success
+        return { status: "created" };
+      },
+      (error: unknown) => {
+        loads.now -= 1;
+        throw error;
+      },
+    );
+  };
+  return { ctrl, ui, loads };
+}
+
+/** A controller that is playing with Loop on, as a user would leave it. */
+async function playingWithLoop(h = harness()): Promise<Harness> {
+  await h.ctrl.setTune(TUNE, false);
+  await h.ctrl.play();
+  h.ctrl.toggleLoop();
+  expect(h.ctrl.isStarted).toBe(true);
+  expect(h.ui.loop).toBe(true);
+  return h;
+}
+
+// -----------------------------------------------------------------------------
+// #31 — a tempo change turned the Loop button off while the tune kept looping
+// -----------------------------------------------------------------------------
+
+describe("Loop survives a tempo change (#31)", () => {
+  it("upstream: abcjs's setWarp() leaves Loop on but its button dark", async () => {
+    // If this starts failing, abcjs re-lights Loop itself and
+    // keepLoopLitThroughWarp() can go.
+    const { ctrl, ui } = await playingWithLoop();
+    await ctrl.setWarp(150);
+    expect(ctrl.isLooping).toBe(true);
+    expect(ctrl.isStarted).toBe(true);
+    expect(ui.play).toBe(true);
+    expect(ui.loop).toBe(false);
+  });
+
+  it("keeps the button lit, playing or paused", async () => {
+    const playing = await playingWithLoop();
+    keepLoopLitThroughWarp(playing.ctrl);
+    await playing.ctrl.setWarp(150);
+    expect(playing.ctrl.isLooping).toBe(true);
+    expect(playing.ui.loop).toBe(true);
+
+    const paused = await playingWithLoop();
+    keepLoopLitThroughWarp(paused.ctrl);
+    await paused.ctrl.play(); // toggles to pause
+    await paused.ctrl.setWarp(80);
+    expect(paused.ctrl.isStarted).toBe(false);
+    expect(paused.ui.loop).toBe(true);
+  });
+
+  it("re-lights it at once, not only after the re-prime", async () => {
+    let release = noop;
+    // The first load (the play) primes at once; the warp's re-prime waits.
+    const h = await playingWithLoop(
+      harness((call) =>
+        call === 1 ? Promise.resolve() : new Promise<void>((resolve) => (release = resolve)),
+      ),
+    );
+    keepLoopLitThroughWarp(h.ctrl);
+    const done = h.ctrl.setWarp(150);
+    expect(h.ui.loop).toBe(true);
+    release();
+    await done;
+    expect(h.ui.loop).toBe(true);
+  });
+
+  it("leaves Loop dark when it was off, and a toggle after the change works", async () => {
+    const h = harness();
+    await h.ctrl.setTune(TUNE, false);
+    await h.ctrl.play();
+    keepLoopLitThroughWarp(h.ctrl);
+    await h.ctrl.setWarp(150);
+    expect(h.ui.loop).toBe(false);
+    h.ctrl.toggleLoop();
+    expect(h.ctrl.isLooping).toBe(true);
+    expect(h.ui.loop).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// A pause from code (a cancelled tool call) must read as paused
+// -----------------------------------------------------------------------------
+
+describe("pauseTransport", () => {
+  it("upstream: pause() leaves isStarted true, so the next ▶ plays nothing", async () => {
+    const h = harness();
+    await h.ctrl.setTune(TUNE, false);
+    await h.ctrl.play();
+    h.ctrl.pause();
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(readTransport(h.ctrl).wasPlaying).toBe(true);
+    await h.ctrl.play(); // _play() toggles isStarted: this "pauses" a stopped tune
+    expect(h.ctrl.isStarted).toBe(false);
+    expect(h.ui.play).toBe(false);
+  });
+
+  it("records the pause, and the next ▶ plays", async () => {
+    const h = harness();
+    await h.ctrl.setTune(TUNE, false);
+    await h.ctrl.play();
+    pauseTransport(h.ctrl);
+    expect(readTransport(h.ctrl).wasPlaying).toBe(false);
+    expect(h.ui.play).toBe(false);
+    await h.ctrl.play();
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(h.ui.play).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #33 — a settings change during the autoplay load started a second load
+// -----------------------------------------------------------------------------
+
+describe("one load at a time (#33)", () => {
+  /** A controller whose first load (the autoplay) waits for `first`. */
+  async function autoplaying(first: ReturnType<typeof gate>) {
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    const autoplay = h.ctrl.play() as unknown as Promise<unknown>;
+    expect(h.ctrl.isLoading).toBe(true);
+    return { ...h, autoplay };
+  }
+
+  it("upstream: setTune(…, true) starts a load on top of one in flight", async () => {
+    const first = gate();
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    await h.ctrl.setTune(TUNE, false);
+    const autoplay = h.ctrl.play();
+    await h.ctrl.setTune(TUNE, true); // what an instrument change used to do
+    expect(h.loads.max).toBe(2);
+    first.release();
+    await autoplay;
+  });
+
+  it("waits for the autoplay's prime AND the start that follows it", async () => {
+    // _play() resumes the AudioContext before it flips isStarted, so there is
+    // a gap after the load in which the tune is "loaded" but not yet playing.
+    const audio = (globalThis as { window: { abcjsAudioContext: { resume: () => Promise<void> } } })
+      .window.abcjsAudioContext;
+    const resume = audio.resume;
+    audio.resume = () => sleep(40);
+    try {
+      const first = gate();
+      const h = await autoplaying(first);
+      let idle = false;
+      const waiting = whenTransportIdle(h.ctrl, () => true, 5).then(() => {
+        idle = true;
+      });
+      await sleep(30);
+      expect(idle).toBe(false);
+      first.release();
+      await waiting;
+      // The wait spans that gap too, so the change reads the transport as playing.
+      expect(h.ctrl.isLoading).toBe(false);
+      expect(h.ctrl.isStarted).toBe(true);
+    } finally {
+      audio.resume = resume;
+    }
+  });
+
+  it("so a change queued behind it re-primes after it, once, and keeps playing", async () => {
+    const first = gate();
+    const h = await autoplaying(first);
+    const change = whenTransportIdle(h.ctrl, () => true, 5).then(() =>
+      reprime(h.ctrl, { prime: () => h.ctrl.setTune(TUNE, true), stillWanted: () => true }),
+    );
+    first.release();
+    await change;
+    expect(h.loads.max).toBe(1);
+    expect(h.loads.calls).toBe(2);
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(h.ui.play).toBe(true);
+  });
+
+  it("covers a first ▶ and a tempo change the same way", async () => {
+    const first = gate();
+    const h = harness((call) => (call === 2 ? first.promise : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    await h.ctrl.play();
+    const warp = h.ctrl.setWarp(150); // destroy() + a fresh load
+    let idle = false;
+    const waiting = whenTransportIdle(h.ctrl, () => true, 5).then(() => {
+      idle = true;
+    });
+    await sleep(30);
+    expect(idle).toBe(false);
+    first.release();
+    await Promise.all([warp, waiting]);
+  });
+
+  it("stops waiting on a controller that has been superseded while its load hangs", async () => {
+    // A load parked on AudioContext.resume() under a blocked autoplay.
+    const h = await autoplaying(gate());
+    let wanted = true;
+    setTimeout(() => (wanted = false), 20);
+    await whenTransportIdle(h.ctrl, () => wanted, 5); // resolves, never hangs
+    expect(h.ctrl.isLoading).toBe(true);
+  });
+
+  it("waiting on a load that never settles subscribes nothing new to it", async () => {
+    // A stalled sample request: abcjs's XHR has no timeout.
+    const h = harness();
+    h.ctrl.go = () => {
+      h.ctrl.isLoading = true;
+      return new Promise<never>(() => {});
+    };
+    trackTransport(h.ctrl);
+    // Count subscriptions on the promise tracking actually STORES (the
+    // failed-load recovery wraps go()'s own promise), not on go()'s: watching
+    // the inner one let the old per-poll Promise.allSettled() pass (Codex).
+    let subscriptions = 0;
+    const trackedGo = h.ctrl.go;
+    h.ctrl.go = () => {
+      const stored = trackedGo() as Promise<unknown>;
+      const then = stored.then.bind(stored);
+      Object.assign(stored, {
+        then: (...args: Parameters<typeof then>) => {
+          subscriptions += 1;
+          return then(...args);
+        },
+      });
+      return stored;
+    };
+    await h.ctrl.setTune(TUNE, false);
+    void h.ctrl.setTune(TUNE, true);
+    const before = subscriptions;
+    let wanted = true;
+    setTimeout(() => (wanted = false), 100);
+    await whenTransportIdle(h.ctrl, () => wanted, 5); // ~20 polls
+    expect(subscriptions - before).toBe(0);
+  });
+
+  it("does not wait on a failed load", async () => {
+    const h = harness((call) =>
+      call === 1 ? Promise.reject(new Error("soundfont 404")) : Promise.resolve(),
+    );
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    await expect(h.ctrl.play() as unknown as Promise<unknown>).rejects.toThrow("soundfont 404");
+    await whenTransportIdle(h.ctrl, () => true, 5);
+    await reprime(h.ctrl, { prime: () => h.ctrl.setTune(TUNE, true), stillWanted: () => true });
+    expect(h.ctrl.isLoaded).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// What the transport reports: the status line said "Playing..." after a pause
+// and after the tune ended
+// -----------------------------------------------------------------------------
+
+describe("transport reports", () => {
+  /** A tracked controller, playing, recording what it reports. */
+  async function playing() {
+    const h = harness();
+    const events: string[] = [];
+    trackTransport(h.ctrl, (event) => events.push(event.type));
+    await h.ctrl.setTune(TUNE, false);
+    await h.ctrl.play();
+    return { ...h, events };
+  }
+
+  it("a ▶ start, a ▶ pause and a ▶ resume", async () => {
+    const h = await playing();
+    await h.ctrl.play();
+    await h.ctrl.play();
+    expect(h.events).toEqual(["started", "paused", "started"]);
+  });
+
+  it("the end of the tune, once: the timer's end-of-events calls finished()", () =>
+    playing().then((h) => {
+      h.ctrl.eventCallback(null);
+      expect(h.ctrl.isStarted).toBe(false);
+      expect(h.events).toEqual(["started", "finished"]);
+    }));
+
+  it("not a loop restart", async () => {
+    const h = await playing();
+    h.ctrl.toggleLoop();
+    expect(h.ctrl.eventCallback(null)).toBe("continue");
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(h.events).toEqual(["started"]);
+  });
+
+  it("not the pause setTune() makes for a re-prime, nor a cancel's", async () => {
+    const h = await playing();
+    await h.ctrl.setTune(TUNE, true);
+    await h.ctrl.play();
+    pauseTransport(h.ctrl);
+    expect(h.events).toEqual(["started", "started"]);
+  });
+
+  it("a tempo change while playing is a start, while paused nothing", async () => {
+    const h = await playing();
+    await h.ctrl.setWarp(150); // destroy(), re-prime, play() on
+    await h.ctrl.play(); // pause
+    await h.ctrl.setWarp(80);
+    expect(h.events).toEqual(["started", "started", "paused"]);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// A failed sample load left ▶ dead for good
+// -----------------------------------------------------------------------------
+
+describe("recovering from a failed load", () => {
+  const notFound = () => Promise.reject(new Error("soundfont 404"));
+
+  /** A controller whose first load fails; later loads succeed. */
+  async function failedOnce(trackIt: boolean, events: unknown[] = []) {
+    const h = harness((call) => (call === 1 ? notFound() : Promise.resolve()));
+    if (trackIt) trackTransport(h.ctrl, (event) => events.push(event));
+    await h.ctrl.setTune(TUNE, false);
+    await expect(h.ctrl.play() as unknown as Promise<unknown>).rejects.toThrow("soundfont 404");
+    return h;
+  }
+
+  it("upstream: go() clears isLoading only on success, so every later ▶ spins", async () => {
+    const h = await failedOnce(false);
+    expect(h.ctrl.isLoading).toBe(true);
+    const click = h.ctrl.play() as unknown as Promise<unknown>;
+    const settled = await Promise.race([click.then(() => "played"), sleep(700).then(() => "spinning")]);
+    expect(settled).toBe("spinning");
+    expect(h.loads.calls).toBe(1); // it never even tried again
+  });
+
+  it("the next ▶ loads again and plays", async () => {
+    const h = await failedOnce(true);
+    expect(h.ctrl.isLoading).toBe(false);
+    await h.ctrl.play();
+    expect(h.loads.calls).toBe(2);
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(h.ui.play).toBe(true);
+  });
+
+  it("reports the failure, once", async () => {
+    const events: { type: string; error?: unknown }[] = [];
+    await failedOnce(true, events);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("load-failed");
+    expect(String(events[0].error)).toContain("soundfont 404");
+  });
+
+  it("reports the start of the ▶ that retries it", async () => {
+    const events: { type: string }[] = [];
+    const h = await failedOnce(true, events);
+    await h.ctrl.play();
+    expect(events.map((event) => event.type)).toEqual(["load-failed", "started"]);
+    await h.ctrl.play(); // a pause is not a start
+    expect(events.map((event) => event.type)).toEqual(["load-failed", "started", "paused"]);
+  });
+
+  it("a failed re-prime of a loaded tune: ▶ loads again, not the half-primed buffer", async () => {
+    const h = harness((call) => (call === 2 ? notFound() : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    await h.ctrl.play();
+    await h.ctrl.play(); // pause
+    await expect(h.ctrl.setTune(TUNE, true)).rejects.toThrow("soundfont 404");
+    expect(h.ctrl.isLoaded).toBe(false); // upstream kept the first load's true
+    await h.ctrl.play();
+    expect(h.loads.calls).toBe(3);
+    expect(h.ctrl.isStarted).toBe(true);
+  });
+
+  it("a ▶ that was spinning when the load failed starts nothing", async () => {
+    // runWhenReady's poll calls _play() without checking isLoaded.
+    const first = gate();
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    const load = h.ctrl.setTune(TUNE, true); // a re-prime, say
+    const click = h.ctrl.play() as unknown as Promise<unknown>; // polls isLoading
+    first.fail(new Error("soundfont 404"));
+    await expect(load).rejects.toThrow("soundfont 404");
+    await click;
+    expect(h.ctrl.isStarted).toBe(false);
+    await h.ctrl.play(); // the retry
+    expect(h.ctrl.isStarted).toBe(true);
+  });
+
+  it("a superseded load failing late does not unload its replacement", async () => {
+    const first = gate();
+    const events: unknown[] = [];
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    trackTransport(h.ctrl, (event) => events.push(event));
+    await h.ctrl.setTune(TUNE, false);
+    const stale = h.ctrl.setTune(TUNE, true);
+    await h.ctrl.setTune(TUNE, true); // a later re-prime, which lands
+    first.fail(new Error("soundfont 404"));
+    await expect(stale).rejects.toThrow("soundfont 404");
+    expect(h.ctrl.isLoaded).toBe(true);
+    expect(events).toHaveLength(0);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Edits and tempo changes wait their turn too (TransportQueue, queueWarp)
+// -----------------------------------------------------------------------------
+
+describe("TransportQueue: one re-prime at a time, on the live controller", () => {
+  /** A tracked controller whose autoplay's load waits on `first`. */
+  async function loading(first: ReturnType<typeof gate>) {
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    const autoplay = h.ctrl.play() as unknown as Promise<unknown>;
+    return { ...h, autoplay };
+  }
+
+  it("upstream: a tempo change starts a second load on top of one in flight", async () => {
+    const first = gate();
+    const h = await loading(first);
+    const warp = h.ctrl.setWarp(150);
+    expect(h.loads.max).toBe(2);
+    first.release();
+    await Promise.all([h.autoplay, warp]);
+  });
+
+  it("a queued re-prime (an edit's setTune) waits for the autoplay, then keeps it playing", async () => {
+    const first = gate();
+    const h = await loading(first);
+    const queue = new TransportQueue(() => h.ctrl);
+    const edit = queue.run(() =>
+      reprime(h.ctrl, { prime: () => h.ctrl.setTune(TUNE, true), stillWanted: () => true }),
+    );
+    await sleep(20);
+    expect(h.loads.calls).toBe(1);
+    first.release();
+    await edit;
+    expect(h.loads.max).toBe(1);
+    expect(h.loads.calls).toBe(2);
+    expect(h.ctrl.isStarted).toBe(true);
+  });
+
+  it("a tempo change through queueWarp waits too", async () => {
+    const first = gate();
+    const h = await loading(first);
+    queueWarp(h.ctrl, new TransportQueue(() => h.ctrl));
+    const warp = h.ctrl.setWarp(150);
+    await sleep(20);
+    expect(h.loads.calls).toBe(1);
+    first.release();
+    await Promise.all([h.autoplay, warp]);
+    expect(h.loads.max).toBe(1);
+    expect(h.ctrl.warp).toBe(150);
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(h.ui.warpField).toBe(150);
+  });
+
+  it("a burst from the % field's spinner re-primes once, at the last value", async () => {
+    const first = gate();
+    const h = await loading(first);
+    queueWarp(h.ctrl, new TransportQueue(() => h.ctrl));
+    const burst = [110, 120, 130, 140].map((warp) => h.ctrl.setWarp(warp));
+    first.release();
+    await Promise.all([h.autoplay, ...burst]);
+    expect(h.loads.max).toBe(1);
+    expect(h.loads.calls).toBe(2);
+    expect(h.ctrl.warp).toBe(140);
+  });
+
+  it("asks the watcher at the change and calls back once it has run", async () => {
+    const first = gate();
+    const h = await loading(first);
+    const seen: string[] = [];
+    queueWarp(h.ctrl, new TransportQueue(() => h.ctrl), () => {
+      seen.push("asked");
+      return () => seen.push(`after:${h.ctrl.warp}:${h.ctrl.isStarted}`);
+    });
+    const warp = h.ctrl.setWarp(150);
+    expect(seen).toEqual(["asked"]);
+    first.release();
+    await Promise.all([h.autoplay, warp]);
+    // setWarp() had already played on, which is why the widget may stop it.
+    expect(seen).toEqual(["asked", "after:150:true"]);
+  });
+
+  it("drops a queued tempo change for a controller that has been replaced", async () => {
+    const first = gate();
+    const h = await loading(first);
+    let current: object = h.ctrl;
+    queueWarp(h.ctrl, new TransportQueue(() => current));
+    const warp = h.ctrl.setWarp(150);
+    current = harness().ctrl; // a new tool call built another
+    first.release();
+    await Promise.all([h.autoplay, warp]);
+    expect(h.loads.calls).toBe(1);
+    expect(h.ctrl.warp).toBe(100);
+  });
+
+  it("settles on the replacement too: its own autoplay may still be loading", async () => {
+    const firstA = gate();
+    const a = await loading(firstA);
+    const firstB = gate();
+    const b = await loading(firstB); // B's autoplay is loading
+    let current: object = a.ctrl;
+    const queue = new TransportQueue(() => current);
+    const change = queue.run(() => {
+      const control = current as Harness["ctrl"];
+      return control.setTune(TUNE, true);
+    });
+    await sleep(20);
+    current = b.ctrl; // replaced while the change waits on A
+    firstA.release();
+    await sleep(150);
+    expect(b.loads.calls).toBe(1); // still waiting, on B now
+    firstB.release();
+    await Promise.all([change, a.autoplay, b.autoplay]);
+    expect(b.loads.max).toBe(1);
+    expect(b.loads.calls).toBe(2);
+  });
+
+  it("gives up on a load that never settles, and runs the change anyway", async () => {
+    // A stalled sample request: abcjs's XHR has no timeout, so go() never settles.
+    const h = await loading(gate());
+    const queue = new TransportQueue(() => h.ctrl, () => true, 60);
+    let ran = false;
+    const change = queue.run(() => {
+      ran = true;
+    });
+    await sleep(30);
+    expect(ran).toBe(false);
+    await sleep(120);
+    expect(ran).toBe(true);
+    await change;
+  });
+
+  it("…and on a change before it that never finishes", async () => {
+    const queue = new TransportQueue(() => null, () => true, 60);
+    void queue.run(() => new Promise<never>(() => {}));
+    let ran = false;
+    const next = queue.run(() => {
+      ran = true;
+    });
+    await sleep(150);
+    expect(ran).toBe(true);
+    await next;
+  });
+
+  it("behind a hung load, queued changes still run one at a time", async () => {
+    // Deadlines counted from the queueing timed out together, and three
+    // re-primes ran side by side on one buffer (Codex review).
+    const h = harness((call) => (call === 1 ? gate().promise : sleep(40)));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    void h.ctrl.play(); // the autoplay, stuck on a dead sample request
+    const queue = new TransportQueue(() => h.ctrl, () => true, 60);
+    const steps = [1, 2, 3].map(() => queue.run(() => h.ctrl.setTune(TUNE, true)));
+    await Promise.all(steps);
+    expect(h.loads.calls).toBe(4);
+    expect(h.loads.max).toBe(2); // the dead one, plus one live re-prime at a time
+  });
+
+  it("a step that hangs holds the queue for the limit from ITS start", async () => {
+    const queue = new TransportQueue(() => null, () => true, 60);
+    const started: number[] = [];
+    const t0 = Date.now();
+    void queue.run(() => {
+      started.push(Date.now() - t0);
+      return new Promise<never>(() => {});
+    });
+    const second = queue.run(() => {
+      started.push(Date.now() - t0);
+    });
+    await second;
+    expect(started[1]! - started[0]!).toBeGreaterThanOrEqual(55);
+  });
+
+  it("keeps going after a step throws", async () => {
+    const queue = new TransportQueue(() => null);
+    await expect(queue.run(() => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
+    await expect(queue.run(() => 7)).resolves.toBe(7);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// A ▶ pressed while a play is still starting (a parked autoplay)
+// -----------------------------------------------------------------------------
+
+describe("a ▶ while a play is still starting", () => {
+  /** An autoplay whose load waits on `first`, and a ▶ pressed meanwhile. */
+  async function autoplayThenClick(track: boolean) {
+    const first = gate();
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    if (track) trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    const autoplay = h.ctrl.play() as unknown as Promise<unknown>;
+    const click = h.ctrl.play() as unknown as Promise<unknown>;
+    first.release();
+    await Promise.all([autoplay, click]);
+    return h;
+  }
+
+  it("upstream: the ▶ switches the tune off as soon as the autoplay starts it", async () => {
+    // runWhenReady polls isLoading every 500 ms, then _play() toggles.
+    const h = await autoplayThenClick(false);
+    expect(h.ctrl.isStarted).toBe(false);
+    expect(h.ui.play).toBe(false);
+  });
+
+  it("joins the autoplay instead: one load, and it keeps playing", async () => {
+    const h = await autoplayThenClick(true);
+    expect(h.loads.calls).toBe(1);
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(h.ui.play).toBe(true);
+  });
+
+  it("does not join a play stuck on a load that a later re-prime went round", async () => {
+    // The autoplay's load stalled; after TRANSPORT_WAIT_LIMIT_MS a sound
+    // change re-primed the controller anyway. Its play() never settles.
+    const h = harness((call) => (call === 1 ? gate().promise : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    void h.ctrl.play();
+    await h.ctrl.setTune(TUNE, true);
+    expect(h.ctrl.isLoading).toBe(false);
+    await h.ctrl.play(); // the ▶
+    expect(h.ctrl.isStarted).toBe(true);
+  });
+
+  it("the next ▶ after it has started still pauses", async () => {
+    const h = await autoplayThenClick(true);
+    noteGestureStart(); // a new press
+    await h.ctrl.play();
+    expect(h.ctrl.isStarted).toBe(false);
+  });
+
+  it("joins a play that has loaded but is still resuming audio in _play()", async () => {
+    // _play() resumes the context BEFORE it flips isStarted, so isLoading is
+    // already false while the first play is still starting.
+    const ctx = (globalThis as any).window.abcjsAudioContext;
+    const resumed = gate();
+    const resume = ctx.resume;
+    ctx.resume = () => resumed.promise;
+    try {
+      const h = harness();
+      trackTransport(h.ctrl);
+      await h.ctrl.setTune(TUNE, false);
+      const autoplay = h.ctrl.play() as unknown as Promise<unknown>;
+      await sleep(10);
+      expect(h.ctrl.isLoading).toBe(false);
+      const click = h.ctrl.play() as unknown as Promise<unknown>;
+      resumed.release();
+      await Promise.all([autoplay, click]);
+      expect(h.ctrl.isStarted).toBe(true);
+    } finally {
+      ctx.resume = resume;
+    }
+  });
+
+  it("the press that released a parked autoplay doesn't switch it off", async () => {
+    // Its pointerdown woke the audio and the (cached) load finished before the
+    // click: without this the click's play() toggled the tune straight off.
+    const first = gate();
+    const h = harness((call) => (call === 1 ? first.promise : Promise.resolve()));
+    trackTransport(h.ctrl);
+    await h.ctrl.setTune(TUNE, false);
+    const autoplay = h.ctrl.play() as unknown as Promise<unknown>;
+    noteGestureStart(); // pointerdown
+    first.release();
+    await autoplay; // started between the pointerdown and the click
+    expect(h.ctrl.isStarted).toBe(true);
+    await h.ctrl.play(); // the click
+    expect(h.ctrl.isStarted).toBe(true);
+    noteGestureStart(); // the NEXT press
+    await h.ctrl.play();
+    expect(h.ctrl.isStarted).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// reprime — the settings change itself
+// -----------------------------------------------------------------------------
+
+describe("reprime", () => {
+  const prime = (h: Harness) => () => h.ctrl.setTune(TUNE, true);
+
+  it("carries on playing, from the top, with Loop kept", async () => {
+    const h = await playingWithLoop();
+    await reprime(h.ctrl, { prime: prime(h), stillWanted: () => true });
+    expect(h.loads.calls).toBe(2);
+    expect(h.ctrl.isStarted).toBe(true);
+    expect(h.ctrl.isLooping).toBe(true);
+    expect(h.ui.loop).toBe(true);
+  });
+
+  it("stays paused when it was paused", async () => {
+    const h = await playingWithLoop();
+    await h.ctrl.play(); // pause
+    await reprime(h.ctrl, { prime: prime(h), stillWanted: () => true });
+    expect(h.loads.calls).toBe(2);
+    expect(h.ctrl.isStarted).toBe(false);
+  });
+
+  /** A playing controller whose NEXT load waits for `next`. */
+  async function playingThenSlow(next: ReturnType<typeof gate>) {
+    return playingWithLoop(harness((call) => (call === 1 ? Promise.resolve() : next.promise)));
+  }
+
+  it("a cancel landing mid-prime: the new sound is primed, the music stays stopped", async () => {
+    const next = gate();
+    const h = await playingThenSlow(next);
+    let generation = 1;
+    const mine = generation;
+    const change = reprime(h.ctrl, { prime: prime(h), stillWanted: () => generation === mine });
+    // ontoolcancelled: newGeneration() + stopPlayback(); the controller stays.
+    generation += 1;
+    pauseTransport(h.ctrl);
+    next.release();
+    await change;
+    expect(h.loads.calls).toBe(2);
+    expect(h.ctrl.isStarted).toBe(false);
+    expect(h.ui.play).toBe(false);
+  });
+
+  it("…which a same-controller check alone let through: the music came back", async () => {
+    // The guard the widget had before: the controller is still the widget's,
+    // so the change went on to restart the tune the user had just cancelled.
+    const next = gate();
+    const h = await playingThenSlow(next);
+    const change = reprime(h.ctrl, { prime: prime(h), stillWanted: () => true });
+    pauseTransport(h.ctrl);
+    next.release();
+    await change;
+    expect(h.ctrl.isStarted).toBe(true);
+  });
+
+  it("a cancel landing while play() starts: the music is stopped again", async () => {
+    const h = await playingWithLoop();
+    let wanted = true;
+    const play = h.ctrl.play;
+    h.ctrl.play = () => {
+      const started = play();
+      wanted = false; // the cancel arrives while _play() is resuming audio
+      return started;
+    };
+    let superseded = 0;
+    await reprime(h.ctrl, {
+      prime: prime(h),
+      stillWanted: () => wanted,
+      onSuperseded: () => {
+        superseded += 1;
+        pauseTransport(h.ctrl);
+      },
+    });
+    expect(superseded).toBe(1);
+    expect(h.ctrl.isStarted).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #26 — a Style change reset the tempo and Loop (and played when paused)
+// -----------------------------------------------------------------------------
+
+describe("carrying the transport into a new controller (#26)", () => {
+  it("computes the BPM abcjs shows, from go()'s own formula", () => {
+    // Q:1/4=120 in 4/4.
+    expect(warpedTempo(TUNE, 100)).toBe(120);
+    expect(warpedTempo(TUNE, 150)).toBe(180);
+    expect(warpedTempo(TUNE, 50)).toBe(60);
+  });
+
+  it("reads the tempo field, defaulting to 100%", () => {
+    const h = harness();
+    expect(readTransport(h.ctrl).warp).toBe(100);
+    h.ctrl.warp = 150;
+    expect(readTransport(h.ctrl).warp).toBe(150);
+    h.ctrl.warp = Number.NaN;
+    expect(readTransport(h.ctrl).warp).toBe(100);
+  });
+
+  /** What renderAbc does with a Style change's carry: the new controller's life. */
+  async function restyle(old: Harness, autoplay: boolean): Promise<Harness> {
+    const carry = readTransport(old.ctrl);
+    const next = harness();
+    carryWarp(next.ctrl, carry.warp, TUNE); // after load()
+    await next.ctrl.setTune(TUNE, false);
+    restoreLoop(next.ctrl, carry); // setTune() switched Loop off
+    if (autoplay) await next.ctrl.play();
+    return next;
+  }
+
+  it("keeps the tempo and Loop, and the field shows the tempo it plays at", async () => {
+    const old = await playingWithLoop();
+    keepLoopLitThroughWarp(old.ctrl);
+    await old.ctrl.setWarp(150);
+    const next = await restyle(old, readTransport(old.ctrl).wasPlaying);
+    expect(next.ctrl.warp).toBe(150);
+    expect(next.ui.warpField).toBe(150);
+    expect(next.ui.tempoText).toBe("180");
+    expect(next.ctrl.currentTempo).toBe(180); // what go() then plays at
+    expect(next.ctrl.isLooping).toBe(true);
+    expect(next.ui.loop).toBe(true);
+    expect(next.ctrl.isStarted).toBe(true);
+  });
+
+  it("writes the readout at 100% too, so a paused re-render still shows its BPM", () => {
+    const h = harness();
+    carryWarp(h.ctrl, 100, TUNE);
+    expect(h.ctrl.warp).toBe(100);
+    expect(h.ui.warpField).toBe(100);
+    expect(h.ui.tempoText).toBe("120");
+  });
+
+  it("ignores a nonsense tempo", () => {
+    const h = harness();
+    carryWarp(h.ctrl, 0, TUNE);
+    expect(h.ctrl.warp).toBe(100);
+    expect(h.ui.tempoText).toBe("");
+  });
+
+  it("a paused tune, or one stopped by a cancel, reads as not playing", async () => {
+    const paused = await playingWithLoop();
+    await paused.ctrl.play(); // the user's pause
+    expect(readTransport(paused.ctrl).wasPlaying).toBe(false);
+
+    const cancelled = await playingWithLoop();
+    pauseTransport(cancelled.ctrl); // ontoolcancelled → stopPlayback()
+    expect(readTransport(cancelled.ctrl).wasPlaying).toBe(false);
+  });
+});
