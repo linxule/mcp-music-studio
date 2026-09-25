@@ -43,7 +43,7 @@ import {
   staleControlAction,
 } from "./abc-edit";
 import { listenForAudioGestures, resumeAudioContext } from "./audio-unlock";
-import { LiveRoom, renderWithRoom, routeThroughRoom } from "./room-reverb";
+import { LiveRoom, ROOM_PREF_KEY, renderWithRoom, routeThroughRoom } from "./room-reverb";
 import {
   AutoplayMemory,
   ViewIdChannel,
@@ -920,8 +920,6 @@ soundFontSelectorEl.appendChild(soundFontSelect);
 // On by default. Switching it moves only the wet level of the live room, so it
 // needs no re-prime and never interrupts playback. The choice is this viewer's
 // convenience, kept in localStorage when that works.
-
-const ROOM_PREF_KEY = "music-studio:room";
 
 function readRoomPref(): boolean {
   try {

@@ -18,6 +18,7 @@ import {
 } from "./music-logic.js";
 import { transposeAbc } from "./abc-transpose.js";
 import { ABCJS_CDN_BASE } from "./abcjs-version.js";
+import { ROOM, ROOM_PREF_KEY } from "./room-settings.js";
 // One implementation, shared with the Strudel page: this file used to carry a
 // byte-identical private copy, which is exactly how the two drift apart.
 import { safeJsonForScript } from "./shared/safe-json.js";
@@ -232,6 +233,7 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
     }
     .control-group select:hover{border-color:var(--text-dim)}
     .control-group select:focus{border-color:var(--accent)}
+    .control-group input[type="checkbox"]{accent-color:var(--accent);width:16px;height:16px;cursor:pointer;margin:0}
 
     .sheet-card{
       background:var(--sheet-bg);
@@ -335,6 +337,10 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
         <label for="instrument-select">Instrument</label>
         <select id="instrument-select">${instrumentOptionsHtml}</select>
       </div>
+      <div class="control-group" title="Room echo: notes ring out as in a room instead of stopping dead">
+        <label for="room-toggle">Room</label>
+        <input type="checkbox" id="room-toggle" checked>
+      </div>
     </div>
 
     <div class="sheet-card anim d4">
@@ -377,8 +383,114 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
       onFinished: function() {
         highlighted.forEach(function(el) { el.classList.remove('note-playing'); });
         highlighted = [];
+      },
+      // abcjs calls this after every go() with the controller.
+      onReady: function(controller) {
+        if (controller) routeRoom(controller.midiBuffer);
       }
     };
+
+    // room:begin
+    // The widget's light room (src/room-reverb.ts), inline because this page
+    // can't import it. tests/browser-fallback-room.test.ts holds this impulse
+    // response to the widget's sample for sample, and checks the routing.
+    var ROOM = ${JSON.stringify(ROOM)};
+    var ROOM_PREF_KEY = ${JSON.stringify(ROOM_PREF_KEY)};
+    var roomOn = (function () {
+      try { return localStorage.getItem(ROOM_PREF_KEY) !== 'off'; } catch (e) { return true; }
+    })();
+    var roomGraphs = [];
+
+    function roomImpulse(sampleRate, room) {
+      var length = Math.max(1, Math.floor(sampleRate * room.seconds));
+      var decayPerSecond = Math.log(1000) / room.seconds;
+      var attack = Math.max(1, Math.floor(sampleRate * 0.004));
+      var a = room.seed >>> 0;
+      function random() {
+        a = (a + 0x6d2b79f5) >>> 0;
+        var t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      }
+      var left = new Float32Array(length);
+      var right = new Float32Array(length);
+      for (var i = 0; i < length; i++) {
+        var envelope = Math.exp((-decayPerSecond * i) / sampleRate) * Math.min(1, i / attack);
+        left[i] = (random() * 2 - 1) * envelope;
+        right[i] = (random() * 2 - 1) * envelope;
+      }
+      return [left, right];
+    }
+
+    function roomInput(ctx) {
+      for (var i = 0; i < roomGraphs.length; i++) {
+        if (roomGraphs[i].ctx === ctx) return roomGraphs[i].input;
+      }
+      var input = ctx.createGain();
+      input.connect(ctx.destination);
+      var preDelay = ctx.createDelay(1);
+      preDelay.delayTime.value = ROOM.preDelayMs / 1000;
+      var channels = roomImpulse(ctx.sampleRate, ROOM);
+      var ir = ctx.createBuffer(2, channels[0].length, ctx.sampleRate);
+      ir.getChannelData(0).set(channels[0]);
+      ir.getChannelData(1).set(channels[1]);
+      var convolver = ctx.createConvolver();
+      convolver.buffer = ir;
+      var lowpass = ctx.createBiquadFilter();
+      lowpass.type = 'lowpass';
+      lowpass.frequency.value = ROOM.lowpassHz;
+      var wet = ctx.createGain();
+      wet.gain.value = roomOn ? ROOM.wet : 0;
+      input.connect(preDelay);
+      preDelay.connect(convolver);
+      convolver.connect(lowpass);
+      lowpass.connect(wet);
+      wet.connect(ctx.destination);
+      roomGraphs.push({ ctx: ctx, input: input, wet: wet });
+      return input;
+    }
+
+    // abcjs's _kickOffSound() creates, connects and starts its sources in one
+    // synchronous call; for exactly that call, sources connected to the
+    // destination connect to the room instead — before start().
+    function routeRoom(midiBuffer) {
+      if (!midiBuffer || typeof midiBuffer._kickOffSound !== 'function' || midiBuffer.__roomRouted) return;
+      midiBuffer.__roomRouted = true;
+      var original = midiBuffer._kickOffSound;
+      midiBuffer._kickOffSound = function (seconds) {
+        var ctx = ABCJS.synth.activeAudioContext();
+        var input;
+        try { input = ctx && roomInput(ctx); } catch (e) { input = null; }
+        if (!input) return original.call(this, seconds);
+        var own = Object.prototype.hasOwnProperty.call(ctx, 'createBufferSource');
+        var previous = ctx.createBufferSource;
+        ctx.createBufferSource = function () {
+          var source = previous.call(this);
+          var connect = source.connect.bind(source);
+          source.connect = function (node) {
+            var rest = Array.prototype.slice.call(arguments, 1);
+            return connect.apply(null, [node === ctx.destination ? input : node].concat(rest));
+          };
+          return source;
+        };
+        try {
+          return original.call(this, seconds);
+        } finally {
+          if (own) ctx.createBufferSource = previous;
+          else delete ctx.createBufferSource;
+        }
+      };
+    }
+
+    function setRoom(on) {
+      roomOn = on;
+      roomGraphs.forEach(function (g) {
+        g.wet.gain.setTargetAtTime(on ? ROOM.wet : 0, g.ctx.currentTime, 0.03);
+      });
+      try { localStorage.setItem(ROOM_PREF_KEY, on ? 'on' : 'off'); } catch (e) { /* not remembered */ }
+    }
+    // room:end
 
     function applyStyle(abc, style) {
       if (!style || !STYLE_PRESETS[style]) return abc;
@@ -484,6 +596,9 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
     // to begin making noise.
     document.getElementById('style-select').addEventListener('change', function () { render(false); });
     document.getElementById('instrument-select').addEventListener('change', function () { render(false); });
+    var roomToggle = document.getElementById('room-toggle');
+    roomToggle.checked = roomOn;
+    roomToggle.addEventListener('change', function () { setRoom(roomToggle.checked); });
 
     render(false);
   </script>
