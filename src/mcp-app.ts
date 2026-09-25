@@ -43,6 +43,7 @@ import {
   staleControlAction,
 } from "./abc-edit";
 import { listenForAudioGestures, resumeAudioContext } from "./audio-unlock";
+import { LiveRoom, renderWithRoom, routeThroughRoom } from "./room-reverb";
 import {
   AutoplayMemory,
   ViewIdChannel,
@@ -420,6 +421,7 @@ const cursorControl: CursorControl & { extraMeasuresAtBeginning?: number } = {
   // published type declares no parameter.
   onReady(controller?: unknown) {
     followSwing(controller);
+    routeRoom(controller);
   },
 };
 
@@ -912,6 +914,54 @@ soundFontSelectorEl.appendChild(soundFontLabel);
 soundFontSelectorEl.appendChild(soundFontSelect);
 
 // =============================================================================
+// Room — a light reverb under the synth (src/room-reverb.ts)
+// =============================================================================
+//
+// On by default. Switching it moves only the wet level of the live room, so it
+// needs no re-prime and never interrupts playback. The choice is this viewer's
+// convenience, kept in localStorage when that works.
+
+const ROOM_PREF_KEY = "music-studio:room";
+
+function readRoomPref(): boolean {
+  try {
+    return localStorage.getItem(ROOM_PREF_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+const liveRoom = new LiveRoom(readRoomPref());
+
+const roomBtn = document.createElement("button");
+roomBtn.className = "toolbar-btn toolbar-btn-text room-btn";
+roomBtn.textContent = "Room";
+roomBtn.title = "Room echo: notes ring out as in a room instead of stopping dead";
+
+function syncRoomButton(): void {
+  const on = liveRoom.isEnabled;
+  roomBtn.setAttribute("aria-pressed", String(on));
+  roomBtn.setAttribute("aria-label", on ? "Room echo on" : "Room echo off");
+}
+syncRoomButton();
+
+roomBtn.addEventListener("click", () => {
+  const on = !liveRoom.isEnabled;
+  liveRoom.setEnabled(on, audioContext());
+  syncRoomButton();
+  try {
+    localStorage.setItem(ROOM_PREF_KEY, on ? "on" : "off");
+  } catch { /* the preference just isn't remembered */ }
+});
+toolbarEl.appendChild(roomBtn);
+
+/** Route a controller's playback through the room (called after every go()). */
+function routeRoom(controller: unknown): void {
+  const midiBuffer = (controller as { midiBuffer?: unknown } | null)?.midiBuffer;
+  routeThroughRoom(midiBuffer, audioContext, (ctx) => liveRoom.inputFor(ctx));
+}
+
+// =============================================================================
 // ABC Source Editor
 // =============================================================================
 //
@@ -1357,7 +1407,9 @@ downloadBtn.addEventListener("click", async () => {
   downloadBtn.disabled = true;
   downloadBtn.textContent = "...";
   try {
-    const wavBase64 = audioBufferToWavBase64(audioBuffer);
+    // The file sounds like the playback: the room is rendered in, tail and all.
+    const rendered = liveRoom.isEnabled ? await renderWithRoom(audioBuffer) : audioBuffer;
+    const wavBase64 = audioBufferToWavBase64(rendered);
     const title = downloadStem();
     await app.downloadFile({
       contents: [

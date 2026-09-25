@@ -7,6 +7,7 @@
 // lives in src/open-in-browser.ts.
 import {
   INSTRUMENTS,
+  NOTE_FADE_MS,
   STYLE_PRESETS,
   STYLE_NAMES,
   type StyleName,
@@ -450,7 +451,7 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
         displayProgress: true, displayWarp: true
       });
 
-      var opts = { program: program };
+      var opts = { program: program, fadeLength: ${NOTE_FADE_MS} };
       if (INIT.swing) opts.swing = INIT.swing;
       if (INIT.drumIntro) opts.drumIntro = INIT.drumIntro;
       await synthControl.setTune(visualObj[0], false, opts);

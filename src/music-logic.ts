@@ -598,6 +598,15 @@ export function injectTempoHeader(
  * so exported MIDI matches what is playing. Kept pure (and here rather than in
  * the widget) so it can be unit-tested without a DOM.
  */
+/**
+ * abcjs's note release in ms — its `fadeLength` synth option, default 200.
+ * place-note.js holds each note at full level for its written length and then
+ * ramps LINEARLY to zero over this, so 200 ms cut a short note (a style's
+ * chord stab before a rest) off into silence. Half a second lets the sample's
+ * own decay through, like a player lifting off a key.
+ */
+export const NOTE_FADE_MS = 500;
+
 export function buildSynthOptions(args: {
   instrument: string;
   soundFont?: string;
@@ -609,6 +618,7 @@ export function buildSynthOptions(args: {
       ? (INSTRUMENTS[args.instrument] ?? 0)
       : 0,
     ...soundFontSynthOptions(args.soundFont),
+    fadeLength: NOTE_FADE_MS,
     ...(args.toolSynthOptions ?? {}),
   };
 }

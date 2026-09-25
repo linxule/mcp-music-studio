@@ -207,6 +207,12 @@ body {
   line-height: 1;
 }
 
+/* The Room toggle reads as lit while on. */
+.toolbar-btn.room-btn[aria-pressed="true"] {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
 /* Text-label buttons (MIDI) sit next to the single-glyph ones without
    towering over them. */
 .toolbar-btn.toolbar-btn-text {
