@@ -1,4 +1,8 @@
-# Release film recorder ("Rest", 0.5.13)
+# Release film recorder ("Rest", 0.5.13 → 0.5.14)
+
+The posted film (v5), its takes, earlier cuts, edit plan, brief and perception
+records are archived in the llm-world repo as `music-studio-rest/`
+(`creative-lab verify`: verified).
 
 Shoots `dev/film.html` — a wordless phone conversation of real widgets — as two
 takes with identical gestures, then cuts them into one 1080×1920 film.
