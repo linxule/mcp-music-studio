@@ -2,19 +2,21 @@
 // "Rest" — the piece. D minor, 144 bpm (twice Rest's 72, so the score's pulse
 // carries into it), one cycle = one bar = 1.667 s.
 //
-// The whole song is in the editor from the start; sections are `$:` blocks
-// muted with a leading `_`, and the performance (ACTIONS) unmutes and mutes
-// them on the downbeat — a one-character edit, the way a live coder plays.
-// The Hydra shader after `await initHydra` is swapped per section.
+// The arrangement is IN the code: every block has a mask, one step per bar
+// ("<0!4 1!11 …>"), so the whole song is one evaluation and every entry lands
+// on its downbeat to the sample (re-evaluating per section didn't: Strudel
+// schedules ahead, so a section's first beat went missing). The rest before
+// the drop is written as a rest — `[1 1 1 0]`, the last beat of bar 15.
+// Only the Hydra shader changes during the performance; that is visual, so
+// evaluation latency doesn't matter for it.
 //
 //   bars  0–3   intro      Rest's chords + melody
 //         4–7   +half-time drums, bass (the rings)
-//         8–13  +arp, the pitch shader
-//        14–15  riser (snare roll), tunnel — and on the last beat of bar 15:
-//                a REST: everything muted, black
-//        16–23  drop: 2-step, sub; four shader scenes
-//        24–27  break: drums out
-//        28     the last chord; Stop at 29, the room rings out
+//         8–13  +arp
+//        14–15  riser — then a rest
+//        16–23  drop: 2-step, sub
+//        24–27  break
+//        28     the last chord
 // =============================================================================
 
 export const SONG = `setcps(0.6)
@@ -36,23 +38,32 @@ const rings = (_, time, haps) => {
   }
 }
 
-$: note(chords).s("piano").room(0.6).gain(0.7) // chords
+// one mask step per bar; [1 1 1 0] is the rest before the drop
+$: note(chords).s("piano").room(0.6).gain(0.5)
+  .mask("<1!15 [1 1 1 0] 1!13 0>")
   .color('#9fb4ff').pianoroll({ ctx: getDrawContext('roll') })
-$: note(mel).s("gm_vibraphone").room(0.5).delay(0.3).gain(0.6) // melody
-  .color('#ffd6a0').pianoroll({ fold: 1, cycles: 2 })
-_$: s("bd ~ ~ ~, ~ ~ sd ~, hh*4").bank("RolandTR909").gain(0.8) // half-time
+$: note(mel).s("gm_vibraphone").room(0.5).delay(0.3).gain(0.45)
+  .mask("<1!15 [1 1 1 0] 1!12 0!2>")
+  .color('#ffd6a0').spiral()
+$: s("bd ~ ~ ~, ~ ~ sd ~, hh*4").bank("RolandTR909").gain(0.42)
+  .mask("<0!4 1!11 [1 1 1 0] 0!14>")
   .color('#f7768e').punchcard({ ctx: getDrawContext('beat') })
-_$: note("<d2 bb1 a1 d2>").struct("x ~ x x ~ x ~ ~") // bass
-  .s("gm_synth_bass_1").lpf(500).onPaint(rings)
-_$: n("0 2 4 6 7 6 4 2").scale("<d4:minor bb3:lydian a3:major d4:minor>") // arp
+$: note("<d2 bb1 a1 d2>").struct("x ~ x x ~ x ~ ~")
+  .s("gm_synth_bass_1").lpf(500).gain(0.6)
+  .mask("<0!4 1!11 [1 1 1 0] 1!12 0!2>").onPaint(rings)
+$: n("0 2 4 6 7 6 4 2").scale("<d4:minor bb3:lydian a3:major d4:minor>")
   .s("sawtooth").lpf(sine.range(400, 3200).slow(8))
-  .decay(0.15).sustain(0).delay(0.4).gain(0.3)
-_$: s("sd*16").bank("RolandTR909") // riser
-  .gain(saw.range(0.15, 0.9).slow(2)).lpf(saw.range(800, 9000).slow(2))
-_$: s("bd ~ ~ ~ ~ ~ ~ bd ~ ~ bd ~ ~ ~ ~ ~, ~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~, hh*16") // 2-step
-  .bank("RolandTR909").gain(0.85)
+  .decay(0.15).sustain(0).delay(0.4).gain(0.22)
+  .mask("<0!8 1!7 [1 1 1 0] 1!8 0!6>")
+$: s("sd*16").bank("RolandTR909")
+  .gain(saw.range(0.1, 0.65).slow(2)).lpf(saw.range(800, 9000).slow(2))
+  .mask("<0!14 1 [1 1 1 0] 0!14>")
+$: s("bd ~ ~ ~ ~ ~ ~ bd ~ ~ bd ~ ~ ~ ~ ~, ~ ~ ~ ~ sd ~ ~ ~ ~ ~ ~ ~ sd ~ ~ ~, hh*16")
+  .bank("RolandTR909").gain(0.42)
+  .mask("<0!16 1!8 0!6>")
   .color('#f7768e').punchcard({ ctx: getDrawContext('beat') })
-_$: note("<d1 bb0 a0 d1>").struct("x ~ ~ x ~ ~ x ~").s("sine").gain(0.75) // sub
+$: note("<d1 bb0 a0 d1>").struct("x ~ ~ x ~ ~ x ~").s("sine").gain(0.36)
+  .mask("<0!16 1!8 0!6>")
 
 await initHydra({ feedStrudel: true })
 `;
@@ -81,35 +92,22 @@ export const SHADERS: Record<string, string> = {
   .blend(o0, 0.35).out(o0)`,
 };
 
-export type Action = { at: number; on?: string[]; off?: string[]; shader?: string; label: string };
-
-/** Bar numbers relative to the song's first bar. `on`/`off` name blocks by their comment. */
-export const ACTIONS: Action[] = [
-  { at: 0, label: "intro", shader: "black" },
-  { at: 4, label: "drums", on: ["half-time", "bass"] },
-  { at: 8, label: "arp", on: ["arp"], shader: "pitch" },
-  { at: 14, label: "riser", on: ["riser"], shader: "tunnel" },
-  { at: 15.75, label: "rest", off: ["chords", "melody", "half-time", "bass", "arp", "riser"], shader: "black" },
-  { at: 16, label: "drop", on: ["chords", "melody", "2-step", "sub", "arp", "bass"], shader: "cells" },
-  { at: 18, label: "mandala", shader: "mandala" },
-  { at: 20, label: "opart", shader: "opart" },
-  { at: 22, label: "everything", shader: "everything" },
-  { at: 24, label: "break", off: ["2-step", "sub", "arp"], shader: "tunnel" },
-  { at: 28, label: "last", off: ["melody", "bass"], shader: "pitch" },
+/** When the shader changes, in bars from the song's first bar. */
+export const SCENE_CUES: Array<{ at: number; shader: string }> = [
+  { at: 0, shader: "black" },
+  { at: 8, shader: "pitch" },
+  { at: 14, shader: "tunnel" },
+  { at: 15.75, shader: "black" },
+  { at: 16, shader: "cells" },
+  { at: 18, shader: "mandala" },
+  { at: 20, shader: "opart" },
+  { at: 22, shader: "everything" },
+  { at: 24, shader: "tunnel" },
+  { at: 28, shader: "pitch" },
 ];
-export const STOP_AT = 29;
+/** Bar 29 is silent in every mask; Stop just before the song would loop. */
+export const STOP_AT = 29.9;
 
-/** Apply mutes and a shader to the song text. */
-export function applyAction(code: string, a: Action): string {
-  const lines = code.split("\n");
-  for (const [names, muted] of [[a.on ?? [], false], [a.off ?? [], true]] as const) {
-    for (const name of names) {
-      const i = lines.findIndex((l) => /^_?\$:/.test(l) && l.endsWith(`// ${name}`));
-      if (i < 0) throw new Error(`no block "${name}"`);
-      lines[i] = (muted ? "_" : "") + lines[i].replace(/^_/, "");
-    }
-  }
-  let out = lines.join("\n");
-  if (a.shader) out = out.replace(/(await initHydra\([^)]*\)\n)[\s\S]*$/, `$1${SHADERS[a.shader]}\n`);
-  return out;
+export function withShader(shader: string): string {
+  return SONG + SHADERS[shader] + "\n";
 }

@@ -42,6 +42,26 @@ shows its layer at the same cycle mod 4 as the audio under it. Gotcha: after
 same-origin frame) — pressing Play then STOPS it and clears the draw layers,
 which looks exactly like a layering bug.
 
+**v5 — a composed piece, six cameras (~66 s, 60 fps).** `dev/film-song.ts` is
+the song (D minor, 144 bpm = 2 × Rest's 72; one bar = 100 frames at 60 fps).
+The arrangement lives in the code as masks — `.mask("<0!4 1!11 [1 1 1 0] …>")`,
+one step per bar — so the whole song is ONE evaluation and every entry lands on
+its downbeat to the sample; `[1 1 1 0]` is the rest before the drop.
+(Arranging by re-evaluating each section did not work: Strudel schedules
+ahead, so a section's first beat went missing and a mute landed ~0.3 s late.)
+Only the Hydra shader changes during a take, on `SCENE_CUES`.
+
+```sh
+for cam in full code roll beat hydra rings; do bun scripts/showcase/film/song.mjs $cam; done
+# encode each take at 60 fps with the −120 ms shift, then:
+bun scripts/showcase/film/cut5.mjs    # EDL in bars → $FILM_WORK/cut5/rest-v5.mp4
+```
+
+Each take stops the warm-up and restarts the scheduler at cycle 0, so bar n is
+cycle n in every camera; `cut5.mjs` cuts between them over song-full's audio.
+Gotchas: two `.pianoroll()`s in one pattern share an animation and the second
+wins (the melody draws a `.spiral()` instead); TR909 at gain 0.6 clips.
+
 Helpers: `encode.mjs <take>` (frames + audio → mp4), `sheet.mjs <take> mark+secs…`
 (contact sheet at recorded marks), `sync.py <take>` (A/V offset: first score
 highlight vs first audio onset; run with `uv run --with numpy`).

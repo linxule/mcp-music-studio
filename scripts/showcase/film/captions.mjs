@@ -14,6 +14,13 @@ export const CREDITS = {
   mandala: "src(s0).repeat(3, 3).kaleid(6)",
   opart: "osc(40, 0.25, 0).kaleid(3).rotate(() => H(mel)() / 30)",
   everything: ".add(src(s0).kaleid(6), 0.6)",
+  rest: '.mask("<1!15 [1 1 1 0] 1!13 0>")',
+  drop: '.mask("<0!16 1!8 0!6>")',
+  halftime: 's("bd ~ ~ ~, ~ ~ sd ~, hh*4").mask("<0!4 1!11 …>")',
+  arp: 'n("0 2 4 6 7 6 4 2").scale("<d4:minor bb3:lydian …>")',
+  riser: 's("sd*16").gain(saw.range(0.1, 0.65).slow(2))',
+  spiral: "note(mel).s(\"gm_vibraphone\").spiral()",
+  last: "note(chords).s(\"piano\").room(0.6)",
 };
 const out = process.argv[2];
 if (out) {
