@@ -120,6 +120,22 @@ describe("what the report says", () => {
   });
 });
 
+describe("custom and layered visuals validate (they play in the widget)", () => {
+  // Each of these was reported "failed to evaluate — nothing will play" while
+  // the widget would have run it, which steered the model away from them.
+  it.each([
+    ["onPaint", `s("bd*4").onPaint((ctx, t, haps) => { ctx.fillRect(0, 0, 10, 10) })`],
+    ["an extra canvas layer", `note("c3 e3 g3").s("sawtooth").pianoroll({ ctx: getDrawContext('layer2') })`],
+    ["an offscreen canvas fed to Hydra", `const c = document.createElement('canvas')\nawait initHydra()\ns0.init({ src: c })\nsrc(s0).out()\ns("bd")`],
+    ["more audio bands than four", `await initHydra()\na.setBins(6)\nosc(10, 0.1, () => a5()).out()\ns("bd hh")`],
+    ["draw() with its own id", `s("bd hh").draw((haps, t) => {}, { id: 2 })`],
+  ])("%s", async (_name, code) => {
+    const v = await validateStrudelCode(code);
+    expect(v.error?.message, `validating:\n${code}`).toBeUndefined();
+    expect(v.ok).toBe(true);
+  });
+});
+
 describe("things that are wrong", () => {
   it("reports a syntax error with a line and column", async () => {
     const v = await validateStrudelCode('stack(\n  s("bd*4"),\n  s("hh*8"]\n)');

@@ -233,6 +233,29 @@ function installSpanGuard(): void {
 // Eval scope
 // -----------------------------------------------------------------------------
 
+/**
+ * A `document` for the PATTERN only (the sandbox's own scope, never
+ * globalThis): an offscreen canvas fed to Hydra, `s0.init({src:
+ * document.createElement('canvas')})`, runs in the widget and must not be
+ * reported as failed. Setting a global `document` instead made Strudel's own
+ * error path call `document.dispatchEvent` in the server (measured).
+ */
+const SANDBOX_DOCUMENT = () => {
+  const chain: Any = new Proxy(function () {} as Any, {
+    get: () => chain,
+    apply: () => chain,
+  });
+  return {
+    createElement: () => chain,
+    getElementById: () => chain,
+    querySelector: () => chain,
+    body: chain,
+  };
+};
+
+/** How many a0…aN band globals to stand in for (hydra tutorials go up to ~8). */
+const AUDIO_BAND_GLOBALS = 16;
+
 /** Browser-only globals the visuals topic legitimately uses. */
 const HYDRA_GLOBALS = () => {
   const chain: Any = new Proxy(function () {} as Any, {
@@ -256,10 +279,15 @@ const HYDRA_GLOBALS = () => {
     solid: src,
     src,
     a: new Proxy({} as Any, { get: () => chain }),
-    a0: chain,
-    a1: chain,
-    a2: chain,
-    a3: chain,
+    // The widget publishes a0…aN for however many bins `a.setBins(n)` asked
+    // for; a5 after setBins(6) used to fail here as "not defined".
+    ...Object.fromEntries(Array.from({ length: AUDIO_BAND_GLOBALS }, (_, i) => [`a${i}`, chain])),
+    // Custom drawing: `getDrawContext('layer2')` for an extra canvas layer. A
+    // chainable stand-in: painters never run here, only the top level does.
+    // (`document` is NOT stubbed here — this map is written onto the real
+    // globalThis, and Strudel's own code takes a defined `document` to mean a
+    // browser; see SANDBOX_DOCUMENT.)
+    getDrawContext: () => chain,
     s0: chain,
     s1: chain,
     o0: chain,
@@ -447,6 +475,7 @@ export async function evalStrudelSandboxed(
     // use it; route it to the outer one, which runTraced is capturing.
     const sandbox = Object.assign(Object.create(null), C.strudelScope, {
       console: { log: console.log, info: console.info, warn: console.warn, error: console.error },
+      document: SANDBOX_DOCUMENT(),
     });
     const context = vm.createContext(sandbox, {
       codeGeneration: { strings: false, wasm: false },

@@ -98,8 +98,12 @@ describe("strudel visualization guidance (v0.4.1, 'visuals' in v0.5, split into 
     }
   });
 
-  it("documents the one-draw-method-per-pattern rule", () => {
-    expect(visuals.toLowerCase()).toContain("one draw method");
+  it("documents that draw methods share one canvas, and the ways around it", () => {
+    // Since 0.5.12 the rule is "one per canvas": layers and inline visuals
+    // are the ways to have several.
+    expect(visuals).toContain("clears it every frame");
+    expect(visuals).toContain("getDrawContext('roll')");
+    expect(visuals).toContain("._pianoroll()");
   });
 
   it("nudges visualization + Hydra from the play-live tool description", () => {

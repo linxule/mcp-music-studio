@@ -150,6 +150,9 @@ describe("strudel guide method names exist", () => {
     "rand",
     "irand",
     "setcps", // tips: WRONG: note("c3 e3").setcps(0.5)
+    // Plain JavaScript inside an onPaint painter (visuals), chained on
+    // haps.filter(…) — an Array method, not a Pattern one.
+    "forEach",
   ]);
 
   const METHOD_CALL = /(?:^|[^\w.$'"])\.([a-zA-Z_$][\w$]*)\s*\(/gm;

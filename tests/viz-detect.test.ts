@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectViz, stripNonCode, VIZ_METHOD_RE, HYDRA_INIT_RE } from "../src/shared/viz-detect";
+import { detectViz, drawLayerIds, stripNonCode, VIZ_METHOD_RE, HYDRA_INIT_RE } from "../src/shared/viz-detect";
 
 describe("viz-detect", () => {
   it("detects Strudel draw methods", () => {
@@ -141,5 +141,33 @@ describe("viz-detect", () => {
     });
     // a variable merely NAMED hydra shouldn't count
     expect(detectViz("const hydra = 1; s(\"bd\")").hydra).toBe(false);
+  });
+});
+
+describe("custom drawing and extra layers (0.5.12)", () => {
+  it("counts onPaint / draw / animate as visuals, so the backdrop is revealed", () => {
+    expect(detectViz(`s("bd*4").onPaint((ctx, t, haps) => {})`).strudelViz).toBe(true);
+    expect(detectViz(`s("bd").draw((haps, t) => {}, { id: 2 })`).strudelViz).toBe(true);
+    expect(detectViz(`note("c3").animate({ smear: 0.5 })`).strudelViz).toBe(true);
+  });
+
+  it("does not mistake canvas API calls for draw methods", () => {
+    expect(detectViz(`const img = ctx.drawImage(a, 0, 0); s("bd")`).any).toBe(false);
+  });
+
+  it("an extra layer counts, and inline editor visuals do not", () => {
+    expect(detectViz(`note("c3").pianoroll({ ctx: getDrawContext('layer2') })`).strudelViz).toBe(true);
+    expect(detectViz(`note("c3")._pianoroll()`).any).toBe(false);
+  });
+
+  it("names the layers a pattern uses, or gives up on a computed id", () => {
+    expect(drawLayerIds(`s("bd")`)).toEqual([]);
+    expect(drawLayerIds(`getDrawContext()`)).toEqual([]);
+    expect(
+      drawLayerIds(`x.pianoroll({ ctx: getDrawContext('roll') }); y.spiral({ ctx: getDrawContext("spin", { pixelated: true }) })`),
+    ).toEqual(["roll", "spin"]);
+    expect(drawLayerIds(`getDrawContext('roll'); getDrawContext('roll')`)).toEqual(["roll"]);
+    expect(drawLayerIds(`getDrawContext(name)`)).toBeNull();
+    expect(drawLayerIds(`// getDrawContext(name)\ns("bd")`)).toEqual([]);
   });
 });

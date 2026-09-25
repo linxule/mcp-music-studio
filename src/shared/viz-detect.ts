@@ -7,11 +7,20 @@
 // =============================================================================
 
 const DRAW_METHODS =
-  "pianoroll|punchcard|wordfall|spiral|pitchwheel|tscope|scope|fscope|spectrum";
+  "pianoroll|punchcard|wordfall|spiral|pitchwheel|tscope|scope|fscope|spectrum|onPaint|draw|animate";
 
 /**
  * Strudel draw methods that paint onto `#test-canvas` (all resolve through
  * @strudel/draw's getDrawContext()). Matches `.pianoroll(` etc.
+ *
+ * `onPaint` / `draw` / `animate` are the custom-drawing hooks: the pattern
+ * hands Strudel its own function and draws whatever it likes. They were
+ * missing until 0.5.12, so a hand-drawn canvas painted onto a hidden backdrop
+ * (measured: the pixels were there, `display:none`). `.drawImage(` does not
+ * match — the method name must be followed by `(`.
+ *
+ * The underscore INLINE forms (`._pianoroll()`) are deliberately absent: they
+ * draw inside the editor, and revealing the backdrop would only veil the code.
  */
 export const VIZ_METHOD_RE = new RegExp(`\\.(${DRAW_METHODS})\\s*\\(`);
 
@@ -29,6 +38,13 @@ export const VIZ_ALL_RE = new RegExp(`\\ball\\s*\\(\\s*(${DRAW_METHODS})\\b`);
  * matters, not the receiver.
  */
 export const HYDRA_INIT_RE = /\binitHydra\s*\(/;
+
+/**
+ * An extra drawing layer: `getDrawContext('layer2')` creates a canvas of its
+ * own (the widget adopts it into the visuals stack), so a pattern can layer a
+ * pianoroll over a spiral instead of fighting over one canvas.
+ */
+export const VIZ_LAYER_RE = /\bgetDrawContext\s*\(/;
 
 /** Advance past a `'…'` / `"…"` literal; returns the index just past it. */
 function skipStringLiteral(code: string, start: number, quote: string): number {
@@ -178,7 +194,29 @@ export interface VizIntent {
 /** Inspect pattern code (comments and string literals ignored) for visual intent. */
 export function detectViz(code: string): VizIntent {
   const scan = stripNonCode(code);
-  const strudelViz = VIZ_METHOD_RE.test(scan) || VIZ_ALL_RE.test(scan);
+  const strudelViz =
+    VIZ_METHOD_RE.test(scan) || VIZ_ALL_RE.test(scan) || VIZ_LAYER_RE.test(scan);
   const hydra = HYDRA_INIT_RE.test(scan);
   return { strudelViz, hydra, any: strudelViz || hydra };
+}
+
+/**
+ * The layer ids a pattern names with `getDrawContext('id')`, or null when any
+ * call's id is not a plain string literal (then nobody can tell which layers
+ * the pattern still uses, and the widget keeps them all).
+ */
+export function drawLayerIds(code: string): string[] | null {
+  const scan = stripNonCode(code);
+  const ids: string[] = [];
+  const call = /\bgetDrawContext\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = call.exec(scan)) !== null) {
+    // Offsets survive stripNonCode, so read the literal from the raw source.
+    const rest = code.slice(match.index + match[0].length);
+    if (/^\s*\)/.test(rest)) continue; // getDrawContext(): the default canvas
+    const literal = /^\s*(['"`])([^'"`\\$]+)\1\s*[,)]/.exec(rest);
+    if (!literal) return null;
+    if (!ids.includes(literal[2])) ids.push(literal[2]);
+  }
+  return ids;
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { generateStrudelPlayerHtml } from "../src/strudel-browser-fallback";
 import { HYDRA_SYNTH_CDN } from "../src/shared/visual-presets";
-import { HYDRA_INIT_RE, VIZ_ALL_RE, VIZ_METHOD_RE } from "../src/shared/viz-detect";
+import { HYDRA_INIT_RE, VIZ_ALL_RE, VIZ_LAYER_RE, VIZ_METHOD_RE } from "../src/shared/viz-detect";
 
 // =============================================================================
 // The hosted /play page: hydra pin + H() guard (F3) and the visuals layer (F4)
@@ -59,7 +59,8 @@ describe("hydra-synth is pinned on the hosted page", () => {
   it("wraps H so a rest returns 0 instead of throwing every frame", () => {
     const html = generateStrudelPlayerHtml({ code: PLAIN });
     expect(html).toContain("defineWrappedGlobal('H'");
-    expect(html).toContain("return isFinite(value) ? value : 0;");
+    // Values go through hapNumber (notes → MIDI, never NaN); see share-page-audio.
+    expect(html).toContain("return hapNumber(sample());");
     // The catch is the point: upstream H reads [0].value off an empty query.
     expect(html).toMatch(/catch \(e\) \{\s*return 0;\s*\}/);
   });
@@ -142,13 +143,13 @@ describe("the stage is revealed only for code that draws", () => {
 
   it("re-derives the state client-side, from the SAME patterns as the server", () => {
     const init = readInit(generateStrudelPlayerHtml({ code: ROLL }));
-    expect(init.vizPatterns).toEqual([VIZ_METHOD_RE.source, VIZ_ALL_RE.source]);
+    expect(init.vizPatterns).toEqual([VIZ_METHOD_RE.source, VIZ_ALL_RE.source, VIZ_LAYER_RE.source]);
     expect(init.hydraPattern).toBe(HYDRA_INIT_RE.source);
 
     const html = generateStrudelPlayerHtml({ code: ROLL });
     expect(html).toContain("function applyVizState(code)");
     // Re-checked on every play, so an edit that adds .pianoroll() shows up.
-    expect(html).toContain("applyVizState(getLiveCode(ed))");
+    expect(html).toMatch(/const evaluated = getLiveCode\(ed\);\s*applyVizState\(evaluated\);/);
   });
 
   it("sizes the backing store itself — getDrawContext only sizes canvases it creates", () => {

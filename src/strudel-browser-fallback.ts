@@ -11,10 +11,12 @@ import { injectTempo } from "./shared/tempo.js";
 import {
   HYDRA_INIT_RE,
   VIZ_ALL_RE,
+  VIZ_LAYER_RE,
   VIZ_METHOD_RE,
   detectViz,
 } from "./shared/viz-detect.js";
 import { HYDRA_SYNTH_CDN } from "./shared/visual-presets.js";
+import { AUDIO_ANALYSER, AUDIO_DEFAULTS } from "./shared/audio-bands.js";
 
 export interface StrudelPlayerOptions {
   code: string;
@@ -70,7 +72,9 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     hydraCdn: HYDRA_SYNTH_CDN,
     // Regex SOURCES, not literals: the method list lives in viz-detect.ts and
     // must not be re-typed into a template string that can drift from it.
-    vizPatterns: [VIZ_METHOD_RE.source, VIZ_ALL_RE.source],
+    vizPatterns: [VIZ_METHOD_RE.source, VIZ_ALL_RE.source, VIZ_LAYER_RE.source],
+    // The audio-reactive `a`: same analyser and defaults as the widget.
+    audio: { analyser: AUDIO_ANALYSER, defaults: AUDIO_DEFAULTS },
     hydraPattern: HYDRA_INIT_RE.source,
   });
 
@@ -171,6 +175,8 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   /* With a shader running, the 2D stage must not paint its opaque ground over
      it. Strudel's draw functions clearRect() each frame, so this is safe. */
   body.hydra-on #test-canvas { background: transparent; }
+  /* Extra getDrawContext('name') layers, moved above #test-canvas. */
+  body:not(.viz-on) .viz-layer, .viz-layer.viz-layer-idle { display: none; }
 
   header, main { position: relative; z-index: 1; }
 
@@ -265,21 +271,167 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     };
   });
 
-  // The widget publishes an audio-reactive \`a\` (hydra's audio object over
-  // Strudel's master bus). This page has no such tap, so give the recipes a
-  // silent stand-in: every band reads 0 and the setters are no-ops. The shader
-  // runs; it just does not react — the guide says so.
-  (function () {
-    var zeros = [0, 0, 0, 0];
-    var noop = function () {};
-    var stub = { fft: zeros, bins: zeros, vol: 0, setBins: function (n) { zeros.length = 0; for (var i = 0; i < (n || 4); i++) zeros.push(0); }, setSmooth: noop, setCutoff: noop, setScale: noop, show: noop, hide: noop };
-    var zeroFn = function () { return function () { return 0; }; };
-    var define = function (key, value) {
-      Object.defineProperty(globalThis, key, { configurable: true, enumerable: true, get: function () { return value; }, set: function () {} });
+  // a:begin
+  // The widget's audio-reactive \`a\` (hydra's audio object, over Strudel's own
+  // master bus — never the microphone). The band math is src/shared/audio-bands.ts,
+  // copied because this page cannot import; tests/share-page-audio.test.ts holds
+  // this copy to that module's numbers.
+  var AUDIO = INIT.audio;
+
+  function bandLevels(bytes, sampleRate, fftSize, count, lowHz, highHz) {
+    var hzPerBin = sampleRate / fftSize;
+    var ratio = Math.pow(highHz / lowHz, 1 / count);
+    var levels = [];
+    for (var i = 0; i < count; i++) {
+      var lo = lowHz * Math.pow(ratio, i);
+      var hi = lo * ratio;
+      var start = Math.min(bytes.length - 1, Math.floor(lo / hzPerBin));
+      var end = Math.min(bytes.length, Math.max(start + 1, Math.ceil(hi / hzPerBin)));
+      var sum = 0;
+      for (var j = start; j < end; j++) sum += bytes[j];
+      levels.push(sum / Math.max(1, end - start) / 255);
+    }
+    return levels;
+  }
+
+  function stepBands(levels, prevBins, settings, max, bins, fft) {
+    var total = 0;
+    for (var i = 0; i < levels.length; i++) {
+      var smooth = settings[i].smooth;
+      bins[i] = levels[i] * max * (1 - smooth) + (prevBins[i] === undefined ? 0 : prevBins[i]) * smooth;
+      total += bins[i];
+    }
+    for (var k = 0; k < levels.length; k++) {
+      fft[k] = Math.max(0, (bins[k] - settings[k].cutoff) / settings[k].scale);
+    }
+    return total / Math.max(1, levels.length);
+  }
+
+  var audioApi = (function () {
+    var d = AUDIO.defaults;
+    var api = { vol: 0, cutoff: d.cutoff, scale: d.scale, smooth: d.smooth, max: d.max, bins: [], prevBins: [], fft: [], settings: [] };
+    var bandNames = [];
+    api.setBins = function (count) {
+      var n = Math.max(1, Math.floor(count) || 1);
+      api.bins = []; api.prevBins = []; api.fft = []; api.settings = [];
+      for (var i = 0; i < n; i++) {
+        api.bins.push(0); api.prevBins.push(0); api.fft.push(0);
+        api.settings.push({ cutoff: api.cutoff, scale: api.scale, smooth: api.smooth });
+      }
+      bandNames.forEach(function (k) { delete globalThis[k]; });
+      bandNames = [];
+      for (var b = 0; b < n; b++) {
+        (function (i) {
+          var k = 'a' + i;
+          globalThis[k] = function (scale, offset) {
+            var s = scale === undefined ? 1 : scale;
+            var o = offset === undefined ? 0 : offset;
+            return function () { return api.fft[i] * s + o; };
+          };
+          bandNames.push(k);
+        })(b);
+      }
     };
-    if (typeof globalThis.a === 'undefined') define('a', stub);
-    ['a0', 'a1', 'a2', 'a3'].forEach(function (k) { if (typeof globalThis[k] === 'undefined') define(k, zeroFn); });
+    api.setCutoff = function (v) { api.cutoff = v; api.settings.forEach(function (s) { s.cutoff = v; }); };
+    api.setSmooth = function (v) { api.smooth = v; api.settings.forEach(function (s) { s.smooth = v; }); };
+    api.setScale = function (v) { api.scale = v; api.settings.forEach(function (s) { s.scale = v; }); };
+    // The widget's debug meter has no place on this page.
+    api.show = function () {};
+    api.hide = function () {};
+    api.setBins(d.bins);
+    return api;
   })();
+  globalThis.a = audioApi;
+
+  var analyser = null;
+  var analyserBytes = null;
+
+  /** Tap the master bus, once audio exists (the AudioContext is lazy). */
+  function ensureAnalyser() {
+    if (analyser) return true;
+    try {
+      var ctx = typeof getAudioContext === 'function' ? getAudioContext() : null;
+      var controller = typeof getSuperdoughAudioController === 'function' ? getSuperdoughAudioController() : null;
+      var master = controller && controller.output && controller.output.destinationGain;
+      if (!ctx || !master || !master.connect) return false;
+      var node = ctx.createAnalyser();
+      node.fftSize = AUDIO.analyser.fftSize;
+      node.smoothingTimeConstant = AUDIO.analyser.smoothing;
+      node.minDecibels = AUDIO.analyser.minDecibels;
+      node.maxDecibels = AUDIO.analyser.maxDecibels;
+      master.connect(node); // a tap: never connected onward
+      analyser = node;
+      analyserBytes = new Uint8Array(node.frequencyBinCount);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** One frame of band analysis, while something on the page can react. */
+  var audioLoopRunning = false;
+
+  /** Start the band loop; it stops itself while no visuals are showing. */
+  function startAudioLoop() {
+    if (audioLoopRunning || typeof requestAnimationFrame !== 'function') return;
+    audioLoopRunning = true;
+    requestAnimationFrame(audioFrame);
+  }
+
+  function audioFrame() {
+    if (!document.body.classList.contains('viz-on')) {
+      audioLoopRunning = false;
+      return;
+    }
+    if (ensureAnalyser()) {
+      analyser.getByteFrequencyData(analyserBytes);
+      var levels = bandLevels(analyserBytes, analyser.context.sampleRate, analyser.fftSize,
+        audioApi.bins.length, AUDIO.analyser.lowHz, AUDIO.analyser.highHz);
+      audioApi.prevBins = audioApi.bins.slice(0);
+      audioApi.vol = stepBands(levels, audioApi.prevBins, audioApi.settings, audioApi.max, audioApi.bins, audioApi.fft);
+    }
+    requestAnimationFrame(audioFrame);
+  }
+  // a:end
+
+  // hap:begin
+  // H() values as numbers: a note becomes its MIDI number by Strudel's own rule
+  // (c3 = 48), a frequency its MIDI pitch. Copied from src/shared/hap-number.ts;
+  // tests/share-page-audio.test.ts holds this copy to it.
+  var CHROMAS = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
+  var ACCIDENTALS = { '#': 1, b: -1, s: 1, f: -1 };
+
+  function noteNameToMidi(text) {
+    var match = /^([a-gA-G])([#bsf]*)(-?[0-9]*)$/.exec(text);
+    if (!match) return null;
+    var offset = match[2].split('').reduce(function (sum, x) { return sum + ACCIDENTALS[x]; }, 0);
+    var oct = match[3] === '' ? 3 : Number(match[3]);
+    return (oct + 1) * 12 + CHROMAS[match[1].toLowerCase()] + offset;
+  }
+
+  function hapNumber(value) {
+    var n = rawHapNumber(value);
+    return isFinite(n) ? n : 0;
+  }
+
+  function rawHapNumber(value) {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') {
+      var trimmed = value.trim();
+      if (trimmed !== '' && isFinite(Number(trimmed))) return Number(trimmed);
+      var midi = noteNameToMidi(trimmed);
+      return midi === null ? 0 : midi;
+    }
+    if (value && typeof value === 'object') {
+      // freq outranks note, as in Strudel's valueToMidi.
+      if (typeof value.freq === 'number' && value.freq > 0) return 12 * Math.log2(value.freq / 440) + 69;
+      if (value.note !== undefined) return rawHapNumber(value.note);
+      if (value.n !== undefined) return rawHapNumber(value.n);
+      if (value.value !== undefined) return rawHapNumber(value.value);
+    }
+    return 0;
+  }
+  // hap:end
 
   // Upstream H is  p => () => reify(p).queryArc(t, t)[0].value  — a zero-width
   // query. Under a REST there is no hap, so [0] is undefined and reading
@@ -290,8 +442,8 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
       var sample = original(pattern);
       return function () {
         try {
-          var value = Number(sample());
-          return isFinite(value) ? value : 0;
+          // A note becomes its MIDI number, so pitch can drive a shader.
+          return hapNumber(sample());
         } catch (e) {
           return 0;
         }
@@ -323,7 +475,10 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     var any = hydra || VIZ_RES.some(function (re) { return re.test(scan); });
     document.body.classList.toggle('viz-on', any);
     document.body.classList.toggle('hydra-on', hydra);
-    if (any) sizeVizCanvas();
+    if (any) {
+      sizeVizCanvas();
+      startAudioLoop();
+    }
   }
 
   // getDrawContext() only sizes a canvas it CREATES; ours pre-exists, so its
@@ -340,6 +495,73 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
 
   window.addEventListener('resize', sizeVizCanvas);
   sizeVizCanvas();
+
+  // layers:begin
+  // Extra getDrawContext('name') canvases. Strudel prepends each as a fixed,
+  // full-page canvas BEFORE #test-canvas, so the stage's opaque ground covered
+  // it. Move each one just above #test-canvas; drop the ones the next
+  // evaluation no longer names, and clear them all on Stop. The id rule is
+  // src/shared/viz-detect.ts drawLayerIds(); tests/share-page-audio.test.ts
+  // holds this copy to it.
+  function drawLayerIds(code) {
+    // The RAW code, not stripComments(): that strips from any '//', including
+    // one inside a URL string, and so could hide a call still in use (Codex).
+    // A commented-out call errs the safe way — its layer stays.
+    var scan = String(code);
+    var ids = [];
+    var call = /\\bgetDrawContext\\s*\\(/g;
+    var m;
+    while ((m = call.exec(scan)) !== null) {
+      var rest = scan.slice(m.index + m[0].length);
+      if (/^\\s*\\)/.test(rest)) continue;
+      var literal = /^\\s*(['"\`])([^'"\`\\\\$]+)\\1\\s*[,)]/.exec(rest);
+      if (!literal) return null;
+      if (ids.indexOf(literal[2]) < 0) ids.push(literal[2]);
+    }
+    return ids;
+  }
+
+  var drawLayers = [];
+
+  function adoptLayer(c) {
+    if (drawLayers.indexOf(c) >= 0) return;
+    c.classList.add('viz-layer');
+    c.style.zIndex = '0';
+    // Above #test-canvas and every earlier layer: creation order, as in the widget.
+    var anchor = drawLayers.length ? drawLayers[drawLayers.length - 1] : vizCanvas;
+    anchor.parentNode.insertBefore(c, anchor.nextSibling);
+    drawLayers.push(c);
+  }
+
+  // Hide (and clear) unnamed layers rather than removing them: getDrawContext()
+  // reuses a canvas it finds by id, but re-creates a removed one with a second
+  // window-resize listener that keeps the old canvas alive (Codex).
+  function pruneLayers(code) {
+    var keep = drawLayerIds(code);
+    drawLayers = drawLayers.filter(function (c) { return c.isConnected; });
+    drawLayers.forEach(function (c) {
+      var used = keep === null || keep.indexOf(c.id) >= 0;
+      if (!used) clearLayer(c);
+      c.classList.toggle('viz-layer-idle', !used);
+    });
+  }
+
+  function clearLayer(c) {
+    try { var g = c.getContext('2d'); if (g) g.clearRect(0, 0, c.width, c.height); } catch (e) { /* WebGL: hiding is enough */ }
+  }
+
+  function clearLayers() {
+    drawLayers.forEach(clearLayer);
+  }
+
+  if (typeof MutationObserver === 'function') new MutationObserver(function (records) {
+    records.forEach(function (r) {
+      r.addedNodes.forEach(function (n) {
+        if (n instanceof HTMLCanvasElement && n.id !== 'test-canvas' && n.id !== 'hydra-canvas' && n.parentNode === document.body) adoptLayer(n);
+      });
+    });
+  }).observe(document.body, { childList: true });
+  // layers:end
 
   var editorEl = document.getElementById('editor');
   const playBtn = document.getElementById('play-btn');
@@ -436,7 +658,9 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     if (!ed || !ready) { setStatus('Initializing...'); return; }
     playBtn.disabled = true;
     // The user may have added (or removed) a draw method since the page loaded.
-    applyVizState(getLiveCode(ed));
+    // The code this Play evaluates — the buffer may change during the await.
+    const evaluated = getLiveCode(ed);
+    applyVizState(evaluated);
     try {
       // StrudelMirror.evaluate() takes ONE boolean (shouldPlay) and always
       // evaluates its own buffer — passing the code as the first argument
@@ -457,6 +681,7 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
         return;
       }
       applyRuntimeTempo(ed);
+      pruneLayers(evaluated);
       playing = state.started !== false;
       playBtn.textContent = playing ? 'Playing' : 'Play';
       playBtn.classList.toggle('active', playing);
@@ -480,6 +705,7 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     if (!ed) return;
     try {
       ed.stop();
+      clearLayers();
       playing = false;
       playBtn.textContent = 'Play';
       playBtn.classList.remove('active');

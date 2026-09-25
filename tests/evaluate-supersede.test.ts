@@ -106,6 +106,8 @@ async function loadHook() {
     const installEvalScopeHooks = () => {};
     const snapshotStrudelGlobals = () => {};
     const stageVisuals = () => {};
+    const readEvalError = () => null;
+    const pruneDrawLayers = () => {};
     const applyRuntimeTempo = () => false;
     const isSchedulerStarted = () => scheduler.started;
     const ensureAudioRunning = () => getSettle()?.promise ?? Promise.resolve(true);

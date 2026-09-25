@@ -245,6 +245,24 @@ html, body {
   image-rendering: pixelated;
 }
 
+/* Inline visuals (`._pianoroll()`, `._scope()` …) are canvases Strudel mounts
+   inside the editor at 500px wide by default — wider than a phone's frame.
+   max-width beats their inline width; the height stays theirs. */
+.strudel-container canvas {
+  max-width: 100%;
+}
+
+/* Extra getDrawContext('id') layers (adoptDrawLayer): overlays over
+   #test-canvas, so they carry no stage of their own. */
+.viz-layer {
+  background: transparent;
+}
+
+/* A layer the current pattern doesn't name — kept for reuse, never shown. */
+.repl-section .viz-layer.viz-layer-idle {
+  display: none;
+}
+
 /* When Hydra is active, #test-canvas must not paint its opaque stage over the
    shader. Strudel's draw functions clearRect() each frame, so a transparent
    background is safe. */

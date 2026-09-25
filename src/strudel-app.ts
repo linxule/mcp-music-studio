@@ -19,7 +19,9 @@ import {
   applyHostStyleVariables,
   type McpUiHostContext,
 } from "@modelcontextprotocol/ext-apps";
-import { detectViz } from "./shared/viz-detect";
+import { detectViz, drawLayerIds } from "./shared/viz-detect";
+import { hapNumber } from "./shared/hap-number";
+import { AUDIO_ANALYSER, bandLevels, stepBands } from "./shared/audio-bands";
 import { injectTempo } from "./shared/tempo";
 import { applyVisualPreset } from "./shared/visual-presets";
 import {
@@ -236,6 +238,7 @@ function setStatus(text: string, type: StatusType = "normal") {
 }
 
 function updatePlayState(playing: boolean) {
+  if (!playing) clearDrawLayers();
   isPlaying = playing;
   audioBlocked = playing && audioIsBlockedNow();
   audibleStatus = null;
@@ -456,9 +459,8 @@ function fixLayout(): void {
       return;
     }
     if (el.id === "test-canvas") return;
-    if (el.style.position === "fixed") {
-      el.style.display = "none";
-    }
+    // A getDrawContext('id') layer: adopt it (the observer's backstop).
+    if (isDrawLayer(el)) adoptDrawLayer(el);
   });
 
   // The editor content is a sibling AFTER <strudel-editor>. Its size is owned
@@ -487,6 +489,7 @@ function syncVizCanvasSize(): void {
   const bh = Math.round(h * dpr);
   if (vizCanvas.width !== bw) vizCanvas.width = bw;
   if (vizCanvas.height !== bh) vizCanvas.height = bh;
+  syncDrawLayerSizes();
   if (!hydraActive) return;
   syncHydraCanvasSize(w, h);
   // getDrawContext installed its own debounced (200ms) window-resize handler
@@ -577,12 +580,112 @@ function adoptHydraCanvas(c: HTMLCanvasElement): void {
   }
 }
 
-// Catch the canvas the moment @strudel/hydra prepends it to <body>.
+// -----------------------------------------------------------------------------
+// Extra 2D layers — getDrawContext('layer2')
+//
+// Every 2D painter clears its canvas each frame, so two visuals on the default
+// #test-canvas erase each other. Strudel's answer is a canvas per visual:
+// `.pianoroll({ ctx: getDrawContext('layer2') })`. getDrawContext() creates
+// that canvas the same way it creates Hydra's — a position:fixed, full-viewport
+// child of <body> — and our stray-canvas rule used to hide it, so the second
+// layer never showed. Now it is adopted like #hydra-canvas: into the visuals
+// stack, over #test-canvas, sized with it. A layer the next pattern no longer
+// names is removed (only #test-canvas is cleared upstream, so a stale layer
+// would otherwise sit over the new pattern), and a stop clears them all.
+// -----------------------------------------------------------------------------
+
+/** Canvases a pattern created with getDrawContext('id'), adopted into the stack. */
+const drawLayers = new Set<HTMLCanvasElement>();
+/** Pending re-apply after getDrawContext's own debounced resize handler. */
+let drawLayerLateResize: ReturnType<typeof setTimeout> | null = null;
+
+function isDrawLayer(node: Node): node is HTMLCanvasElement {
+  return (
+    node instanceof HTMLCanvasElement &&
+    node.id !== "hydra-canvas" &&
+    node.id !== "test-canvas" &&
+    node.parentElement === document.body
+  );
+}
+
+function adoptDrawLayer(c: HTMLCanvasElement): void {
+  if (c.parentElement !== replSection) {
+    c.removeAttribute("style");
+    c.className = "viz-canvas viz-layer";
+    c.setAttribute("aria-hidden", "true");
+    // Over #test-canvas, under the code, in creation order.
+    replSection.insertBefore(c, strudelContainerEl());
+  }
+  drawLayers.add(c);
+  sizeDrawLayer(c);
+}
+
+function strudelContainerEl(): Element | null {
+  return replSection.querySelector(".strudel-container");
+}
+
+function sizeDrawLayer(c: HTMLCanvasElement): void {
+  if (c.width === vizCanvas.width && c.height === vizCanvas.height) return;
+  const w = replSection.clientWidth;
+  const h = replSection.clientHeight;
+  if (w === 0 || h === 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(w * dpr);
+  c.height = Math.round(h * dpr);
+}
+
+/** Size every layer like #test-canvas, now and after getDrawContext's resize handler. */
+function syncDrawLayerSizes(): void {
+  if (drawLayers.size === 0) return;
+  drawLayers.forEach(sizeDrawLayer);
+  if (drawLayerLateResize !== null) clearTimeout(drawLayerLateResize);
+  drawLayerLateResize = setTimeout(() => {
+    drawLayerLateResize = null;
+    drawLayers.forEach(sizeDrawLayer);
+  }, 320);
+}
+
+/**
+ * After an evaluation: hide (and clear) the layers this pattern no longer
+ * names, and show the ones it does. Hidden, not removed: getDrawContext()
+ * finds a canvas by id and reuses it, while a removed one is re-created with a
+ * SECOND window-resize listener (upstream never removes the first, which keeps
+ * the detached canvas alive — Codex).
+ */
+function pruneDrawLayers(code: string): void {
+  const keep = drawLayerIds(code);
+  for (const layer of Array.from(drawLayers)) {
+    if (!layer.isConnected) {
+      drawLayers.delete(layer);
+      continue;
+    }
+    // A computed id (null) — can't tell which are in use, so show them all.
+    const used = keep === null || keep.includes(layer.id);
+    if (!used) clearLayer(layer);
+    layer.classList.toggle("viz-layer-idle", !used);
+  }
+}
+
+function clearLayer(layer: HTMLCanvasElement): void {
+  try {
+    layer.getContext("2d")?.clearRect(0, 0, layer.width, layer.height);
+  } catch { /* a layer used as a WebGL context has no 2d; hiding it is enough */ }
+}
+
+/** A stop: the layers' last frames would otherwise stay painted. */
+function clearDrawLayers(): void {
+  drawLayers.forEach(clearLayer);
+}
+
+// Catch the canvases the moment @strudel/hydra or getDrawContext('id')
+// prepends them to <body>.
 const hydraCanvasObserver = new MutationObserver((records) => {
   for (const record of records) {
     for (const node of Array.from(record.addedNodes)) {
       if (node instanceof HTMLCanvasElement && node.id === "hydra-canvas") {
         adoptHydraCanvas(node);
+      } else if (isDrawLayer(node)) {
+        adoptDrawLayer(node);
       }
     }
   }
@@ -873,19 +976,16 @@ function installEvalScopeHooks(): void {
     const sample = original(pattern);
     return () => {
       try {
-        const value = Number(sample());
-        return Number.isFinite(value) ? value : 0;
+        // Numbers pass through; a note becomes its MIDI number (c3 = 48) and
+        // a frequency its MIDI pitch, so pitch can drive a shader
+        // (src/shared/hap-number.ts). Until 0.5.12 those were flattened to 0.
+        return hapNumber(sample());
       } catch {
         // Rest under the playhead — the zero-width query returns no hap and the
         // upstream H throws. Hydra calls this every frame, so one rest would
         // otherwise kill the shader while the audio kept going.
         return 0;
       }
-      // NOTE: the Number() above also flattens NOTE-valued patterns to 0 —
-      // H("<c3 e3>") feeds a shader 0 rather than a pitch. That is deliberate:
-      // Hydra parameters are numeric, and a silent 0 beats a per-frame throw.
-      // Patterns meant to drive a shader should carry numbers, as the guide's
-      // recipes do.
     };
   });
 }
@@ -992,6 +1092,9 @@ function applyVizVisibility(): void {
   if (vizVisible) {
     // Backdrop just gained layout — size the backing store on the next frame.
     requestAnimationFrame(syncVizCanvasSize);
+    // The analyser loop stops itself a second after the visuals go; showing
+    // them again must restart it, or an onPaint() reading `a` froze (Codex).
+    if (audioApi) startAnalyserLoop();
   }
   // Stage mode shows ONLY the visuals; with the visuals off it would be a blank
   // rectangle, so leaving them takes the stage down too.
@@ -1201,14 +1304,11 @@ function syncVizTheme(): void {
 // 2048 → 1024 bins of ~23 Hz at 48 kHz, fine enough to give the kick its own
 // band. (256 gave 187 Hz bins, so "band 0" ran 0–6 kHz and "band 1" 6–12 kHz —
 // the guide's "bass band" was listening to hi-hats.)
-const ANALYSER_FFT_SIZE = 2048;
-/** Bands are log-spaced between these, like ears (and hydra's bark bands). */
-const BAND_LOW_HZ = 20;
-const BAND_HIGH_HZ = 12_000;
-const ANALYSER_SMOOTHING = 0.8;
+const ANALYSER_FFT_SIZE = AUDIO_ANALYSER.fftSize;
+const ANALYSER_SMOOTHING = AUDIO_ANALYSER.smoothing;
 /** Musical range. The -100..-30 dB default squashes Strudel's output flat. */
-const ANALYSER_MIN_DB = -90;
-const ANALYSER_MAX_DB = -20;
+const ANALYSER_MIN_DB = AUDIO_ANALYSER.minDecibels;
+const ANALYSER_MAX_DB = AUDIO_ANALYSER.maxDecibels;
 /** How long to keep looking for Hydra after a render asks for it. */
 const ANALYSER_WAIT_MS = 20000;
 
@@ -1375,34 +1475,11 @@ function createAudioApi(): StrudelAudioApi {
       const bytes = analyserBytes;
       if (!node || !bytes) return;
       node.getByteFrequencyData(bytes);
-      const count = api.bins.length;
-      // Log-spaced band edges in bin indices, so fft[0] is the kick/sub band
-      // and fft[3] the hats — not four equal slices of a linear spectrum.
-      const hzPerBin = node.context.sampleRate / node.fftSize;
-      const ratio = Math.pow(BAND_HIGH_HZ / BAND_LOW_HZ, 1 / count);
+      // Log-spaced bands, so fft[0] is the kick/sub band and fft[3] the hats —
+      // not four equal slices of a linear spectrum (src/shared/audio-bands.ts).
+      const levels = bandLevels(bytes, node.context.sampleRate, node.fftSize, api.bins.length);
       api.prevBins = api.bins.slice(0);
-      let total = 0;
-      for (let i = 0; i < count; i++) {
-        const lo = BAND_LOW_HZ * Math.pow(ratio, i);
-        const hi = lo * ratio;
-        const start = Math.min(bytes.length - 1, Math.floor(lo / hzPerBin));
-        const end = Math.min(bytes.length, Math.max(start + 1, Math.ceil(hi / hzPerBin)));
-        let sum = 0;
-        for (let j = start; j < end; j++) sum += bytes[j];
-        // Mean magnitude 0..1, then into hydra's loudness units via `max`.
-        const level = sum / Math.max(1, end - start) / 255;
-        const raw = level * api.max;
-        const smooth = api.settings[i].smooth;
-        api.bins[i] = raw * (1 - smooth) + api.prevBins[i] * smooth;
-        total += api.bins[i];
-      }
-      api.vol = total / Math.max(1, count);
-      for (let i = 0; i < count; i++) {
-        api.fft[i] = Math.max(
-          0,
-          (api.bins[i] - api.settings[i].cutoff) / api.settings[i].scale,
-        );
-      }
+      api.vol = stepBands(levels, api.prevBins, api.settings, api.max, api.bins, api.fft);
       if (api.isDrawing) drawAudioMeter(api);
     },
   };
@@ -1422,16 +1499,16 @@ function installAudioReactiveGlobals(): void {
 }
 
 /**
- * Drive the band analysis. Runs ONLY while Hydra is up — a pattern with no
- * shader has nothing to react, so there is no reason to burn a frame callback.
- * The loop stops itself once Hydra's canvas is gone.
+ * Drive the band analysis. Runs while Hydra is up or the visuals backdrop is
+ * showing — both can react to `a` (a shader, or a hand-drawn onPaint()). With
+ * neither there is nothing to react, so the loop stops itself.
  */
 function startAnalyserLoop(): void {
   analyserDeadline = performance.now() + ANALYSER_WAIT_MS;
   if (analyserRaf !== null) return;
   const frame = (now: number) => {
-    if (isHydraLive()) {
-      // Keep the window open while Hydra is alive; close it once it goes.
+    if (isHydraLive() || vizVisible) {
+      // Keep the window open while something can react; close it once not.
       analyserDeadline = now + 1000;
       if (analyserNode || ensureAnalyser()) audioApi?.tick();
     } else if (now > analyserDeadline) {
@@ -1608,9 +1685,10 @@ function stageVisuals(code: string): void {
   // Stage the Hydra layer BEFORE evaluation so the canvas Hydra creates is
   // adopted and sized while hydra-synth is still importing.
   setHydraActive(intent.hydra);
-  if (intent.hydra) {
-    // Make `a` resolvable before the shader's first frame, and start reading
-    // the master bus (see the audio-reactive section).
+  if (intent.any) {
+    // Make `a` resolvable before the first frame, and start reading the master
+    // bus (see the audio-reactive section). Any visual, not only Hydra: a
+    // hand-drawn onPaint() reading a.fft used to see zeros.
     installAudioReactiveGlobals();
     startAnalyserLoop();
   }
@@ -1917,6 +1995,8 @@ function installEvaluateHook(editor: any): void {
       return;
     }
     if (evaluationSuperseded(editor, generation, seq)) return;
+    // A pattern that failed keeps the old one playing — and its layers.
+    if (!readEvalError()) pruneDrawLayers(code);
     // Some of the clobbered globals (`time`) are only published onto globalThis
     // by the evaluation itself, so the pre-eval snapshot above cannot see them
     // on a cold widget. This second pass catches them, and no-ops once a
@@ -1954,7 +2034,11 @@ function installStateListener(element: HTMLElement): void {
     // The scheduler's clock has created the context by now; follow its state.
     if (started) watchAudioContext(replAudioContext());
     audioBlocked = started && audioIsBlockedNow();
-    if (!started) audibleStatus = null;
+    if (!started) {
+      audibleStatus = null;
+      // A stop from the editor itself (Ctrl+., hush()) — clear the layers too.
+      clearDrawLayers();
+    }
     renderPlayButton();
     // A stop nobody announced (hush(), the editor's own stop key) left the
     // status reading "Playing..." over silence. An error stays up, and so does
@@ -2742,6 +2826,8 @@ app.onteardown = () => {
     teardownAudioAnalyser();
     // A discarded widget must not resume audio on a stray tap.
     stopGestureUnlock();
+    drawLayers.forEach((layer) => layer.remove());
+    drawLayers.clear();
     watchedAudioContext?.removeEventListener("statechange", syncAudioState);
     watchedAudioContext = null;
   } catch { /* best-effort cleanup */ }

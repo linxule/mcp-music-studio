@@ -864,8 +864,9 @@ No hand-written visual? Set the \`visuals\` parameter to a preset — and
 \`theme\` to a colour scheme that fits the mood. Both are documented below.
 
 ## Draw methods (Layer 1)
-Add ONE draw method to a pattern (all of them share the same 2D canvas, so two
-at once fight over it).
+Each draw method paints the shared backdrop canvas and clears it every frame,
+so two on the SAME canvas erase each other. For several visuals at once, give
+each its own layer, or put them inline under the code — both below.
 
 .pianoroll()              scrolling piano roll (best for melodies/chords)
 .pianoroll({ cycles: 4 }) show 4 cycles at once
@@ -893,6 +894,16 @@ note("c3 e3 g3 c4").s("sawtooth").lpf(2000).pianoroll()
   hideInactive  1 = only draw the note under the playhead (default 0)
   background  canvas background colour            (default "transparent")
 
+### Colours and shapes
+pianoroll / punchcard: active (colour of sounding notes), inactive (the rest),
+  playheadColor, background, fillActive: 1 (fill sounding notes), stroke: 1
+  (outline notes), colorizeInactive: 0 (grey out the rest) — e.g.
+  .pianoroll({ active: '#ff7aa2', inactive: '#3a3450', playheadColor: 'white' })
+spiral: size, thickness, stretch, activeColor, inactiveColor, playheadColor,
+  fade (default true)
+pitchwheel: mode ('flake' or 'polygon'), edo (notes per octave, default 12),
+  circle: 1 (draw the wheel), thickness, hapRadius
+
 ### Per-pattern colors
 .color("cyan") / .color("#ff7aa2") tints that pattern's notes in the pianoroll
 and its highlight in the code. Pattern it for movement: .color("<cyan magenta>").
@@ -902,6 +913,70 @@ BEFORE the patterns. The REPL plays the LAST expression, and all() returns
 nothing — put it after your code and the whole pattern goes silent.
 .scope()/.spectrum() animate only while audio plays; .pianoroll()/.punchcard()
 animate from the note schedule, so they update live as the user edits (Ctrl+Enter).
+
+## Layers: several visuals at once
+Give each draw method its own canvas with ctx: getDrawContext('name'). Every
+name is a layer stacked over the backdrop, in the order the pattern creates
+them, so a piano roll and a drum grid can share the stage:
+
+stack(
+  note("<c3 eb3 g3 bb3>*2").s("sawtooth").lpf(1400).pianoroll({ ctx: getDrawContext('roll') }),
+  s("bd*4, ~ cp, hh*8").bank("RolandTR909").punchcard({ ctx: getDrawContext('beat'), vertical: 1 })
+)
+
+- Layer names in SINGLE quotes: getDrawContext("roll") hands it a pattern, not
+  a name, and the evaluation fails ("'#[object Object]' is not a valid
+  selector").
+- ctx works on pianoroll, punchcard, spiral, pitchwheel, scope and spectrum.
+- pianoroll, scope and spectrum each run one animation per id (default 1), so
+  a second scope or spectrum needs { id: 2 } as well as its own layer. Do NOT
+  give a pianoroll an id: it then shows only notes tagged with that id.
+- A layer the next evaluation no longer names is removed; Stop clears them.
+
+## Draw it yourself: onPaint
+.onPaint((ctx, time, haps) => { … }) hands you the backdrop canvas every frame
+with the notes around the playhead — draw anything. Your painter owns the
+canvas: clear it, or fade it for trails. a.fft (topic "hydra") works here too,
+so shapes can follow the sound as well as the notes.
+
+note("<c3 e3 g3 b3>*4").s("triangle").room(0.4)
+  .onPaint((ctx, time, haps) => {
+    const { width, height } = ctx.canvas
+    // Your painter owns the canvas: fade the last frame instead of clearing it
+    ctx.fillStyle = 'rgba(12, 10, 24, 0.18)'
+    ctx.fillRect(0, 0, width, height)
+    haps.filter((h) => h.isActive(time)).forEach((h) => {
+      const x = ((noteToMidi(h.value.note) - 44) / 16) * width
+      const r = 12 + a.fft[1] * 60
+      ctx.beginPath()
+      ctx.arc(x, height / 2, r, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(255, 122, 162, 0.85)'
+      ctx.fill()
+    })
+  })
+
+- h.isActive(time) keeps the notes sounding now; h.value holds the controls
+  (note, s, gain, …). A note is a name like 'c3' — noteToMidi() makes it a
+  number. ctx.canvas.width/height are device pixels.
+- It runs every frame: keep the work small, and use SINGLE quotes for strings
+  (double quotes are mini-notation).
+- Draw on a layer instead with .onPaint(…) plus your own
+  getDrawContext('name') inside the painter.
+
+## Inline visuals and sliders (in the code itself)
+Prefix a draw method with _ and it draws UNDER that line of code, one per
+line, each with its own canvas — so every part of a stack can show its own.
+slider(value, min, max) puts a knob in the code the user can drag while it
+plays: the easiest way to hand them a control.
+
+stack(
+  note("c2 [eb2 g2] bb1 [c2 f2]").s("sawtooth").lpf(slider(900, 200, 4000))._pianoroll(),
+  s("bd*4, ~ cp").bank("RolandTR808").gain(slider(0.8, 0, 1))._punchcard()
+)
+
+._pianoroll() ._punchcard() ._spiral() ._pitchwheel() ._scope() ._spectrum()
+take the same options as their plain forms. They live in the code, so Stage
+mode (which hides the code) hides them too; they shrink to fit a phone.
 
 ## The \`visuals\` parameter (a floor, not a ceiling)
 Ready-made visual for code that has none of its own:
@@ -947,8 +1022,12 @@ just as a backdrop for text.
 ### Troubleshooting (draw methods)
 - Nothing visible: the pattern has no draw method and no visuals preset, or
   .scope()/.spectrum() is waiting for audio (they draw only while sound plays).
-- Two draw methods flicker: they share one canvas — keep one per pattern, or
-  use all(p => p.<method>()) BEFORE the patterns to draw everything in one.
+- Two draw methods flicker: they share one canvas — give each its own
+  getDrawContext('name') layer, use the inline _ forms, or use
+  all(p => p.<method>()) BEFORE the patterns to draw everything in one.
+- A second scope/spectrum stays blank: give it { id: 2 } (see Layers).
+- onPaint shows smeared frames forever: your painter must clear or fade the
+  canvas itself.
 - Iterating ("now add a shader"): every tool call is a NEW widget, not an
   update — send the whole revised pattern and ask the user to stop the
   previous player.`,
@@ -1027,6 +1106,18 @@ stack(
   s("hh*8").gain(0.5)
 )
 
+### Recipe: pitch drives the shader
+H() on NOTES gives their MIDI number (c3 = 48, e3 = 52, a4 = 69), so the
+melody itself can steer a shader. Remap it to the range you need.
+
+await initHydra()
+osc(12, 0.08, 1.2)
+  .color(1, () => (H("<c3 e3 g3 c4>")() - 48) / 12, 0.8)
+  .kaleid(4)
+  .out(o0)
+
+note("<c3 e3 g3 c4>").s("gm_epiano1").room(0.5)
+
 ### Recipe: post-process the pianoroll (feedStrudel)
 feedStrudel pipes the Strudel draw canvas into Hydra source s0, so you can
 warp, mirror, and trail the piano roll itself.
@@ -1078,9 +1169,8 @@ Same formula and defaults as hydra-synth, so hydra tutorials that read a.fft[0]
 or a0() work here verbatim. Barely moving? Lower setCutoff or setScale.
 Twitchy? Raise setSmooth toward 0.8.
 
-Share links and the browser fallback page have no live \`a\` — there it reads
-0 everywhere (the shader still runs, it just does not react). For a visual that
-must work on the share page too, drive it with H(pattern) instead.
+Share links and the browser fallback page have the same live \`a\` (since
+0.5.12), so a reactive visual reacts there too.
 
 Photosensitivity: the reactive recipes flash on every hit. Keep full-frame
 brightness changes under ~3 per second and prefer colour/scale modulation over
