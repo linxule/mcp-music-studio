@@ -207,12 +207,6 @@ body {
   line-height: 1;
 }
 
-/* The Room toggle reads as lit while on. */
-.toolbar-btn.room-btn[aria-pressed="true"] {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-}
-
 /* Text-label buttons (MIDI) sit next to the single-glyph ones without
    towering over them. */
 .toolbar-btn.toolbar-btn-text {
@@ -235,7 +229,9 @@ body {
   background: var(--color-card-bg);
 }
 
-/* Toggle buttons (Edit) read as pressed rather than merely hovered. */
+/* Toggle buttons (Edit, Room) read as pressed rather than merely hovered.
+   Room once had its own rule that coloured its TEXT primary — on this primary
+   background, so the lit button showed no label at all (0.5.10–0.5.12). */
 .toolbar-btn[aria-pressed="true"] {
   background: var(--color-primary);
   border-color: var(--color-primary);

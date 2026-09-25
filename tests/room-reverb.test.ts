@@ -154,6 +154,16 @@ describe("widget wiring", () => {
     expect(ABC).toContain("audioBufferToWavBase64(rendered)");
   });
 
+  it("the lit Room button keeps a readable label", () => {
+    // A rule of its own once set its text to --color-primary, the colour of
+    // the pressed background: a blank blue box. It must use the shared
+    // pressed style (white on primary), like Edit.
+    const css = read("mcp-app.css");
+    expect(css).not.toMatch(/\.room-btn\[aria-pressed="true"\]\s*\{[^}]*color:\s*var\(--color-primary\)/);
+    expect(css).toMatch(/\.toolbar-btn\[aria-pressed="true"\]\s*\{[^}]*background:\s*var\(--color-primary\);[^}]*color:\s*#ffffff/);
+    expect(ABC).toContain('roomBtn.className = "toolbar-btn toolbar-btn-text room-btn";');
+  });
+
   it("the share page gets the same release", () => {
     expect(read("browser-fallback.ts")).toContain("fadeLength: ${NOTE_FADE_MS}");
   });

@@ -250,6 +250,13 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
 
+## 0.5.13 — September 25, 2026
+
+The sheet widget's **Room** button showed as a blank blue box while on: its
+label was drawn in the same blue as its pressed background (0.5.10–0.5.12).
+It now reads like the Edit toggle, white on blue.
+[0.5.13](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.13)
+
 ## 0.5.12 — September 25, 2026
 
 Tested on a phone, then opened up. Scrolling a conversation no longer starts

@@ -67,3 +67,24 @@ paths are all live.
 `window.__harness` exposes `{ bridge, frame, win, doc, entries, send(),
 mount(), setArgs(obj), usePreset(id) }` for driving the harness from DevTools or
 a browser-automation tool.
+
+## Film page (`film.html`)
+
+A wordless phone conversation of real widgets, used to shoot the 0.5.13
+release film: five tool calls from `film-score.ts`, each in its own sandboxed
+frame with its own `AppBridge`, laid out at 390 CSS px and scaled up with CSS
+`zoom` (`?scale=2.769`) so the widgets see a phone (`platform: "mobile"`,
+devicePixelRatio 2.77) while the capture is 1080×1920 and sharp. `?v=old`
+loads `/widgets/old/*.html` (the recorder routes those to a published version),
+`?label=` prints a version in the corner, `?allow=1` delegates autoplay.
+
+- The page draws the finger; the recorder moves it in step with CDP
+  `Input.dispatchTouchEvent`, so the only gestures a widget sees are touches.
+  Drive it with CDP `Runtime.evaluate` (`userGesture: false`), never
+  Playwright's `evaluate`, which is a gesture.
+- Frames have no `allow="autoplay"` by default. With it, a scrolling pan wakes
+  a parked autoplay in Chromium in every version we tried (0.5.8 and current):
+  the pan's activation reaches the page and the browser settles the parked
+  `resume()` itself. ext-apps' permission vocabulary has no autoplay, so a
+  spec-following host shouldn't delegate it — the dev harness (`index.html`)
+  does, which is worth remembering when a harness repro and a host disagree.

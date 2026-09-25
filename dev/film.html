@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MCP Music Studio — film page</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <style>
+    :root { color-scheme: dark; --bg: #0d0c11; --bubble: #26232e; --line: #3a3644; --line-soft: #2c2934; }
+    html, body { margin: 0; background: var(--bg); overscroll-behavior: none; overflow: hidden; height: 100%; }
+    /* The phone: 390 CSS px wide, scaled up to the capture size by the page
+       (?scale=, ?mode=zoom|transform), so widgets lay out exactly as on a phone
+       and the capture is sharp. The screen itself is the scroller. */
+    #phone { position: absolute; left: 0; top: 0; width: 390px; height: var(--ph, 694px); overflow-y: auto; overflow-x: hidden;
+      scrollbar-width: none; overscroll-behavior: contain; }
+    #phone::-webkit-scrollbar { display: none; }
+    body { font-family: -apple-system, "SF Pro Text", Inter, Helvetica, Arial, sans-serif; }
+    /* A conversation with no words: bubbles and lines are shapes only. */
+    #chat { width: 100%; max-width: 430px; margin: 0 auto; padding: 18px 0 520px; box-sizing: border-box; }
+    .turn { padding: 0 14px; margin: 0 0 22px; }
+    .you { display: flex; justify-content: flex-end; }
+    .you .bubble { background: var(--bubble); border-radius: 20px; padding: 13px 16px; display: grid; gap: 9px; }
+    .bar { height: 8px; border-radius: 4px; background: var(--line); }
+    .me .bars { display: grid; gap: 10px; padding: 4px 2px 14px; }
+    .me .bar { background: var(--line-soft); }
+    .widget { display: block; width: 100%; border: 0; border-radius: 14px; background: #111018; height: 150px;
+      transition: height .25s ease; }
+    /* Host fullscreen: the frame covers the phone's screen where it is scrolled to. */
+    .widget.full { position: absolute; left: 0; width: 390px; height: var(--ph, 694px) !important; border-radius: 0; z-index: 5; }
+    #label { position: fixed; right: 26px; top: 22px; font: 500 26px/1 "SF Mono", Menlo, monospace; letter-spacing: .06em;
+      color: rgba(236, 232, 255, .5); z-index: 20; pointer-events: none; }
+    #finger { position: absolute; left: 0; top: 0; width: 46px; height: 46px; margin: -23px 0 0 -23px; border-radius: 50%;
+      background: rgba(255,255,255,.28); box-shadow: 0 0 0 1.5px rgba(255,255,255,.55), 0 4px 18px rgba(0,0,0,.35);
+      pointer-events: none; opacity: 0; transform: scale(.7); transition: opacity .12s ease, transform .12s ease; z-index: 9; }
+    #finger.down { opacity: 1; transform: scale(1); }
+    #finger.tap::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid rgba(255,255,255,.7);
+      animation: ripple .5s ease-out forwards; }
+    @keyframes ripple { from { transform: scale(1); opacity: 1; } to { transform: scale(2.4); opacity: 0; } }
+  </style>
+</head>
+<body>
+  <div id="phone"><div id="chat"></div><div id="finger"></div></div>
+  <div id="label"></div>
+  <script type="module" src="./film.ts"></script>
+</body>
+</html>
