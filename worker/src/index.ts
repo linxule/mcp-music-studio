@@ -60,6 +60,7 @@ import {
   WEBSITE_URL,
   uiToolMeta,
   attachPlayLink,
+  withViewId,
 } from "../../src/shared/tool-defs.js";
 import type { ParseOnlyFn } from "../../src/shared/abc-to-strudel.js";
 // Same ABC validation as the local server: abcjs is already in this bundle for
@@ -646,9 +647,11 @@ export function createMusicServer(
       // attachPlayLink is already a no-op on errors — don't mint a share URL
       // for notation that won't render.
       if (result.isError) return result;
-      return attachPlayLink(
-        result,
-        await shareUrlFor(env, origin, { kind: "score", args }),
+      return withViewId(
+        attachPlayLink(
+          result,
+          await shareUrlFor(env, origin, { kind: "score", args }),
+        ),
       );
     },
   );
@@ -674,15 +677,17 @@ export function createMusicServer(
     // the honest unchecked receipt and names the local server as the place
     // that does check. See src/shared/strudel-validate.ts.
     async (args) =>
-      attachPlayLink(
-        buildPlayLiveResult(args, undefined, PLAY_LIVE_UNVALIDATED_REMOTE),
-        // toPlayShareArgs folds the `visuals` preset into the code (and drops
-        // `theme`, which is editor chrome the standalone page doesn't have), so
-        // the linked page shows the animation the tool call asked for.
-        await shareUrlFor(env, origin, {
-          kind: "play",
-          args: toPlayShareArgs(args),
-        }),
+      withViewId(
+        attachPlayLink(
+          buildPlayLiveResult(args, undefined, PLAY_LIVE_UNVALIDATED_REMOTE),
+          // toPlayShareArgs folds the `visuals` preset into the code (and drops
+          // `theme`, which is editor chrome the standalone page doesn't have), so
+          // the linked page shows the animation the tool call asked for.
+          await shareUrlFor(env, origin, {
+            kind: "play",
+            args: toPlayShareArgs(args),
+          }),
+        ),
       ),
   );
 

@@ -257,6 +257,20 @@ export const PLAY_SHEET_NEUTRAL_TEXT =
   `(e.g. Claude Desktop, claude.ai). ${NO_INLINE_PLAYER_TAIL}`;
 
 /**
+ * Stamp a play result with a fresh `_meta.viewUUID` — the ext-apps SDK's
+ * "Persisting view state" key. A host may rebuild a widget it scrolled out of
+ * view and replay this same result; the widget remembers which views it has
+ * autoplayed and renders a replay stopped (src/view-memory.ts). Text-only
+ * clients ignore `_meta`.
+ */
+export function withViewId(
+  result: CallToolResult,
+  viewUUID: string = crypto.randomUUID(),
+): CallToolResult {
+  return { ...result, _meta: { ...result._meta, viewUUID } };
+}
+
+/**
  * Add the "Tier 3" click-to-play link to a play-tool result.
  *
  * Two content blocks, because clients disagree about what they render: the URL

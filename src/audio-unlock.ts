@@ -112,3 +112,137 @@ export class GestureAudioLatch {
     return value;
   }
 }
+
+// =============================================================================
+// Taps, not scrolls
+//
+// Both widgets resume audio from ANY gesture inside the frame, because a
+// settings change or a tap anywhere has to be able to release audio that
+// autoplay left parked. On a phone that included the finger that scrolls the
+// conversation: a pan that starts on the widget still ends in a `touchend`
+// inside the frame, `touchend` is an activation-triggering event, and the
+// resume() it made started a parked tune the user was only scrolling past.
+// Only a touch that stays put counts now. Pointer events announce a pan with
+// `pointercancel`; touch events don't cancel, so the distance moved decides.
+// =============================================================================
+
+/** How far a touch may travel and still be a tap, in CSS px. */
+export const TAP_SLOP_PX = 10;
+
+/** Follows one touch from start to end and says whether it was a tap. */
+export class TapTracker {
+  private origin: { x: number; y: number } | null = null;
+  private panned = false;
+
+  start(x: number, y: number): void {
+    this.origin = { x, y };
+    this.panned = false;
+  }
+
+  move(x: number, y: number): void {
+    if (!this.origin) return;
+    if (Math.hypot(x - this.origin.x, y - this.origin.y) > TAP_SLOP_PX) this.panned = true;
+  }
+
+  /** The browser took the touch over (a pan or zoom began). */
+  cancel(): void {
+    this.panned = true;
+  }
+
+  /** A touch is being followed. */
+  get active(): boolean {
+    return this.origin !== null;
+  }
+
+  /** Is the touch in progress (or just lifted) a tap so far? */
+  isTap(): boolean {
+    return this.origin !== null && !this.panned;
+  }
+
+  /** The touch is over. */
+  reset(): void {
+    this.origin = null;
+    this.panned = false;
+  }
+}
+
+export type GesturePress = "key" | "mouse" | "touch";
+
+export interface AudioGestureHandlers {
+  /**
+   * A gesture began: keydown or any pointerdown. `kind` "touch" carries no
+   * activation yet and may still turn into a scroll, so don't resume on it.
+   */
+  press?(kind: GesturePress): void;
+  /** A gesture that carries user activation and is not a scroll: resume now. */
+  activate(): void;
+}
+
+type Point = { clientX: number; clientY: number };
+
+/**
+ * Install capture-phase listeners that call `activate` for key presses, mouse
+ * presses and touch TAPS — never for a touch that panned. Returns an uninstaller.
+ *
+ * Capture phase so no control's own handler can swallow the event. On touch,
+ * activation arrives with pointerup/touchend (HTML's activation-triggering
+ * events), so a tap calls `activate` from both; resume() is idempotent.
+ */
+export function listenForAudioGestures(
+  target: EventTarget,
+  handlers: AudioGestureHandlers,
+): () => void {
+  const tracker = new TapTracker();
+  const firstTouch = (event: Event): Point | undefined =>
+    (event as TouchEvent).changedTouches?.[0] ?? (event as TouchEvent).touches?.[0];
+  const isMouse = (event: Event) => (event as PointerEvent).pointerType === "mouse";
+
+  const listeners: [string, (event: Event) => void][] = [
+    ["keydown", () => {
+      handlers.press?.("key");
+      handlers.activate();
+    }],
+    ["pointerdown", (event) => {
+      if (isMouse(event)) {
+        handlers.press?.("mouse");
+        handlers.activate();
+        return;
+      }
+      const p = event as PointerEvent;
+      tracker.start(p.clientX, p.clientY);
+      handlers.press?.("touch");
+    }],
+    ["pointermove", (event) => {
+      if (!isMouse(event)) tracker.move((event as PointerEvent).clientX, (event as PointerEvent).clientY);
+    }],
+    ["pointercancel", () => tracker.cancel()],
+    ["pointerup", (event) => {
+      if (!isMouse(event) && tracker.isTap()) handlers.activate();
+    }],
+    // touchstart starts a touch only where pointer events didn't (older
+    // WebKit): restarting one pointerdown began would forget a pointercancel
+    // in between, and a second finger must not restart the first one's touch.
+    ["touchstart", (event) => {
+      const t = firstTouch(event);
+      if (t && !tracker.active) tracker.start(t.clientX, t.clientY);
+    }],
+    ["touchmove", (event) => {
+      const t = firstTouch(event);
+      if (t) tracker.move(t.clientX, t.clientY);
+    }],
+    // No touchend follows a touchcancel: the touch is over, and not a tap.
+    ["touchcancel", () => tracker.reset()],
+    ["touchend", () => {
+      if (tracker.isTap()) handlers.activate();
+      tracker.reset();
+    }],
+  ];
+  for (const [type, listener] of listeners) {
+    target.addEventListener(type, listener, { capture: true, passive: true });
+  }
+  return () => {
+    for (const [type, listener] of listeners) {
+      target.removeEventListener(type, listener, { capture: true });
+    }
+  };
+}

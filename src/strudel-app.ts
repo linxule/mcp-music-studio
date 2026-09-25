@@ -34,11 +34,20 @@ import { bytesToBase64Async, sanitizeFileStem } from "./bytes-to-base64";
 import { nativeExportStatus, planRecordingExport } from "./recording-export";
 import {
   GestureAudioLatch,
+  listenForAudioGestures,
   playTapAction,
   playbackState,
   resumeAudioContext,
   type PlaybackState,
 } from "./audio-unlock";
+import {
+  AutoplayMemory,
+  ViewIdChannel,
+  browserStorage,
+  claimAutoplay,
+  toolCallKey,
+  viewIdOf,
+} from "./view-memory";
 import { VERSION } from "./version";
 
 const STRUDEL_CDN = "https://unpkg.com/@strudel/repl@1.3.0";
@@ -357,34 +366,20 @@ function syncAudioState(): void {
   scheduleStateReport();
 }
 
-function onGestureBegin(): void {
-  gestureLatch.begin(isPlaying && audioIsBlockedNow());
-  void ensureAudioRunning();
-}
-
-function onGestureEnd(): void {
-  gestureLatch.extend(isPlaying && audioIsBlockedNow());
-  void ensureAudioRunning();
-}
-
-// pointerdown covers a mouse; on touch only pointerup/touchend carry user
-// activation (HTML's activation-triggering events), so iOS needs those too.
-const GESTURE_BEGIN_EVENTS = ["pointerdown", "keydown"] as const;
-const GESTURE_END_EVENTS = ["pointerup", "touchend"] as const;
-
-function setGestureUnlock(on: boolean): void {
-  const listeners: [readonly string[], () => void][] = [
-    [GESTURE_BEGIN_EVENTS, onGestureBegin],
-    [GESTURE_END_EVENTS, onGestureEnd],
-  ];
-  for (const [types, listener] of listeners) {
-    for (const type of types) {
-      if (on) document.addEventListener(type, listener, { capture: true, passive: true });
-      else document.removeEventListener(type, listener, { capture: true });
-    }
-  }
-}
-setGestureUnlock(true);
+// A key, a click or a TAP resumes audio; a touch that scrolled does not — on a
+// phone the finger scrolling the conversation past the widget used to unmute
+// an audio-blocked pattern (src/audio-unlock.ts). A touch press only records
+// what the gesture began over; its activation arrives with the tap's end.
+const stopGestureUnlock = listenForAudioGestures(document, {
+  press(kind) {
+    gestureLatch.begin(isPlaying && audioIsBlockedNow());
+    if (kind !== "touch") void ensureAudioRunning();
+  },
+  activate() {
+    gestureLatch.extend(isPlaying && audioIsBlockedNow());
+    void ensureAudioRunning();
+  },
+});
 
 // =============================================================================
 // Tempo  (`bpm` tool parameter)
@@ -1069,31 +1064,54 @@ function applyEditorTheme(editor: any, theme: string | undefined): void {
 }
 
 // -----------------------------------------------------------------------------
-// Narrow stages (phones)
+// Line wrapping and narrow stages (phones)
 //
-// The REPL's defaults are for a desktop: 18px monospace, no line wrapping. In a
-// ~390px phone frame that is about 30 characters a line, and every longer line
-// ran off the right edge — only reachable by panning inside the editor. Below
-// NARROW_STAGE_PX the editor wraps and uses a smaller font; nothing is saved,
-// and a wider stage (rotation, fullscreen) puts the element's own settings back.
+// The REPL's defaults are for a desktop page: 18px monospace, no line wrapping.
+// In a chat widget every line longer than the frame ran off the right edge,
+// reachable only by panning inside the editor, so the editor ALWAYS wraps, as
+// strudel.cc does on a phone. A compact stage also gets a smaller font. Nothing
+// is saved, and a wider stage (rotation, fullscreen) puts the element's own
+// font size back.
+//
+// Compact is decided by the frame's width, but not only: 0.5.8 wrapped below
+// NARROW_STAGE_PX in the dev harness at 380px, yet not in Claude iOS, so the
+// phone host's frame is evidently not always as narrow as the screen. A host
+// that says it is mobile, or a coarse pointer on a phone-sized screen, counts.
 // -----------------------------------------------------------------------------
 
 const NARROW_STAGE_PX = 520;
 const NARROW_FONT_SIZE = 14;
-/** The mode last applied to the current editor; starts at its own settings. */
-let editorNarrow = false;
+/** The mode last applied to the current editor; null until it has had one. */
+let editorCompact: boolean | null = null;
+
+function isCompactStage(width: number): boolean {
+  if (width < NARROW_STAGE_PX) return true;
+  try {
+    if (app.getHostContext()?.platform === "mobile") return true;
+    return (
+      window.matchMedia("(pointer: coarse)").matches &&
+      Math.min(screen.width, screen.height) < NARROW_STAGE_PX
+    );
+  } catch {
+    return false;
+  }
+}
 
 function syncEditorToWidth(): void {
   const editor = getEditor();
   const width = replSection.clientWidth;
   if (!editor || width === 0) return;
-  const narrow = width < NARROW_STAGE_PX;
-  if (narrow === editorNarrow) return;
-  editorNarrow = narrow;
+  const compact = isCompactStage(width);
+  if (compact === editorCompact) return;
+  const first = editorCompact === null;
+  editorCompact = compact;
   const own = (editorEl as any)?.settings ?? {};
   try {
-    changeEditorSetting(editor, "isLineWrappingEnabled", narrow || own.isLineWrappingEnabled === true);
-    changeEditorSetting(editor, "fontSize", narrow ? NARROW_FONT_SIZE : (own.fontSize ?? 18));
+    if (first) changeEditorSetting(editor, "isLineWrappingEnabled", true);
+    // A fresh editor already has its own font size; only a change needs one.
+    if (compact || !first) {
+      changeEditorSetting(editor, "fontSize", compact ? NARROW_FONT_SIZE : (own.fontSize ?? 18));
+    }
   } catch { /* cosmetic — the editor still works at its own settings */ }
 }
 
@@ -2259,7 +2277,7 @@ function ensureEditorElement(): void {
   editorEl = el;
   // A fresh element starts from its own settings, not the last one's.
   currentTheme = null;
-  editorNarrow = false;
+  editorCompact = null;
 }
 
 /** One-time per-editor setup: eval hook, prebake watch, theme, layout. */
@@ -2320,13 +2338,18 @@ function startStreamingBoot(): Promise<void> {
   return streamingBoot;
 }
 
-async function renderPattern(args: Record<string, unknown>) {
+/**
+ * @param permit a tool call's autoplay also waits for this: false when the
+ *   host rebuilt a widget this view already autoplayed in (src/view-memory.ts).
+ */
+async function renderPattern(args: Record<string, unknown>, permit?: Promise<boolean>) {
   const code = args.code as string | undefined;
   if (!code) return;
 
   // Every overlapping tool input gets its own generation; the older one stops
   // at its next checkpoint instead of writing into a buffer it no longer owns.
   const generation = ++renderGeneration;
+  const pressesAtRender = playPresses;
   const superseded = () => generation !== renderGeneration;
 
   lastRenderArgs = args;
@@ -2397,7 +2420,11 @@ async function renderPattern(args: Record<string, unknown>) {
       ? " (soundfonts unavailable — audio may be silent)"
       : "";
 
-    if (autoplay !== false) {
+    const mayAutoplay = autoplay !== false && (permit ? await permit : true);
+    if (superseded()) return;
+    // The user pressed Play while we waited: what plays is theirs to decide.
+    if (playPresses !== pressesAtRender) return;
+    if (mayAutoplay) {
       setStatus("Evaluating...");
       // The hook reports the real outcome (including async eval failures) to the
       // status line and the model — no optimistic "Playing..." here.
@@ -2415,9 +2442,17 @@ async function renderPattern(args: Record<string, unknown>) {
 // Controls
 // =============================================================================
 
+/**
+ * Play presses that reached an editor. A tool call's autoplay that is still
+ * waiting for its permit stands down if the user pressed Play meanwhile — a
+ * late autoplay would restart a pattern they had stopped.
+ */
+let playPresses = 0;
+
 playBtn.addEventListener("click", async () => {
   const editor = getEditor();
   if (!editor) return;
+  playPresses++;
   // resume() runs here, synchronously inside the gesture — the only place
   // WebKit honours it. Evaluation below does not wait for it.
   const audioRunning = ensureAudioRunning();
@@ -2598,8 +2633,24 @@ vizResizeObserver.observe(replSection);
 
 // Register notification handlers BEFORE connect() — the SDK drops
 // notifications that have no handler registered at arrival time.
+// A host may rebuild a widget it scrolled away and replay the same call, so a
+// tool call autoplays once per view, not once per mount (src/view-memory.ts).
+const autoplayMemory = new AutoplayMemory(browserStorage);
+const viewIds = new ViewIdChannel();
+
+app.ontoolresult = (result) => {
+  viewIds.put(viewIdOf(result));
+};
+
 app.ontoolinput = (params) => {
-  renderPattern(params.arguments ?? {});
+  const args = params.arguments ?? {};
+  // Claimed for every tool input, so each one pairs with its own result.
+  const permit = claimAutoplay(
+    autoplayMemory,
+    toolCallKey(app.getHostContext()?.toolInfo?.id, args),
+    viewIds.take(),
+  );
+  renderPattern(args, permit);
 };
 
 app.ontoolinputpartial = (params) => {
@@ -2631,6 +2682,7 @@ app.ontoolinputpartial = (params) => {
 // checkpoint, and a streaming boot in flight no longer writes its half-pattern.
 app.ontoolcancelled = (params) => {
   renderGeneration++;
+  viewIds.abandon();
   pendingPartialCode = "";
   streamingBoot = null;
   if (isRecording) stopRecording();
@@ -2689,7 +2741,7 @@ app.onteardown = () => {
     // Release the analyser tap and take `a` / a0…aN back off the eval scope.
     teardownAudioAnalyser();
     // A discarded widget must not resume audio on a stray tap.
-    setGestureUnlock(false);
+    stopGestureUnlock();
     watchedAudioContext?.removeEventListener("statechange", syncAudioState);
     watchedAudioContext = null;
   } catch { /* best-effort cleanup */ }

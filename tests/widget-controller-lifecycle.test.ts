@@ -183,10 +183,11 @@ describe("mcp-app.ts routes every stale cleanup through the decision (Codex #3)"
   });
 
   it("uses releaseStaleControl at every post-await stale branch", () => {
-    // renderAbc: after setTune, and in the autoplay continuation.
+    // renderAbc: after setTune, after the autoplay permit, and in the autoplay
+    // continuation.
     expect(
       ABC_APP.match(/releaseStaleControl\(synthControl, generation\);/g),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     // primeEdit (applyEditorAbc's queued half) asks what is on screen instead of
     // which generation owns the controller: a ▶ after a cancel takes ownership,
     // and an ownership check then left the old tune under the new score.
@@ -295,7 +296,8 @@ describe("a cancel leaves a playable transport", () => {
   });
 
   it("notes each press, so the ▶ that released a parked autoplay doesn't pause it", () => {
-    expect(ABC_APP).toMatch(/for \(const type of \["pointerdown", "keydown"\]\) \{\s*document\.addEventListener\(type, \(\) => noteGestureStart\(\)/);
+    // listenForAudioGestures calls press() for every keydown and pointerdown.
+    expect(ABC_APP).toMatch(/listenForAudioGestures\(document, \{[\s\S]*?press: \(\) => noteGestureStart\(\),/);
   });
 
   it("separates the status from the transposition caveat", () => {

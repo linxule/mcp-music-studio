@@ -42,7 +42,15 @@ import {
   hasFatalAbcWarning,
   staleControlAction,
 } from "./abc-edit";
-import { resumeAudioContext } from "./audio-unlock";
+import { listenForAudioGestures, resumeAudioContext } from "./audio-unlock";
+import {
+  AutoplayMemory,
+  ViewIdChannel,
+  browserStorage,
+  claimAutoplay,
+  toolCallKey,
+  viewIdOf,
+} from "./view-memory";
 import { audioBufferToWavBase64 } from "./wav-encoder";
 import { bytesToBase64, sanitizeFileStem } from "./bytes-to-base64";
 import {
@@ -690,25 +698,31 @@ function wakeAudio(): void {
   void resumeAudioContext(audioContext(), AUDIO_RESUME_TIMEOUT_MS);
 }
 
-// Any gesture in the widget releases a parked autoplay, not only ▶. Capture
-// phase, so no control's own handler can swallow it; on touch only
-// pointerup/touchend carry user activation.
-for (const type of ["pointerdown", "keydown", "pointerup", "touchend"]) {
-  document.addEventListener(type, wakeAudio, { capture: true, passive: true });
-}
-// So a ▶ whose own press released the parked autoplay doesn't toggle it off.
-for (const type of ["pointerdown", "keydown"]) {
-  document.addEventListener(type, () => noteGestureStart(), { capture: true, passive: true });
-}
+// Any key, click or TAP in the widget releases a parked autoplay, not only ▶ —
+// but not a touch that scrolled: on a phone the finger scrolling the
+// conversation past the widget used to start the tune (src/audio-unlock.ts).
+listenForAudioGestures(document, {
+  // So a ▶ whose own press released the parked autoplay doesn't toggle it off.
+  press: () => noteGestureStart(),
+  activate: wakeAudio,
+});
 
 // The listener's ▶ is the newest intent: it takes the controller over, so a
 // continuation a cancel superseded no longer stops the music it asked for.
 // Capture phase: before abcjs's own click handler calls play().
+/**
+ * ▶ presses so far. A tool call's autoplay that is still waiting for its
+ * permit stands down if the listener pressed ▶ meanwhile — they have already
+ * chosen, and a late autoplay would restart music they had paused.
+ */
+let playPresses = 0;
+
 audioControlsEl.addEventListener(
   "click",
   (event) => {
     const target = event.target as Element | null;
     if (!target?.closest(".abcjs-midi-start") || disposed || !state.synthControl) return;
+    playPresses++;
     if (isStale(synthControlOwner)) ownSynthControl(state.synthControl, renderGeneration);
   },
   { capture: true },
@@ -1568,6 +1582,11 @@ function overhangPadding(tunes: ABCJS.TuneObject[]): number | null {
 interface RenderTransport {
   /** Start playing once primed: a tool call does, a Style change only if it was. */
   autoplay: boolean;
+  /**
+   * A tool call's autoplay also waits for this: false when the host rebuilt
+   * a widget this view already autoplayed in (src/view-memory.ts).
+   */
+  permit?: Promise<boolean>;
   /** Tempo and Loop to carry over from the controller being replaced. */
   carry?: TransportState | null;
 }
@@ -1635,6 +1654,7 @@ async function renderAbc(
   // Supersede any partial render, any earlier renderAbc still awaiting, and
   // any queued play() continuation. Everything below re-checks this.
   const generation = newGeneration();
+  const pressesAtRender = playPresses;
   cancelPartialRender();
 
   try {
@@ -1728,6 +1748,19 @@ async function renderAbc(
       setStatus(withTransposeNote("Click ▶ to play"));
       return;
     }
+    if (transport.permit) {
+      const permitted = await transport.permit;
+      if (isStale(generation)) {
+        releaseStaleControl(synthControl, generation);
+        return;
+      }
+      // The listener pressed ▶ while we waited: the transport is theirs.
+      if (playPresses !== pressesAtRender) return;
+      if (!permitted) {
+        setStatus(withTransposeNote("Click ▶ to play"));
+        return;
+      }
+    }
 
     // Autoplay — attempt to start playback immediately
     // (may be blocked by browser autoplay policy until user clicks).
@@ -1793,6 +1826,15 @@ const app = new App(
 appInstance = app;
 
 // Handle complete tool input
+// A host may rebuild a widget it scrolled away and replay the same call, so a
+// tool call autoplays once per view, not once per mount (src/view-memory.ts).
+const autoplayMemory = new AutoplayMemory(browserStorage);
+const viewIds = new ViewIdChannel();
+
+app.ontoolresult = (result) => {
+  viewIds.put(viewIdOf(result));
+};
+
 app.ontoolinput = (params) => {
   console.info("Received tool input:", params);
 
@@ -1804,6 +1846,12 @@ app.ontoolinput = (params) => {
   cancelPartialRender();
 
   const args = params.arguments ?? {};
+  // Claimed for every tool input, so each one pairs with its own result.
+  const permit = claimAutoplay(
+    autoplayMemory,
+    toolCallKey(app.getHostContext()?.toolInfo?.id, args),
+    viewIds.take(),
+  );
   const preparedInput = prepareToolInput(args);
   // A new tool call replaces the previous one's transposition caveat, if any.
   transposeNote = null;
@@ -1840,7 +1888,7 @@ app.ontoolinput = (params) => {
     lastEditRendered = abc;
     lastEditReported = abc;
     setEditorMessage(null, "error");
-    renderAbc(abc, preparedInput.synthOptions, { autoplay: true }).catch(console.error);
+    renderAbc(abc, preparedInput.synthOptions, { autoplay: true, permit }).catch(console.error);
   } else {
     setStatus("No ABC notation provided", true);
   }
@@ -1945,6 +1993,7 @@ function cancelPartialRender(): void {
 // otherwise go on to autoplay a tune the user just cancelled.
 app.ontoolcancelled = (params) => {
   newGeneration();
+  viewIds.abandon();
   stopPlayback();
   cancelPartialRender();
   const reason = params?.reason ? ` (${params.reason})` : "";

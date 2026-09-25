@@ -68,6 +68,7 @@ import {
   WEBSITE_URL,
   uiToolMeta,
   attachPlayLink,
+  withViewId,
 } from "./src/shared/tool-defs.js";
 import { buildShareQueryUrl, toPlayShareArgs } from "./src/shared/share-url.js";
 import { validateStrudelCode } from "./src/shared/strudel-validate.js";
@@ -238,9 +239,8 @@ export function createServer(options?: ServerOptions): McpServer {
       // score too long for a URL simply gets no link (and the honest tail
       // stays honest). The page is served by the hosted worker, which is the
       // only origin a stdio server can offer.
-      return attachPlayLink(
-        result,
-        buildShareQueryUrl({ kind: "score", args }),
+      return withViewId(
+        attachPlayLink(result, buildShareQueryUrl({ kind: "score", args })),
       );
     }
 
@@ -384,10 +384,12 @@ export function createServer(options?: ServerOptions): McpServer {
       // editable REPL, which is where a fix happens.
       // toPlayShareArgs folds the `visuals` preset into the code, so the linked
       // page shows the same animation the widget would.
-      return attachPlayLink(
-        result,
-        buildShareQueryUrl({ kind: "play", args: toPlayShareArgs(args) }),
-        { keepOnError: true },
+      return withViewId(
+        attachPlayLink(
+          result,
+          buildShareQueryUrl({ kind: "play", args: toPlayShareArgs(args) }),
+          { keepOnError: true },
+        ),
       );
     }
 

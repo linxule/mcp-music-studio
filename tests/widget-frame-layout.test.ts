@@ -95,9 +95,14 @@ describe("neither widget can be panned sideways on a phone", () => {
     expect(css).toMatch(/\.control-btn \{[^}]*white-space: nowrap;/);
   });
 
-  it("the Strudel editor wraps lines on a narrow stage, without saving the change", () => {
+  it("the Strudel editor always wraps lines, without saving the change", () => {
     const fn = STRUDEL.slice(STRUDEL.indexOf("function syncEditorToWidth()"));
-    expect(fn).toContain('changeEditorSetting(editor, "isLineWrappingEnabled"');
+    expect(fn).toContain('if (first) changeEditorSetting(editor, "isLineWrappingEnabled", true);');
+    // A fresh <strudel-editor> starts over, so it gets wrapping too.
+    expect(STRUDEL).toMatch(/currentTheme = null;\s*editorCompact = null;/);
+    // A phone host whose frame is wider than the screen still counts as compact.
+    const compact = STRUDEL.slice(STRUDEL.indexOf("function isCompactStage("));
+    expect(compact).toContain('app.getHostContext()?.platform === "mobile"');
     expect(STRUDEL).toMatch(/new ResizeObserver\(\(\) => \{\s*syncVizCanvasSize\(\);\s*syncEditorToWidth\(\);/);
   });
 

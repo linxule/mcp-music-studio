@@ -315,17 +315,38 @@ function resultTextFor(args: Record<string, unknown>): string {
     : `${title}Sheet music ready.`;
 }
 
-async function sendToolInput(): Promise<void> {
-  const args = readArgs();
+/** The last call sent, so "Replay" can deliver it again to a rebuilt frame. */
+let lastCall: { args: Record<string, unknown>; viewUUID: string } | null = null;
+
+async function sendToolInput(replay = false): Promise<void> {
+  const args = replay ? lastCall?.args : readArgs();
   if (!args || !bridge) return;
   if (!ready) {
     log("bad", "view not initialized yet — reload the frame and retry");
     return;
   }
-  log("out", `ui/notifications/tool-input ${JSON.stringify(args).slice(0, 200)}…`);
+  // Like the servers (withViewId), each call carries a fresh viewUUID; a replay
+  // carries the SAME one, as a host rebuilding a scrolled-away widget would.
+  const viewUUID = replay && lastCall ? lastCall.viewUUID : crypto.randomUUID();
+  lastCall = { args, viewUUID };
+  log("out", `ui/notifications/tool-input ${replay ? "(replay) " : ""}${JSON.stringify(args).slice(0, 200)}…`);
   await bridge.sendToolInput({ arguments: args });
-  await bridge.sendToolResult({ content: [{ type: "text", text: resultTextFor(args) }] });
-  log("out", "ui/notifications/tool-result");
+  await bridge.sendToolResult({
+    content: [{ type: "text", text: resultTextFor(args) }],
+    _meta: { viewUUID },
+  });
+  log("out", `ui/notifications/tool-result (viewUUID ${viewUUID.slice(0, 8)}…)`);
+}
+
+/** Rebuild the frame and replay the last call into it, as a host does on scroll. */
+async function replayLastCall(): Promise<void> {
+  if (!lastCall) {
+    log("bad", "nothing to replay — send a tool input first");
+    return;
+  }
+  await mountFrame();
+  await waitForReady();
+  await sendToolInput(true);
 }
 
 async function sendPartial(): Promise<void> {
@@ -359,6 +380,7 @@ sandboxCb.addEventListener("change", () => void mountFrame());
 $("reload").addEventListener("click", () => void mountFrame());
 $("send").addEventListener("click", () => void sendToolInput());
 $("send-partial").addEventListener("click", () => void sendPartial());
+$("replay").addEventListener("click", () => void replayLastCall());
 $("cancel").addEventListener("click", () => {
   void bridge?.sendToolCancelled({ reason: "user cancelled" });
   log("out", "ui/notifications/tool-cancelled");
@@ -388,7 +410,8 @@ void mountFrame();
   get win() { return iframe?.contentWindow as any; },
   get doc() { return iframe?.contentDocument; },
   entries,
-  send: sendToolInput,
+  send: () => sendToolInput(),
+  replay: replayLastCall,
   mount: mountFrame,
   setArgs(args: Record<string, unknown>) {
     argsTa.value = JSON.stringify(args, null, 2);

@@ -216,9 +216,11 @@ describe("sheet music transport", () => {
     );
   });
 
-  it("any gesture in the widget resumes audio, so a parked autoplay can start", () => {
+  it("a key, click or tap in the widget resumes audio, so a parked autoplay can start", () => {
+    // listenForAudioGestures filters out touches that scrolled (tested in
+    // audio-unlock.test.ts); every other gesture still reaches wakeAudio.
     expect(ABC).toMatch(
-      /for \(const type of \["pointerdown", "keydown", "pointerup", "touchend"\]\) \{\s*document\.addEventListener\(type, wakeAudio, \{ capture: true, passive: true \}\);/,
+      /listenForAudioGestures\(document, \{[\s\S]*?press: \(\) => noteGestureStart\(\),\s*activate: wakeAudio,\s*\}\);/,
     );
     expect(body(ABC, "function wakeAudio()")).toContain("resumeAudioContext(audioContext(),");
   });

@@ -30,7 +30,10 @@ so what you test is what the MCP server ships. Re-run `bun run build` and hit
 - **Send tool input** sends `ui/notifications/tool-input` with those arguments,
   then a `ui/notifications/tool-result`. **Send partial** streams half the code
   first; **Send cancelled** and **Send teardown** exercise the other lifecycle
-  notifications.
+  notifications. Each result carries a fresh `_meta.viewUUID`, as the servers'
+  do; **Replay (remount)** rebuilds the frame and replays the last call with
+  the SAME one — what a host does when it rebuilds a widget scrolled out of
+  view (the widget should render it stopped, not autoplay again).
 - **frame width** resizes the iframe *without* remounting, which is how you
   exercise the widget's `ResizeObserver` and Hydra's `setResolution`.
 - **host sizing** decides the frame's height the way a real host does (the

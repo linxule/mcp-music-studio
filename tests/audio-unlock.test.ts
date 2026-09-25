@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GestureAudioLatch,
+  TAP_SLOP_PX,
+  listenForAudioGestures,
   playTapAction,
   playbackState,
   resumeAudioContext,
@@ -187,10 +189,10 @@ describe("strudel widget wiring", () => {
     expect(handler).toContain("playTapAction(isPlaying, gestureLatch.consume() || audioBlocked)");
   });
 
-  it("resumes from touch as well as mouse and keyboard, in the capture phase", () => {
-    expect(STRUDEL).toMatch(/GESTURE_BEGIN_EVENTS = \["pointerdown", "keydown"\]/);
-    expect(STRUDEL).toMatch(/GESTURE_END_EVENTS = \["pointerup", "touchend"\]/);
-    expect(body("function setGestureUnlock(")).toContain("capture: true, passive: true");
+  it("resumes from taps, clicks and keys, but not from a touch press that may still scroll", () => {
+    const install = body("const stopGestureUnlock = listenForAudioGestures(document, {", "\n});\n");
+    expect(install).toMatch(/press\(kind\) \{\s*gestureLatch\.begin\(isPlaying && audioIsBlockedNow\(\)\);\s*if \(kind !== "touch"\) void ensureAudioRunning\(\);/);
+    expect(install).toMatch(/activate\(\) \{\s*gestureLatch\.extend\(isPlaying && audioIsBlockedNow\(\)\);\s*void ensureAudioRunning\(\);/);
   });
 
   it("an evaluation waits briefly for audio before its one report", () => {
@@ -214,7 +216,7 @@ describe("strudel widget wiring", () => {
       'ctx.addEventListener("statechange", syncAudioState)',
     );
     const teardown = STRUDEL.slice(STRUDEL.indexOf("app.onteardown = "));
-    expect(teardown.slice(0, teardown.indexOf("\n};\n"))).toContain("setGestureUnlock(false)");
+    expect(teardown.slice(0, teardown.indexOf("\n};\n"))).toContain("stopGestureUnlock()");
   });
 
   it("a failed re-evaluation over blocked audio doesn't claim the old pattern is audible", () => {
@@ -223,5 +225,113 @@ describe("strudel widget wiring", () => {
     const branch = STRUDEL.slice(STRUDEL.indexOf("pattern failed to evaluate"));
     expect(branch.slice(0, 600)).toContain('state === "audio-blocked"');
     expect(branch.slice(0, 600)).toContain("not audible until the user taps Play");
+  });
+});
+
+// =============================================================================
+// Taps, not scrolls. On a phone, the finger that scrolled the conversation past
+// a widget ended in a touchend inside the frame, and the resume() it made
+// started a parked autoplay (reported from Claude iOS after 0.5.8).
+// =============================================================================
+
+describe("listenForAudioGestures", () => {
+  /** Dispatch a synthetic event carrying the given fields on `target`. */
+  function fire(target: EventTarget, type: string, fields: Record<string, unknown> = {}) {
+    const event = new Event(type);
+    for (const [key, value] of Object.entries(fields)) {
+      Object.defineProperty(event, key, { value });
+    }
+    target.dispatchEvent(event);
+  }
+  const touch = (x: number, y: number) => ({ changedTouches: [{ clientX: x, clientY: y }] });
+  const pointer = (pointerType: string, x = 0, y = 0) => ({ pointerType, clientX: x, clientY: y });
+
+  function setup() {
+    const target = new EventTarget();
+    const activate = vi.fn();
+    const press = vi.fn();
+    const stop = listenForAudioGestures(target, { press, activate });
+    return { target, activate, press, stop };
+  }
+
+  it("a key press or a mouse press resumes at once", () => {
+    const { target, activate, press } = setup();
+    fire(target, "keydown");
+    fire(target, "pointerdown", pointer("mouse"));
+    expect(press.mock.calls).toEqual([["key"], ["mouse"]]);
+    expect(activate).toHaveBeenCalledTimes(2);
+  });
+
+  it("a touch press alone does not resume — it may still become a scroll", () => {
+    const { target, activate, press } = setup();
+    fire(target, "pointerdown", pointer("touch", 50, 50));
+    fire(target, "touchstart", touch(50, 50));
+    expect(press).toHaveBeenCalledWith("touch");
+    expect(activate).not.toHaveBeenCalled();
+  });
+
+  it("a tap resumes from its end events", () => {
+    const { target, activate } = setup();
+    fire(target, "pointerdown", pointer("touch", 50, 50));
+    fire(target, "touchstart", touch(50, 50));
+    fire(target, "touchmove", touch(53, 52)); // finger jitter inside the slop
+    fire(target, "pointerup", pointer("touch", 53, 52));
+    fire(target, "touchend", touch(53, 52));
+    expect(activate).toHaveBeenCalledTimes(2); // resume() is idempotent
+  });
+
+  it("a touch that panned never resumes", () => {
+    const { target, activate } = setup();
+    fire(target, "pointerdown", pointer("touch", 50, 50));
+    fire(target, "touchstart", touch(50, 50));
+    fire(target, "touchmove", touch(50, 50 + TAP_SLOP_PX + 30));
+    fire(target, "touchend", touch(50, 50 + TAP_SLOP_PX + 30));
+    expect(activate).not.toHaveBeenCalled();
+  });
+
+  it("a pointercancel (the browser took the touch for a pan) never resumes", () => {
+    const { target, activate } = setup();
+    fire(target, "pointerdown", pointer("touch", 50, 50));
+    fire(target, "touchstart", touch(50, 50));
+    fire(target, "pointercancel", pointer("touch", 50, 50));
+    fire(target, "touchend", touch(50, 50));
+    expect(activate).not.toHaveBeenCalled();
+  });
+
+  it("works from touch events alone, and each touch starts fresh", () => {
+    const { target, activate } = setup();
+    fire(target, "touchstart", touch(10, 10));
+    fire(target, "touchmove", touch(10, 80));
+    fire(target, "touchend", touch(10, 80));
+    expect(activate).not.toHaveBeenCalled();
+    fire(target, "touchstart", touch(10, 10));
+    fire(target, "touchend", touch(10, 10));
+    expect(activate).toHaveBeenCalledTimes(1);
+  });
+
+  it("a second finger does not restart the first one's pan", () => {
+    const { target, activate } = setup();
+    fire(target, "touchstart", touch(10, 10));
+    fire(target, "touchmove", touch(10, 80));
+    fire(target, "touchstart", touch(200, 200));
+    fire(target, "touchend", touch(200, 200));
+    expect(activate).not.toHaveBeenCalled();
+  });
+
+  it("a touchcancel ends the touch, so the next tap still counts (Codex review)", () => {
+    const { target, activate } = setup();
+    fire(target, "touchstart", touch(10, 10));
+    fire(target, "touchcancel", touch(10, 10));
+    expect(activate).not.toHaveBeenCalled();
+    fire(target, "touchstart", touch(10, 10));
+    fire(target, "touchend", touch(10, 10));
+    expect(activate).toHaveBeenCalledTimes(1);
+  });
+
+  it("uninstalls cleanly", () => {
+    const { target, activate, stop } = setup();
+    stop();
+    fire(target, "keydown");
+    expect(activate).not.toHaveBeenCalled();
   });
 });
