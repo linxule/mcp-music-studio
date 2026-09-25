@@ -39,6 +39,7 @@ Write sheet music → see it rendered → hear it played with multi-instrument a
 - **Real transposition** — `transpose` rewrites the notation *and* the key signature, so the printed score matches what plays
 - **Swing and count-in** — `swing` is the share of the beat given to its first half (50 = straight, 66 = triplet, 75 = max; ≤50 is no swing), `drumIntro` adds up to 8 bars of count-in from the style's drum kit
 - **Selectable sound banks** — FluidR3 (default), MusyngKite (fuller), or a lightweight dry bank, switched live from the toolbar. Changing instrument, sound, style or tempo keeps your Loop and tempo settings and never starts a paused tune
+- **Notes that ring out** — each note fades naturally instead of stopping dead, and a light **Room** echo (on by default, one toolbar toggle) gives the synth a space to play in. WAV downloads and share links sound the same
 - **WAV download** — export audio as WAV files directly from the UI
 - **MIDI download** — export a standard MIDI file straight from the score, no playback needed first. It is the *score*: abcjs applies swing during playback only, so the exported file has none
 - **`get-music-guide`** — 7 reference topics (instruments, drums, ABC syntax, arrangements, genres, styles, MIDI directives)
@@ -50,8 +51,10 @@ Write code → hear it play → edit in a live REPL.
 - **71 drum machine banks** + **128 GM instruments** + 128 VCSL orchestral/world/percussion samples + built-in synths
 - **Full effects chain** — filters, reverb, delay, FM synthesis
 - **Editable REPL** — users can tweak the code and hear changes instantly
-- **Live visuals** — add `.pianoroll()` / `.punchcard()` / `.scope()` / `.spectrum()` to animate behind the code (native strudel.cc overlay)
-- **Hydra shader backgrounds** — `await initHydra()` + Hydra code for fully custom, music-synced WebGL visuals. `H(pattern)` locks a shader parameter to the sequence, `feedStrudel` post-processes the piano roll
+- **Live visuals** — add `.pianoroll()` / `.punchcard()` / `.scope()` / `.spectrum()` / `.spiral()` / `.pitchwheel()` to animate behind the code (native strudel.cc overlay)
+- **Layered and hand-drawn visuals** — give each visual its own canvas with `ctx: getDrawContext('name')` so several play at once, or draw anything yourself with `.onPaint((ctx, time, haps) => …)`, reacting to the notes and the sound
+- **Inline visuals and sliders** — `._pianoroll()`, `._scope()` and friends draw under their own line of code; `slider(value, min, max)` puts a knob in the code to drag while it plays
+- **Hydra shader backgrounds** — `await initHydra()` + Hydra code for fully custom, music-synced WebGL visuals. `H(pattern)` locks a shader parameter to the sequence — notes arrive as MIDI numbers, so a melody can steer a shader — and `feedStrudel` post-processes the piano roll
 - **Audio-reactive shaders** — `a.fft[0]`, `a0()`, `a.setBins(6)` and the rest of Hydra's audio API work verbatim, driven by **Strudel's own output** rather than the microphone (no permission prompt, no room noise)
 - **`visuals` preset** — one enum value (`pianoroll`, `punchcard`, `scope`, `spectrum`, `hydra-kaleid`, `hydra-pulse`, `hydra-wash`, `hydra-feed`) gives a bare pattern something to paint. Never overrides code that already visualises itself
 - **`theme`** — 39 CodeMirror colour schemes; the visuals stage and its readability scrim are derived from the active theme, so light themes stay readable
@@ -66,7 +69,7 @@ Write code → hear it play → edit in a live REPL.
 - **`convert-abc-to-strudel`** — take a scored melody into the live REPL: bars become mini-notation groups, durations become `@` weights, chord symbols become a `chord().voicing()` line
 - **`search-music-docs`** — semantic search over strudel.cc and ABCJS documentation
 - **Click-to-play links** — in clients that can't render the inline widget (terminals, CLIs), both play tools return a hosted URL that actually plays. Short pieces travel in the link itself; longer ones are stored for 30 days
-- **Widgets that fit the host** — both widgets size themselves from the host's container (inline, fixed or fullscreen), respect safe-area insets and the host's fonts, and never pan sideways on a phone. If the browser holds audio back until a tap, the widget says "Tap Play to start audio" instead of pretending to play
+- **Widgets that fit the host** — both widgets size themselves from the host's container (inline, fixed or fullscreen), respect safe-area insets and the host's fonts, and never pan sideways on a phone. If the browser holds audio back until a tap, the widget says "Tap Play to start audio" instead of pretending to play. Scrolling past a widget never starts it, and a tune autoplays once — not again every time the host rebuilds the widget
 
 ---
 
@@ -246,6 +249,19 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `compose-beat` | Generate + play a Strudel pattern in a genre (args: `genre`, `mood?`) |
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
+
+## 0.5.12 — September 25, 2026
+
+Tested on a phone, then opened up. Scrolling a conversation no longer starts
+music, and a tune autoplays once per tool call instead of on every rebuild;
+Strudel code wraps. Sheet music rings out — a softer note release and a light
+Room echo, in the widget, WAV downloads and share links. Strudel visuals gain
+layers, hand-drawn `onPaint` art, inline visuals and sliders, and pitch-driven
+Hydra shaders, and share links now match the widget. Details:
+[0.5.9](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.9) ·
+[0.5.10](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.10) ·
+[0.5.11](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.11) ·
+[0.5.12](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.12).
 
 ## 0.5.6 — September 14, 2026
 
