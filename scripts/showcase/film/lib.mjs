@@ -36,7 +36,8 @@ fs.mkdirSync(SFCACHE, { recursive: true });
 
 /** Runs in every widget frame: tap each AudioContext's output into int16 PCM chunks stamped with wall time. */
 export const AUDIO_CAPTURE = `(() => {
-  if (window === window.top || !globalThis.BaseAudioContext) return;
+  // Widget frames on the film page; the page itself on a stage page (dev/stage-*.html).
+  if ((window === window.top && !location.pathname.includes('/stage-')) || !globalThis.BaseAudioContext) return;
   // Render at 48 kHz whatever the output device runs at (Bluetooth headsets in
   // call mode run at 24 or 16 kHz, and the context defaults to the device rate).
   const NativeAC = globalThis.AudioContext;
@@ -287,6 +288,14 @@ export async function startCapture(film) {
 }
 
 export async function drainAudio(film) {
+  if (film.captureTop) {
+    const got = await top(film, "globalThis.__capDrain?.() ?? null").catch(() => null);
+    if (got?.chunks.length) {
+      const a = (film.audio.top ??= { rate: got.rate, chunks: [] });
+      for (const c of got.chunks) a.chunks.push({ wall: c.wall, pcm: Buffer.from(c.b64, "base64") });
+    }
+    return;
+  }
   const frames = await widgetFrames(film.page);
   for (let i = 0; i < frames.length; i++) {
     if (!frames[i]) continue;
@@ -420,4 +429,59 @@ export async function evaluateIn(film, i) {
 
 export async function status(film, i) {
   return inWidget(film, i, `document.getElementById('status')?.textContent`);
+}
+
+
+/** A bare page (a dev/stage-*.html) at 1080×1920, its own audio captured. */
+export async function openStage(browser, { url, outDir, captureTop = true }) {
+  fs.mkdirSync(path.join(outDir, "frames"), { recursive: true });
+  const context = await browser.newContext({ viewport: { width: W_OUT, height: H_OUT }, deviceScaleFactor: 1, colorScheme: "dark" });
+  await context.route(/paulrosen\.github\.io|midi-js-soundfonts|felixroos\.github\.io|strudel\.b-cdn\.net/, async (route) => {
+    const u = route.request().url();
+    const file = path.join(SFCACHE, crypto.createHash("sha1").update(u).digest("hex"));
+    if (fs.existsSync(file)) return route.fulfill({ status: 200, body: fs.readFileSync(file), headers: { "content-type": fs.existsSync(file + ".type") ? fs.readFileSync(file + ".type", "utf8") : "application/octet-stream", "access-control-allow-origin": "*" } });
+    const res = await route.fetch();
+    if (res.status() !== 200) return route.fulfill({ response: res });
+    const body = await res.body();
+    fs.writeFileSync(file, body);
+    fs.writeFileSync(file + ".type", res.headers()["content-type"] || "application/octet-stream");
+    return route.fulfill({ status: 200, body, headers: { "content-type": res.headers()["content-type"] || "application/octet-stream", "access-control-allow-origin": "*" } });
+  });
+  await context.addInitScript({ content: AUDIO_CAPTURE });
+  const page = await context.newPage();
+  const log = [];
+  const t0 = Date.now();
+  page.on("console", (m) => { const t = m.text(); if (/^\[stage|\[film/.test(t) || m.type() === "error") log.push(`${String(Date.now() - t0).padStart(6)} ${t.slice(0, 200)}`); });
+  page.on("pageerror", (e) => log.push(`${String(Date.now() - t0).padStart(6)} [pageerror] ${e.message.slice(0, 200)}`));
+  const cdp = await context.newCDPSession(page);
+  const contexts = new Map();
+  cdp.on("Runtime.executionContextCreated", ({ context: c }) => { if (c.auxData?.isDefault) contexts.set(c.auxData.frameId, c.id); });
+  cdp.on("Runtime.executionContextDestroyed", (e) => { for (const [k, v] of contexts) if (v === e.executionContextId) contexts.delete(k); });
+  await cdp.send("Runtime.enable");
+  await cdp.send("DOM.enable");
+  await page.goto(url);
+  const film = { context, page, cdp, log, outDir, captureTop, sessions: new Map(), contexts };
+  for (let i = 0; i < 200 && !(await top(film, "!!window.__stage")); i++) await sleep(100);
+  return film;
+}
+
+/** Forget cached frame ids and contexts, and have Chrome re-announce the live ones. */
+export async function rescan(film) {
+  film.frameIds = null;
+  film.frameIdsP = null;
+  film.contexts.clear();
+  await film.cdp.send("Runtime.disable");
+  await film.cdp.send("Runtime.enable");
+  await sleep(60);
+}
+
+/** Wait until `expression` is truthy inside widget i, rescanning contexts when it isn't (a stale about:blank context). */
+export async function waitInWidget(film, i, expression, tries = 60) {
+  for (let k = 0; k < tries; k++) {
+    const v = await inWidget(film, i, expression).catch(() => false);
+    if (v) return v;
+    await rescan(film);
+    await sleep(200);
+  }
+  throw new Error(`timed out waiting in widget ${i}: ${expression}`);
 }

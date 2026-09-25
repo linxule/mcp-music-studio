@@ -19,6 +19,29 @@ Hydra scenes (`SCENES` in `dev/film-score.ts`) swapped just before downbeats by
 reading Strudel's scheduler clock → Stop rings out → end card.
 `lab.mjs [scene…]` previews scenes in fullscreen stage with a contact sheet.
 
+**v4 (pure image and sound, ~44 s)** drops the phone and chat. Two stages:
+`dev/stage-score.html` renders *Rest* with abcjs itself (the widget's synth
+options and Room) on black, a camera cutting glyph to glyph, the ink driven by
+an AnalyserNode on the real output (`?mode=old` = 0.5.8's 200 ms release and no
+Room; `?mode=new` = 0.5.13's). `dev/stage-strudel.html` hosts the real Strudel
+widget fullscreen with its chrome hidden (`clean()`) or one layer alone
+(`solo(id)`).
+
+```sh
+bun scripts/showcase/film/stage.mjs            # score-old, score-new
+bun scripts/showcase/film/screens.mjs build    # layers every 2 cycles, the five scenes, Stop
+bun scripts/showcase/film/screens.mjs solo     # each layer alone for a 4-cycle loop
+bun scripts/showcase/film/captions.mjs "$FILM_WORK/captions"
+# encode each take with the −120 ms audio shift, then:
+bun scripts/showcase/film/cut4.mjs             # → $FILM_WORK/cut4/rest-v4.mp4
+```
+
+Panels are phase-matched: every downbeat is logged (`c<N>` marks) and a panel
+shows its layer at the same cycle mod 4 as the audio under it. Gotcha: after
+`send()` the widget may already be playing (the host page's gesture reaches a
+same-origin frame) — pressing Play then STOPS it and clears the draw layers,
+which looks exactly like a layering bug.
+
 Helpers: `encode.mjs <take>` (frames + audio → mp4), `sheet.mjs <take> mark+secs…`
 (contact sheet at recorded marks), `sync.py <take>` (A/V offset: first score
 highlight vs first audio onset; run with `uv run --with numpy`).

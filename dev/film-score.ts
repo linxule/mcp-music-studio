@@ -70,7 +70,7 @@ $: s("bd ~ ~ bd, ~ cp, hh*8").bank("RolandTR909").gain(0.8)
 const mel = "<[a4 ~ f4 ~] [d4 ~ f4 a4] [e4 ~ c#4 ~] [d4 ~ ~ ~]>*2"
 $: note(mel).s("gm_vibraphone").room(0.5).delay(0.3).gain(0.7)
 await initHydra()
-osc(10, 0.04, 0).color(() => (H(mel)() - 58) / 14, 0.28, 0.95)
+osc(10, 0.04, 0).color(1, 0.2, () => 0.45 + Math.max(0, H(mel)() - 60) / 16)
   .kaleid(4).modulate(noise(1.4, 0.08), 0.12).out(o0)`,
   `
 
