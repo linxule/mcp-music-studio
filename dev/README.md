@@ -88,3 +88,18 @@ loads `/widgets/old/*.html` (the recorder routes those to a published version),
   `resume()` itself. ext-apps' permission vocabulary has no autoplay, so a
   spec-following host shouldn't delegate it — the dev harness (`index.html`)
   does, which is worth remembering when a harness repro and a host disagree.
+
+## Stages for the film (`stage-score.html`, `stage-strudel.html`)
+
+The final release film drops the phone for two bare stages, both 1080×1920:
+
+- `stage-score.html?mode=old|new` — "Rest" drawn by abcjs itself on black,
+  with the widget's synth options and Room; the camera cuts to each glyph as it
+  plays and its ink follows an AnalyserNode on the real output. `old` is 0.5.8's
+  sound (200 ms release, no Room), `new` the current one.
+- `stage-strudel.html` — the shipped Strudel widget, fullscreen from the start;
+  `__screen.clean()` hides its toolbar, `__screen.solo(id)` shows one visual
+  layer. The widget itself is untouched.
+
+The song they play is `film-song.ts`; the recorder and the edit are in
+`scripts/showcase/film/`.
