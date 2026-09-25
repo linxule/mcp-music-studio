@@ -12,6 +12,13 @@ bun scripts/showcase/film/take.mjs new                   # dist/
 bun scripts/showcase/film/cut.mjs                        # → $FILM_WORK/cut/mcp-music-studio-0.5.13-rest.mp4
 ```
 
+v3 shape: 2 s flash-forward of the climax → *Rest* bars 1–2 on 0.5.8, paused
+(dead air) → the same on 0.5.13 (it rings), under a waveform line drawn from the
+real audio → flick → four typed layers on downbeats → fullscreen stage → five
+Hydra scenes (`SCENES` in `dev/film-score.ts`) swapped just before downbeats by
+reading Strudel's scheduler clock → Stop rings out → end card.
+`lab.mjs [scene…]` previews scenes in fullscreen stage with a contact sheet.
+
 Helpers: `encode.mjs <take>` (frames + audio → mp4), `sheet.mjs <take> mark+secs…`
 (contact sheet at recorded marks), `sync.py <take>` (A/V offset: first score
 highlight vs first audio onset; run with `uv run --with numpy`).

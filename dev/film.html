@@ -27,7 +27,8 @@
     /* Host fullscreen: the frame covers the phone's screen where it is scrolled to. */
     .widget.full { position: absolute; left: 0; width: 390px; height: var(--ph, 694px) !important; border-radius: 0; z-index: 5; }
     #label { position: fixed; right: 34px; top: 30px; font: 500 48px/1 "SF Mono", Menlo, monospace; letter-spacing: .06em;
-      color: rgba(236, 232, 255, .5); z-index: 20; pointer-events: none; }
+      color: rgba(236, 232, 255, .5); z-index: 20; pointer-events: none; transition: opacity .4s ease; }
+    #label.off { opacity: 0; }
     #finger { position: absolute; left: 0; top: 0; width: 46px; height: 46px; margin: -23px 0 0 -23px; border-radius: 50%;
       background: rgba(255,255,255,.28); box-shadow: 0 0 0 1.5px rgba(255,255,255,.55), 0 4px 18px rgba(0,0,0,.35);
       pointer-events: none; opacity: 0; transform: scale(.7); transition: opacity .12s ease, transform .12s ease; z-index: 9; }

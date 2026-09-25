@@ -84,6 +84,8 @@ function makeBridge(frame: HTMLIFrameElement, name: string): AppBridge {
   b.onrequestdisplaymode = async ({ mode }) => {
     const full = mode === "fullscreen";
     frame.classList.toggle("full", full);
+    // The version label is for the conversation, not the stage.
+    document.getElementById("label")!.classList.toggle("off", full);
     if (full) {
       frame.style.top = `${phone.scrollTop}px`;
       phone.style.overflowY = "hidden";

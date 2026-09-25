@@ -177,8 +177,7 @@ export async function top(film, expression) {
 
 /** The frame id of widget i's iframe: resolved once (DOM node ids go stale; frame ids don't). */
 async function frameIdOf(film, i) {
-  film.frameIds ??= {};
-  if (film.frameIds[i]) return film.frameIds[i];
+  if (film.frameIds?.[i]) return film.frameIds[i];
   film.frameIdsP ??= (async () => {
     const { root } = await film.cdp.send("DOM.getDocument", { depth: 0 });
     const out = {};
@@ -194,13 +193,38 @@ async function frameIdOf(film, i) {
   return film.frameIds[i];
 }
 
+/** A CDP session of widget i's own, if Chrome has put the frame out of process. */
+async function ownSession(film, i) {
+  const f = (await widgetFrames(film.page))[i];
+  if (!f) return null;
+  if (film.sessions.has(f)) return film.sessions.get(f);
+  try {
+    const s = await film.context.newCDPSession(f);
+    film.sessions.set(f, s);
+    return s;
+  } catch {
+    return null; // still in the page's process
+  }
+}
+
 /** Evaluate inside widget i, no gesture (its own CDP session: the frame is out-of-process). */
-export async function inWidget(film, i, expression) {
-  const frameId = await frameIdOf(film, i);
+/** Serialised: a rescan (Runtime.disable/enable, DOM.getDocument) invalidates concurrent callers' ids. */
+export function inWidget(film, i, expression) {
+  const run = (film.lock ?? Promise.resolve()).then(() => inWidgetNow(film, i, expression));
+  film.lock = run.catch(() => {});
+  return run;
+}
+
+async function inWidgetNow(film, i, expression) {
+  let frameId = await frameIdOf(film, i);
   let r;
   for (let attempt = 0; ; attempt++) {
     let contextId = frameId && film.contexts.get(frameId);
     if (!contextId || attempt > 0) {
+      // The frame id itself can change under us: resolve it again from the DOM.
+      film.frameIds = null;
+      film.frameIdsP = null;
+      frameId = await frameIdOf(film, i);
       // Re-announce every live context: disable + enable replays executionContextCreated.
       film.contexts.clear();
       await film.cdp.send("Runtime.disable");
@@ -208,6 +232,13 @@ export async function inWidget(film, i, expression) {
       await sleep(50);
       contextId = film.contexts.get(frameId);
       if (!contextId) {
+        // The frame may have moved out of process: it then has a session of its own.
+        const own = await ownSession(film, i);
+        if (own) {
+          const rr = await own.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: false });
+          if (rr.exceptionDetails) throw new Error(rr.exceptionDetails.exception?.description ?? rr.exceptionDetails.text);
+          return rr.result.value;
+        }
         if (attempt >= 6) throw new Error(`no context for widget ${i} (frame ${frameId})`);
         await sleep(200);
         continue;
