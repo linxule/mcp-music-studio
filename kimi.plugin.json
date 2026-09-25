@@ -1,7 +1,7 @@
 {
   "$schema": "https://kimi.com/schemas/kimi.plugin.schema.json",
   "name": "music-studio",
-  "version": "0.5.13",
+  "version": "0.5.14",
   "description": "Two-mode MCP music studio: scored composition (ABC notation) and live performance (Strudel live coding).",
   "keywords": [
     "mcp",

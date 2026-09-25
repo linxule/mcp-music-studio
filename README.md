@@ -250,6 +250,15 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
 
+## 0.5.14 — September 25, 2026
+
+The local server's pattern check rejected every Strudel pattern written with
+`$:` blocks — Strudel's everyday way to run several patterns — as "failed to
+evaluate" while the widget played it fine. It now follows the REPL: blocks play
+stacked, `_$:` mutes, `S$:` solos, and the result counts the blocks as layers.
+A pattern ending in a Hydra line no longer hangs the check.
+[0.5.14](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.14)
+
 ## 0.5.13 — September 25, 2026
 
 The sheet widget's **Room** button showed as a blank blue box while on: its

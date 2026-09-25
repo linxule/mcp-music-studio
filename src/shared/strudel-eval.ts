@@ -131,10 +131,18 @@ let active: StrudelTrace | undefined;
 /** Transforms recorded by all()/each() during the evaluation in progress. */
 let pendingAll: Array<(p: Any) => Any> = [];
 let pendingEach: ((p: Any) => Any) | undefined;
+/**
+ * Patterns registered with `.p(id)` — what `$: pattern` transpiles to
+ * (`pattern.p('$')`), and `d1`…`d9`/`p1`…`p9`. Ordered as registered.
+ */
+let pendingP: Array<[string, Any]> = [];
+let anonymousIndex = 0;
 
 function resetTransforms(): void {
   pendingAll = [];
   pendingEach = undefined;
+  pendingP = [];
+  anonymousIndex = 0;
 }
 
 /**
@@ -155,6 +163,27 @@ function finishEvaluation(value: unknown): EvalResult {
   });
   // Checked before the transforms run: `p => p.scope()` on undefined would
   // throw a TypeError that names the symptom, not the cause.
+  // `$:` blocks: the REPL plays the stack of registered patterns, whatever the
+  // last expression was (often a Hydra `.out()`, i.e. undefined). An `S…` id
+  // solos: only soloed patterns play once one is seen.
+  if (pendingP.length) {
+    let patterns: Any[] = [];
+    let soloActive = false;
+    for (const [key, pat] of pendingP) {
+      const isSolo = key.length > 1 && key.startsWith("S");
+      if (isSolo && !soloActive) {
+        patterns = [];
+        soloActive = true;
+      }
+      if (!soloActive || isSolo) patterns.push(pat);
+    }
+    if (pendingEach) patterns = patterns.map((x) => pendingEach!(x));
+    if (active) active.stackArity = Math.max(active.stackArity, patterns.length);
+    let stacked: Any = C.stack(...patterns);
+    for (const transform of pendingAll) stacked = transform(stacked);
+    resetTransforms();
+    return isPattern(stacked) ? { pattern: stacked, error: undefined } : notAPattern();
+  }
   if (!isPattern(value)) {
     resetTransforms();
     return notAPattern();
@@ -242,7 +271,10 @@ function installSpanGuard(): void {
  */
 const SANDBOX_DOCUMENT = () => {
   const chain: Any = new Proxy(function () {} as Any, {
-    get: () => chain,
+    // Never thenable: a chain as the LAST expression (a Hydra \`.out()\` after
+    // \`$:\` blocks) is returned from an async function, which awaits a
+    // thenable — and this one would never resolve.
+    get: (_t, prop) => (prop === "then" ? undefined : chain),
     apply: () => chain,
   });
   return {
@@ -259,7 +291,10 @@ const AUDIO_BAND_GLOBALS = 16;
 /** Browser-only globals the visuals topic legitimately uses. */
 const HYDRA_GLOBALS = () => {
   const chain: Any = new Proxy(function () {} as Any, {
-    get: () => chain,
+    // Never thenable: a chain as the LAST expression (a Hydra \`.out()\` after
+    // \`$:\` blocks) is returned from an async function, which awaits a
+    // thenable — and this one would never resolve.
+    get: (_t, prop) => (prop === "then" ? undefined : chain),
     apply: () => chain,
   });
   const src = () => chain;
@@ -323,6 +358,32 @@ export function setupStrudel(): Promise<void> {
         if (active && !active.visuals.includes(name)) active.visuals.push(name);
         return this;
       };
+    }
+    // What repl()'s injectPatternMethods() adds: `$: x` is `x.p('$')`, and an
+    // id starting or ending in `_` mutes. Without these, every pattern written
+    // with `$:` blocks failed validation ("….p is not a function") while it
+    // played fine in the widget.
+    C.Pattern.prototype.p = function (this: Any, id: unknown) {
+      if (typeof id === "string" && (id.startsWith("_") || id.endsWith("_"))) return C.silence;
+      let key = String(id);
+      if (key.includes("$")) key = `${key}${anonymousIndex++}`;
+      pendingP = pendingP.filter(([k]) => k !== key);
+      pendingP.push([key, this]);
+      return this;
+    };
+    C.Pattern.prototype.q = function () {
+      return C.silence;
+    };
+    for (let i = 1; i < 10; ++i) {
+      for (const name of [`d${i}`, `p${i}`]) {
+        Object.defineProperty(C.Pattern.prototype, name, {
+          get(this: Any) {
+            return this.p(i);
+          },
+          configurable: true,
+        });
+      }
+      C.Pattern.prototype[`q${i}`] = C.silence;
     }
     await C.evalScope(core, mini, tonal, C.controls ?? {}, {
       // repl()-provided globals, minus the scheduler. Listed last so these win
