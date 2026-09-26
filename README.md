@@ -11,7 +11,7 @@ Two-mode creative music studio for AI: **scored composition** (ABC notation with
 Paste this URL into any MCP client that supports remote servers:
 
 ```
-https://mcp-music-studio.linxule.workers.dev/mcp
+https://music-studio.linxule.com/mcp
 ```
 
 **Claude Desktop / claude.ai:**
@@ -19,7 +19,7 @@ Settings → Connectors → Add Connector → paste the URL above → done.
 
 **Claude Code:**
 ```bash
-claude mcp add --transport http music-studio https://mcp-music-studio.linxule.workers.dev/mcp
+claude mcp add --transport http music-studio https://music-studio.linxule.com/mcp
 ```
 
 That's it — ask Claude to play a song or create a beat.
@@ -68,7 +68,8 @@ Write code → hear it play → edit in a live REPL.
 - **`analyze-harmony`** — chord detection, key detection, progressions, chord scales; answers in both ABC chord symbols and Strudel `chord()`/`note()` form
 - **`convert-abc-to-strudel`** — take a scored melody into the live REPL: bars become mini-notation groups, durations become `@` weights, chord symbols become a `chord().voicing()` line
 - **`search-music-docs`** — semantic search over strudel.cc and ABCJS documentation
-- **Click-to-play links** — in clients that can't render the inline widget (terminals, CLIs), both play tools return a hosted URL that actually plays. Short pieces travel in the link itself; longer ones are stored for 30 days
+- **Click-to-play links** — short pieces include a self-contained browser link; the music is encoded in the URL, not encrypted. Playback never stores a composition in the share database. For longer pieces, use the inline widget, a local browser render, or explicitly ask for a stored share
+- **Explicit sharing** — `create-share-link` uploads a score or pattern for 30 days. Anyone with the link can view and play it; creating the same share again refreshes its expiry. Standalone Strudel pages wait for Play or an intentional editor evaluation shortcut, including older autoplay links
 - **Widgets that fit the host** — both widgets size themselves from the host's container (inline, fixed or fullscreen), respect safe-area insets and the host's fonts, and never pan sideways on a phone. If the browser holds audio back until a tap, the widget says "Tap Play to start audio" instead of pretending to play. Scrolling past a widget never starts it, and a tune autoplays once — not again every time the host rebuilds the widget
 
 ---
@@ -235,6 +236,7 @@ Without `--stdio` the server listens over Streamable HTTP. That endpoint is **un
 | `search-music-docs` | Semantic search over strudel.cc and ABCJS docs | `query`, `library` (`strudel` \| `abcjs`) |
 | `analyze-harmony` | Name a chord, guess the key, get a progression or chord scale — in ABC and Strudel spellings | `task`, `notes?`, `chords?`, `key?`, `romanNumerals?` |
 | `convert-abc-to-strudel` | Turn a scored ABC melody into a Strudel mini-notation pattern | `abcNotation`, `voice?`, `sound?` |
+| `create-share-link` | Explicitly store a piece and return a 30-day link accessible to anyone holding it | `kind` (`score` or `play`), matching `score` or `pattern` object with the corresponding play tool's arguments |
 
 **`visuals`** — `none`, `pianoroll`, `punchcard`, `scope`, `spectrum`, `hydra-kaleid`, `hydra-pulse`, `hydra-wash`, `hydra-feed`.
 **`theme`** — any of the 39 schemes the Strudel REPL ships (`strudelTheme`, `nord`, `sonicPink`, `teletext`, `gruvboxDark`, `githubLight`, …).
@@ -249,6 +251,22 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `compose-beat` | Generate + play a Strudel pattern in a genre (args: `genre`, `mood?`) |
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
+
+## 0.6.0 — September 26, 2026
+
+The canonical endpoint is now `https://music-studio.linxule.com/mcp`. Existing
+`mcp-music-studio.linxule.workers.dev` connections and shared links continue to work.
+
+Playback no longer stores compositions automatically. Use the new
+`create-share-link` tool when you explicitly want to upload a composition for a
+30-day link. The hosted privacy policy explains storage, retention, and external
+providers. Standalone Strudel pages start only after an intentional Play action.
+
+This release corrects ABC pitch/drum guidance and harmony error reporting, adds
+real browser audio and export checks to CI and publishing, and updates development
+dependencies. The combined application is now AGPL-3.0-or-later, with the original
+MIT notices preserved and editable source/build inputs included in the npm package.
+Earlier releases retain their original notices. See [SOURCE.md](SOURCE.md).
 
 ## 0.5.14 — September 25, 2026
 
@@ -305,9 +323,39 @@ bun install
 bun run dev      # watch + serve (hot reload)
 bun run build    # production build (widgets must be built before the tests)
 bun run test     # run tests
+bunx playwright install chromium  # one-time browser install
+bun run test:audio   # real browser audio, visuals, WAV and MIDI exports
+bun run test:package # check source and license contents of the npm package
 ```
 
 `dev/` is a local ext-apps host harness for driving the widgets outside a real client — see [`dev/README.md`](dev/README.md).
+
+The browser audio gate starts that harness automatically and tests the built widgets
+using Chromium and the real MCP Apps bridge. It measures rendered audio samples,
+checks silence after stopping, and inspects exported WAV/MIDI bytes. It needs
+network access to the pinned Strudel runtime and ABC soundfont provider. CI and
+tag publishing both run it; failed runs retain traces and screenshots. The harness
+does not enforce a client's CSP or reproduce every client's sandbox and audio policy.
+
+## Privacy policy
+
+Read the [hosted privacy policy](https://music-studio.linxule.com/privacy)
+([source](privacy.html)) for composition sharing, analytics, browser storage,
+Context7 search, external sample/script providers, retention, and contact details.
+Playback and persistent sharing are separate operations. Short browser links
+contain the composition itself; do not include sensitive information in them.
+
+For example, explicitly creating a stored pattern link uses:
+
+```json
+{
+  "kind": "play",
+  "pattern": { "code": "s(\"bd sd\")", "title": "My beat" }
+}
+```
+
+Call `create-share-link` only when the user asks to share or store the piece.
+It also uploads to the hosted service when called through the local server.
 
 ## Attribution
 
@@ -317,4 +365,4 @@ Live coding is powered by [Strudel](https://strudel.cc) — canonical repo at [c
 
 ## License
 
-MIT
+The combined application is licensed under **AGPL-3.0-or-later**. The original MIT notices and grants are preserved in [LICENSES/MIT.txt](LICENSES/MIT.txt). This change does not revoke the licenses of earlier releases. See [SOURCE.md](SOURCE.md) for corresponding source and build instructions, and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency and audio-asset licensing. Music you create is not automatically licensed under the application’s software license.

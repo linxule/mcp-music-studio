@@ -8,8 +8,8 @@
     "source": "github",
     "id": "1185354744"
   },
-  "version": "0.5.14",
-  "websiteUrl": "https://mcp-music-studio.linxule.workers.dev",
+  "version": "0.6.0",
+  "websiteUrl": "https://music-studio.linxule.com",
   "icons": [
     {
       "src": "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/logo.png",
@@ -23,7 +23,7 @@
     {
       "registryType": "npm",
       "identifier": "mcp-music-studio",
-      "version": "0.5.14",
+      "version": "0.6.0",
       "transport": {
         "type": "stdio"
       }
@@ -32,7 +32,7 @@
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://mcp-music-studio.linxule.workers.dev/mcp"
+      "url": "https://music-studio.linxule.com/mcp"
     }
   ]
 }

@@ -700,16 +700,24 @@ function nonEmpty(list: string[] | undefined): string[] {
   return (list ?? []).map((s) => String(s).trim()).filter((s) => s.length > 0);
 }
 
-function detectChord(args: AnalyzeHarmonyArgs): string {
+export interface HarmonyResult {
+  ok: boolean;
+  text: string;
+}
+
+const success = (text: string): HarmonyResult => ({ ok: true, text });
+const failure = (text: string): HarmonyResult => ({ ok: false, text });
+
+function detectChord(args: AnalyzeHarmonyArgs): HarmonyResult {
   const notes = nonEmpty(args.notes);
   if (notes.length < 2) {
-    return `detect-chord needs at least 2 notes, e.g. notes: ["c4","e4","g4","b4"]. ${HELP}`;
+    return failure(`detect-chord needs at least 2 notes, e.g. notes: ["c4","e4","g4","b4"]. ${HELP}`);
   }
 
   const parsed = notes.filter((n) => !Note.get(n).empty);
   const bad = notes.filter((n) => Note.get(n).empty);
   if (parsed.length < 2) {
-    return (
+    return failure(
       `Could not read those note names: ${notes.join(", ")}. ` +
       'Use scientific pitch names like "c4", "eb4", "f#5" (or bare pitch classes "C", "Eb").'
     );
@@ -729,7 +737,7 @@ function detectChord(args: AnalyzeHarmonyArgs): string {
     // step with the notes comma-separated.
     lines.push(`Strudel: note("[${parsed.map((n) => strudelNote(n)).join(",")}]")`);
     if (bad.length) lines.push(`Ignored unreadable notes: ${bad.join(", ")}.`);
-    return lines.join("\n");
+    return success(lines.join("\n"));
   }
 
   const best = friendlyChordSymbol(detected[0]!);
@@ -764,14 +772,14 @@ function detectChord(args: AnalyzeHarmonyArgs): string {
       : `Strudel: ${spelled}  (no ireal voicing for "${best}" — spell it out)`,
   );
   if (bad.length) lines.push(`Ignored unreadable notes: ${bad.join(", ")}.`);
-  return lines.join("\n");
+  return success(lines.join("\n"));
 }
 
-function detectKey(args: AnalyzeHarmonyArgs): string {
+function detectKey(args: AnalyzeHarmonyArgs): HarmonyResult {
   const notes = nonEmpty(args.notes);
   const chords = nonEmpty(args.chords);
   if (notes.length === 0 && chords.length === 0) {
-    return `detect-key needs notes or chords, e.g. chords: ["Dm7","G7","Cmaj7"]. ${HELP}`;
+    return failure(`detect-key needs notes or chords, e.g. chords: ["Dm7","G7","Cmaj7"]. ${HELP}`);
   }
 
   const pcs: string[] = [];
@@ -786,7 +794,7 @@ function detectKey(args: AnalyzeHarmonyArgs): string {
   unreadable.push(...fromChords.unknown);
 
   if (pcs.length === 0) {
-    return (
+    return failure(
       `Could not read any of: ${[...notes, ...chords].join(", ")}. ` +
       'Notes look like "c4"/"Eb"; chords look like "Dm7"/"G7"/"Cmaj7".'
     );
@@ -813,18 +821,18 @@ function detectKey(args: AnalyzeHarmonyArgs): string {
   lines.push(`ABC key field: K:${best.tonic}${best.mode === "minor" ? "m" : ""}`);
   lines.push(`Strudel: n("0 2 4").scale("${best.tonic}:${best.mode}")`);
   if (unreadable.length) lines.push(`Ignored unreadable input: ${unreadable.join(", ")}.`);
-  return lines.join("\n");
+  return success(lines.join("\n"));
 }
 
-function suggestProgression(args: AnalyzeHarmonyArgs): string {
+function suggestProgression(args: AnalyzeHarmonyArgs): HarmonyResult {
   const keyInput = (args.key ?? "").trim();
   if (!keyInput) {
-    return `suggest-progression needs a key, e.g. key: "C" or key: "A minor". ${HELP}`;
+    return failure(`suggest-progression needs a key, e.g. key: "C" or key: "A minor". ${HELP}`);
   }
   const parsed = parseKeyName(keyInput);
   const material = parsed ? keyMaterial(parsed) : null;
   if (!parsed || !material) {
-    return `Could not read the key "${keyInput}". ${KEY_HELP}`;
+    return failure(`Could not read the key "${keyInput}". ${KEY_HELP}`);
   }
 
   const numerals = nonEmpty(args.romanNumerals);
@@ -832,19 +840,29 @@ function suggestProgression(args: AnalyzeHarmonyArgs): string {
 
   if (numerals.length > 0) {
     const normalized = numerals.map(normalizeRomanNumeral);
-    const chords = Progression.fromRomanNumerals(parsed.tonic, normalized).map((c, i) =>
-      c ? friendlyChordSymbol(c) : `?${numerals[i]}`,
-    );
-    const unresolved = chords.filter((c) => c.startsWith("?"));
-    lines.push(`${numerals.join(" - ")}  →  ${chords.join(" ")}`);
+    // fromRomanNumerals transposes the degree and appends its suffix; it does
+    // not validate the chord type (e.g. Vgarbage becomes Ggarbage).
+    const converted = Progression.fromRomanNumerals(parsed.tonic, normalized);
+    const unresolved = numerals.filter((_, i) => !isChordSymbol(converted[i] ?? ""));
     if (unresolved.length) {
-      lines.push(
-        `Could not read: ${unresolved.map((c) => c.slice(1)).join(", ")}. Use roman numerals like I, iim7, V7, bVII.`,
+      return failure(
+        `Could not read roman numerals: ${unresolved.join(", ")}. ` +
+        "Use supported chord qualities, e.g. I, ii7, V7, bVII, vii° or iiø7. " +
+        "Secondary-dominant notation such as V/V is not supported; spell the target chord separately.",
       );
     }
+    const chords = converted.map((c) => friendlyChordSymbol(asciiChordSymbol(c)));
+    lines.push(`${numerals.join(" - ")}  →  ${chords.join(" ")}`);
     lines.push(`ABC: ${chords.map((c) => `"${c}"`).join(" ")}`);
+    const unvoiced = chords.filter((c) => irealChordSymbol(c) === null);
+    if (unvoiced.length) {
+      lines.push(
+        `No default Strudel voicing for ${unvoiced.join(", ")}; those steps are rests (~) below. ` +
+        "Spell their notes explicitly to hear the full progression.",
+      );
+    }
     lines.push(`Strudel: chord("<${irealChordList(chords)}>").voicing().s("gm_epiano1")`);
-    return lines.join("\n");
+    return success(lines.join("\n"));
   }
 
   lines.push("");
@@ -866,13 +884,13 @@ function suggestProgression(args: AnalyzeHarmonyArgs): string {
   lines.push(
     "Pass romanNumerals (e.g. [\"iim7\",\"V7\",\"Imaj7\"]) to render your own progression in this key.",
   );
-  return lines.join("\n");
+  return success(lines.join("\n"));
 }
 
-function scaleForChord(args: AnalyzeHarmonyArgs): string {
+function scaleForChord(args: AnalyzeHarmonyArgs): HarmonyResult {
   const chords = nonEmpty(args.chords);
   if (chords.length === 0) {
-    return `scale-for-chord needs chords, e.g. chords: ["Dm7","G7","Cmaj7"]. ${HELP}`;
+    return failure(`scale-for-chord needs chords, e.g. chords: ["Dm7","G7","Cmaj7"]. ${HELP}`);
   }
 
   const lines: string[] = [];
@@ -895,25 +913,25 @@ function scaleForChord(args: AnalyzeHarmonyArgs): string {
   }
 
   if (lines.length === 0) {
-    return `Could not read any of those chord symbols: ${chords.join(", ")}. Try "Dm7", "G7", "Cmaj7".`;
+    return failure(`Could not read any of those chord symbols: ${chords.join(", ")}. Try "Dm7", "G7", "Cmaj7".`);
   }
   if (unknown.length) lines.push(`Ignored unreadable chords: ${unknown.join(", ")}.`);
 
   const detected = detectKey({ task: "detect-key", chords });
-  const bestLine = detected.split("\n")[0];
+  const bestLine = detected.text.split("\n")[0];
   if (bestLine?.startsWith("Best key")) lines.push(bestLine);
-  return lines.join("\n");
+  return success(lines.join("\n"));
 }
 
-function keyChords(args: AnalyzeHarmonyArgs): string {
+function keyChords(args: AnalyzeHarmonyArgs): HarmonyResult {
   const keyInput = (args.key ?? "").trim();
   if (!keyInput) {
-    return `key-chords needs a key, e.g. key: "C" or key: "A minor". ${HELP}`;
+    return failure(`key-chords needs a key, e.g. key: "C" or key: "A minor". ${HELP}`);
   }
   const parsed = parseKeyName(keyInput);
   const material = parsed ? keyMaterial(parsed) : null;
   if (!parsed || !material) {
-    return `Could not read the key "${keyInput}". ${KEY_HELP}`;
+    return failure(`Could not read the key "${keyInput}". ${KEY_HELP}`);
   }
 
   const rows = material.romans.map(
@@ -921,7 +939,7 @@ function keyChords(args: AnalyzeHarmonyArgs): string {
       `  ${roman.padEnd(5)} ${material.triads[i]!.padEnd(8)} ${material.sevenths[i]!.padEnd(9)} ${material.chordScales[i] ?? ""}`,
   );
 
-  return [
+  return success([
     `Key: ${material.name}`,
     `Scale: ${material.scale.join(" ")}`,
     "  deg   triad    seventh   chord scale",
@@ -930,7 +948,7 @@ function keyChords(args: AnalyzeHarmonyArgs): string {
     `ABC chord symbols: ${material.sevenths.map((c) => `"${c}"`).join(" ")}`,
     `Strudel: chord("<${irealChordList(material.sevenths.slice(0, 4))}>").voicing().s("gm_epiano1")`,
     `Strudel scale: n("0 1 2 3 4 5 6").scale("${parsed.tonic}:${strudelScaleName(material.strudelScale)}")`,
-  ].join("\n");
+  ].join("\n"));
 }
 
 // -----------------------------------------------------------------------------
@@ -938,10 +956,10 @@ function keyChords(args: AnalyzeHarmonyArgs): string {
 // -----------------------------------------------------------------------------
 
 /**
- * Analyze harmony. Always returns text — unknown tasks, missing arguments, and
- * garbage note/chord names all produce a helpful message rather than throwing.
+ * Analyze harmony with an explicit execution status. Valid no-match analyses
+ * succeed; missing or unusable input and unexpected exceptions return errors.
  */
-export function analyzeHarmony(args: AnalyzeHarmonyArgs): string {
+export function analyzeHarmonyResult(args: AnalyzeHarmonyArgs): HarmonyResult {
   try {
     switch (args?.task) {
       case "detect-chord":
@@ -955,9 +973,14 @@ export function analyzeHarmony(args: AnalyzeHarmonyArgs): string {
       case "key-chords":
         return keyChords(args);
       default:
-        return `Unknown task "${String(args?.task)}". ${HELP}`;
+        return failure(`Unknown task "${String(args?.task)}". ${HELP}`);
     }
   } catch (err) {
-    return `Could not analyze that input (${(err as Error).message}). ${HELP}`;
+    return failure(`Could not analyze that input (${(err as Error).message}). ${HELP}`);
   }
+}
+
+/** Compatibility text API for callers that do not need the execution status. */
+export function analyzeHarmony(args: AnalyzeHarmonyArgs): string {
+  return analyzeHarmonyResult(args).text;
 }

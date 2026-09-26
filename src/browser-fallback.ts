@@ -1,3 +1,4 @@
+import { SOURCE_URL } from "./source-info.js";
 /**
  * Browser fallback for non-UI MCP clients.
  * Generates a self-contained HTML player and opens it in the default browser.
@@ -602,6 +603,7 @@ export function generatePlayerHtml(options: BrowserPlayerOptions): string {
 
     render(false);
   </script>
+<footer style="font-size:12px;padding:12px;text-align:center"><a href="${SOURCE_URL}" target="_blank" rel="noopener noreferrer">Source &amp; licenses</a></footer>
 </body>
 </html>`;
 }

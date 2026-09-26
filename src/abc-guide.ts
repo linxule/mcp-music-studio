@@ -78,6 +78,8 @@ Use %%MIDI drum in your ABC notation. Syntax:
 Pattern characters: d=drum hit, z=rest
 Notes: MIDI percussion numbers (see below)
 Velocities: 0-127 (volume for each hit)
+Supply one note and one velocity per d hit, in separate lists. A z rest takes
+NO note or velocity placeholder; extra values silently disable drums in abcjs.
 
 Also set: %%MIDI drumon (enable) and optionally %%MIDI drumoff (disable)
 
@@ -95,7 +97,7 @@ Also set: %%MIDI drumon (enable) and optionally %%MIDI drumoff (disable)
 
 ### Jazz Swing (4/4)
 %%MIDI drumon
-%%MIDI drum dzddzd 51 0 51 51 0 42 80 0 60 80 0 50
+%%MIDI drum dzddzd 51 51 51 42 80 60 80 50
 
 ### Bossa Nova (4/4)
 %%MIDI drumon
@@ -103,15 +105,15 @@ Also set: %%MIDI drumon (enable) and optionally %%MIDI drumoff (disable)
 
 ### Waltz (3/4)
 %%MIDI drumon
-%%MIDI drum dzz 36 0 0 90 0 0
+%%MIDI drum dzz 36 90
 
 ### Shuffle (4/4)
 %%MIDI drumon
-%%MIDI drum ddddzd 42 42 38 42 0 42 60 60 100 60 0 60
+%%MIDI drum ddddzd 42 42 38 42 42 60 60 100 60 60
 
 ### Reggae (4/4)
 %%MIDI drumon
-%%MIDI drum zdzd 0 42 0 38 0 60 0 90
+%%MIDI drum zdzd 42 38 60 90
 
 ### March (4/4)
 %%MIDI drumon
@@ -141,10 +143,10 @@ Q:1/4=120      % tempo in BPM
 K:C            % key signature (C, G, D, Am, Em, Bb, etc.)
 
 ## Notes
-C D E F G A B  % octave below middle C to B
-c d e f g a b  % middle C octave and up
-C, D, E,       % octave below (comma = down)
-c' d' e'       % octave above (apostrophe = up)
+C D E F G A B  % middle C (C4, MIDI 60) through B4
+c d e f g a b  % C5 through B5, one octave above
+C, D, E,       % C3 D3 E3 (comma = down one octave)
+c' d' e'       % C6 D6 E6 (apostrophe = up one octave)
 
 ## Accidentals
 ^C = C sharp | _C = C flat | =C = C natural
@@ -198,7 +200,11 @@ C,2 G,2 | C,2 G,2 |
 !D.C.!          da capo (repeat from start)
 !D.S.!          dal segno (repeat from segno)
 !coda!          coda mark
-!fine!          end mark`,
+!fine!          end mark
+
+D.C., D.S., coda and fine are printed symbols only in abcjs playback; they
+do not jump or stop the audio. Write out the intended sequence explicitly,
+or use supported bar repeats and numbered endings for playback.`,
 
   arrangements: `# Arrangement Patterns
 
@@ -439,7 +445,7 @@ Place these in your ABC notation to control playback. Each directive starts with
 
 ## Instrument
 %%MIDI program <0-127>          Set instrument for current voice
-%%MIDI channel <0-15>           Set MIDI channel (10 = percussion)
+%%MIDI channel <1-16>           Set MIDI channel (10 = percussion)
 
 ## Accompaniment (requires chord symbols in notation)
 %%MIDI gchord <pattern>         Chord pattern: f=bass, c=chord, z=rest
@@ -471,8 +477,13 @@ Common gchord patterns:
 %%MIDI transpose <n>            Transpose MIDI output by n semitones
 
 ## Dynamics
-%%MIDI beat <a> <b> <c>         Accent pattern: strong, medium, weak (0-127)
-%%MIDI beatmod <n>              Modify beat emphasis
+%%MIDI beat <a> <b> <c> <n>     First-beat, strong-beat, weak-beat volumes (0-127)
+All four integers are required. abcjs uses a/b/c for volumes but currently
+ignores n (the abc2midi strong-beat interval); use 1 for that required field.
+%%MIDI beat 100 90 80 1
+%%MIDI beataccents              Enable beat accents (default)
+%%MIDI nobeataccents            Use even emphasis
+abcjs parses %%MIDI beatmod but does not apply it during playback.
 
 ## Example: Full Setup
 %%MIDI program 73

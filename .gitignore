@@ -19,3 +19,7 @@ docs/internal/
 # prevent root wrangler config (worker/ has its own)
 /wrangler.jsonc
 /wrangler.json
+
+# Playwright release evidence
+test-results/
+playwright-report/

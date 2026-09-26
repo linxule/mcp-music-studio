@@ -33,7 +33,8 @@ describe("play-live-pattern handler", () => {
       "Strudel pattern ready — parses OK: 2 events/cycle, sounds: bd sd (all registered).\n" +
         "It plays in an editable REPL widget in MCP-app hosts " +
         "(e.g. Claude Desktop, claude.ai). The server cannot tell whether a player rendered: if the user " +
-        "reports no player, this client can't play it inline and nothing has played yet.",
+        "reports no player, this client can't play it inline and nothing has played yet. " +
+        "A stored browser link can be created with create-share-link only if the user asks to share or store this piece online.",
     );
   });
 
@@ -43,7 +44,8 @@ describe("play-live-pattern handler", () => {
     expect(result.content[0]?.text).toBe(
       "Strudel pattern ready. It plays in an editable REPL widget in MCP-app hosts " +
         "(e.g. Claude Desktop, claude.ai). The server cannot tell whether a player rendered: if the user " +
-        "reports no player, this client can't play it inline and nothing has played yet.",
+        "reports no player, this client can't play it inline and nothing has played yet. " +
+        "A stored browser link can be created with create-share-link only if the user asks to share or store this piece online.",
     );
     expect(result.content[0]?.text).not.toContain('"');
   });

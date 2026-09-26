@@ -1,3 +1,4 @@
+import { SOURCE_URL } from "./source-info.js";
 // =============================================================================
 // Strudel browser fallback — standalone HTML with @strudel/repl
 // In browser mode (not iframe sandbox), the full REPL renders correctly.
@@ -21,6 +22,7 @@ import { AUDIO_ANALYSER, AUDIO_DEFAULTS } from "./shared/audio-bands.js";
 export interface StrudelPlayerOptions {
   code: string;
   bpm?: number;
+  /** Compatibility only: standalone pages always require intentional Play. */
   autoplay?: boolean;
   show_code?: boolean;
   /** Page heading and document title. Falls back to "Strudel Live Pattern". */
@@ -39,7 +41,7 @@ function escapeHtml(s: string): string {
 }
 
 export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string {
-  const { code, bpm, autoplay = true } = options;
+  const { code, bpm } = options;
 
   // Tempo policy lives in src/shared/tempo.ts and is shared with the ext-apps
   // widget. Run it ONCE here and carry the whole result into the page: three of
@@ -66,7 +68,6 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
 
   const initData = safeJsonForScript({
     code: finalCode,
-    autoplay,
     cps: tempo ? tempo.cps : null,
     tempoPolicy: tempo ? tempo.policy : null,
     hydraCdn: HYDRA_SYNTH_CDN,
@@ -634,21 +635,10 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     } catch (e) { /* the pattern still plays, at its own tempo */ }
   }
 
-  // The autoplay listener, once it exists. Autoplay means "start on the first
-  // click anywhere", so it must be CONSUMED the moment the user takes explicit
-  // control — otherwise Play → Stop left it armed and the next click in the
-  // editor silently re-evaluated and restarted the pattern.
-  let autoStartHandler = null;
-
-  function consumeAutoStart() {
-    if (!autoStartHandler) return;
-    document.removeEventListener('click', autoStartHandler);
-    autoStartHandler = null;
-  }
-
+  // A shared pattern is JavaScript. Inspecting or selecting its code must never
+  // evaluate it, even if an older share link asks for autoplay. Play and the
+  // editor's own evaluation shortcut are the intentional execution paths.
   function togglePlay() {
-    // Either way this click is the user driving; autoplay's job is over.
-    consumeAutoStart();
     if (playing) stopPattern();
     else startPattern();
   }
@@ -698,9 +688,6 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   }
 
   function stopPattern() {
-    // Unconditional: Stop is the clearest possible "I do not want this playing",
-    // and a still-armed autoplay listener would undo it on the next click.
-    consumeAutoStart();
     const ed = getEditor();
     if (!ed) return;
     try {
@@ -727,32 +714,8 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     setStatus('Click Play to start');
   }).catch(showLoadError);
 
-  ${
-    autoplay
-      ? `
-  // Browsers keep the AudioContext suspended until a user gesture, so autoplay
-  // means "start on the first click anywhere" — but ONLY until the user takes
-  // over. togglePlay() and stopPattern() both consume the listener, so what is
-  // left here is the one case it exists for: a click that lands before the
-  // editor is ready (startPattern() bails, the listener stays armed for the
-  // next one).
-  //
-  // The .controls guard is still needed for the bubble ordering: a click on the
-  // Play button runs the button's own listener first, which removes this one
-  // before the event reaches document — but Retry, or any future control, may
-  // not.
-  async function autoStart(ev) {
-    if (playing) { consumeAutoStart(); return; }
-    if (ev.target && ev.target.closest && ev.target.closest('.controls')) return;
-    await startPattern();
-    if (playing) consumeAutoStart();
-  }
-  autoStartHandler = autoStart;
-  document.addEventListener('click', autoStart);
-  `
-      : ""
-  }
 </script>
+<footer style="font-size:12px;padding:12px;text-align:center"><a href="${SOURCE_URL}" target="_blank" rel="noopener noreferrer">Source &amp; licenses</a></footer>
 </body>
 </html>`;
 }

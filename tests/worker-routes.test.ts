@@ -19,7 +19,7 @@ import { encodeShareParam } from "../src/shared/share-url";
 const ENV = {} as never;
 const CTX = { waitUntil: () => {}, passThroughOnException: () => {} } as never;
 
-const ORIGIN = "https://mcp-music-studio.linxule.workers.dev";
+const ORIGIN = "https://music-studio.linxule.com";
 
 const get = (path: string, init?: RequestInit, env: unknown = ENV) =>
   worker.fetch(new Request(`${ORIGIN}${path}`, init), env as never, CTX);
@@ -50,7 +50,7 @@ function fakeKv(seed: Record<string, string> = {}) {
 // back is how these tests prove a pattern survived base64url → KV → page intact.
 
 /** Strudel page: `<script type="application/json" id="init-data">…</script>`. */
-function strudelInit(html: string): { code: string; autoplay: boolean } {
+function strudelInit(html: string): { code: string; autoplay?: boolean } {
   const match = html.match(
     /<script type="application\/json" id="init-data">([\s\S]*?)<\/script>/,
   );
@@ -187,7 +187,7 @@ describe("landing page", () => {
     // The <link rel="icon"> is the whole reason this route is HTML.
     expect(html).toContain('<link rel="icon" type="image/png" href="/favicon.png">');
     expect(html).toContain(
-      "https://mcp-music-studio.linxule.workers.dev/mcp",
+      "https://music-studio.linxule.com/mcp",
     );
   });
 });
@@ -216,11 +216,15 @@ describe("GET /play", () => {
     expect(strudelInit(await res.text()).code).toContain("setcps(0.5)");
   });
 
-  it("honours autoplay=0", async () => {
+  it("requires intentional Play with or without legacy autoplay parameters", async () => {
     const on = await get(`/play?${playQuery('s("bd")')}`);
     const off = await get(`/play?${playQuery('s("bd")', { autoplay: "0" })}`);
-    expect(strudelInit(await on.text()).autoplay).toBe(true);
-    expect(strudelInit(await off.text()).autoplay).toBe(false);
+    for (const response of [on, off]) {
+      const html = await response.text();
+      expect(strudelInit(html).autoplay).toBeUndefined();
+      expect(html).not.toContain("document.addEventListener('click'");
+      expect(html).toContain("Click Play to start");
+    }
   });
 
   it("carries a CSP that names the same origins the widget declares", async () => {
@@ -390,7 +394,7 @@ describe("POST /share", () => {
     expect(strudelInit(await page.text()).code).toBe(code);
   });
 
-  it("prefers the stateless query URL for a short pattern (no KV write)", async () => {
+  it("stores even a short pattern when sharing is explicitly requested", async () => {
     const kv = fakeKv();
     const res = await get(
       "/share",
@@ -398,8 +402,10 @@ describe("POST /share", () => {
       { DOCS_CACHE: kv.binding },
     );
     const { url } = (await res.json()) as { url: string };
-    expect(url).toContain("/play?c=");
-    expect(shares(kv)).toHaveLength(0);
+    expect(url).toContain("/p/");
+    expect(shares(kv)).toHaveLength(1);
+    expect(JSON.parse(shares(kv)[0]!.value)).toEqual({ kind: "play", args: { code: 's("bd")' } });
+    expect(shares(kv)[0]!.options?.expirationTtl).toBe(30 * 24 * 60 * 60);
   });
 
   it("is content-addressed: posting twice rewrites one key", async () => {
@@ -427,7 +433,8 @@ describe("POST /share", () => {
       },
       { DOCS_CACHE: kv.binding },
     );
-    expect(kv.puts[0]!.value).not.toContain("sneaky");
+    expect(shares(kv)).toHaveLength(1);
+    expect(shares(kv)[0]!.value).not.toContain("sneaky");
   });
 
   it.each([
@@ -471,65 +478,80 @@ describe("POST /share", () => {
   });
 });
 
-describe("play tools → share link", () => {
-  // The routes above are only half the feature: the tool handlers have to pick
-  // between the two URL shapes, and fall back gracefully when KV isn't there.
-
-  async function callPlayLive(code: string, env: unknown) {
-    const client = new Client({ name: "share-test", version: "0.0.0" });
-    const [c, s] = InMemoryTransport.createLinkedPair();
-    await Promise.all([
-      client.connect(c),
-      createMusicServer(env as never, ORIGIN).connect(s),
-    ]);
-    const res = await client.callTool({
-      name: "play-live-pattern",
-      arguments: { code },
-    });
-    return res.content as { type: string; text?: string; uri?: string }[];
+async function callMusicTool(name: string, args: Record<string, unknown>, env: unknown) {
+  const client = new Client({ name: "share-test", version: "0.0.0" });
+  const server = createMusicServer(env as never, ORIGIN);
+  const [c, s] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([client.connect(c), server.connect(s)]);
+    const result = await client.callTool({ name, arguments: args });
+    return { ...result, content: result.content as { type: string; text?: string; uri?: string }[] };
+  } finally {
+    await client.close();
+    await server.close();
   }
+}
 
-  it("uses the stateless query URL for a short pattern", async () => {
+const PIECES = [
+  { kind: "play", tool: "play-live-pattern", field: "pattern", args: { code: 's("bd sd")', title: "Beat" }, path: "/play?c=" },
+  { kind: "score", tool: "play-sheet-music", field: "score", args: { abcNotation: "X:1\nM:4/4\nK:C\nC D E F|", title: "Tune" }, path: "/score?a=" },
+] as const;
+
+describe("playback never stores compositions", () => {
+  it.each(PIECES)("returns a stateless link for a short $kind without touching KV", async (piece) => {
     const kv = fakeKv();
-    const content = await callPlayLive('s("bd sd")', { DOCS_CACHE: kv.binding });
-    const link = content.find((c) => c.type === "resource_link");
-    expect(link?.uri).toContain(`${ORIGIN}/play?c=`);
+    const result = await callMusicTool(piece.tool, piece.args, { DOCS_CACHE: kv.binding });
+    expect(result.isError).not.toBe(true);
+    expect(result.content.find((c) => c.type === "resource_link")?.uri).toContain(`${ORIGIN}${piece.path}`);
     expect(kv.puts).toHaveLength(0);
   });
 
-  it("falls back to KV for a pattern too long for a URL, and that link renders", async () => {
+  it.each(PIECES)("keeps a long $kind playable without storing it or returning a hosted link", async (piece) => {
     const kv = fakeKv();
-    const code = `s("bd") // ${"x".repeat(4000)}`;
-    const content = await callPlayLive(code, { DOCS_CACHE: kv.binding });
-
-    const link = content.find((c) => c.type === "resource_link");
-    expect(link?.uri).toMatch(new RegExp(`^${ORIGIN}/p/[0-9a-f]{32}$`));
-    expect(kv.puts).toHaveLength(1);
-
-    const page = await get(new URL(link!.uri!).pathname, undefined, {
-      DOCS_CACHE: kv.binding,
-    });
-    expect(strudelInit(await page.text()).code).toBe(code);
+    const args = piece.kind === "play"
+      ? { code: `${piece.args.code} // ${"x".repeat(4000)}` }
+      : { abcNotation: `${piece.args.abcNotation}\n% ${"x".repeat(4000)}` };
+    const result = await callMusicTool(piece.tool, args, { DOCS_CACHE: kv.binding });
+    expect(result.isError).not.toBe(true);
+    expect(result.content.some((c) => c.type === "resource_link")).toBe(false);
+    expect(kv.puts).toHaveLength(0);
   });
 
-  it("omits the link (and keeps the honest wording) when KV is unavailable", async () => {
-    const content = await callPlayLive(`s("bd") // ${"x".repeat(4000)}`, {});
-    expect(content.some((c) => c.type === "resource_link")).toBe(false);
-    expect(content[0]!.text).toContain("nothing has played yet");
+  it("keeps playback independent of an unavailable KV binding", async () => {
+    const result = await callMusicTool("play-live-pattern", { code: `s("bd") // ${"x".repeat(4000)}` }, {});
+    expect(result.isError).not.toBe(true);
+    expect(result.content.some((c) => c.type === "resource_link")).toBe(false);
+    expect(result.content[0]!.text).toContain("nothing has played yet");
+  });
+});
+
+describe("create-share-link explicitly stores compositions", () => {
+  it.each(PIECES)("stores the requested $kind for 30 days and returns a working page", async (piece) => {
+    const kv = fakeKv();
+    const result = await callMusicTool("create-share-link", {
+      kind: piece.kind, [piece.field]: piece.args,
+    }, { DOCS_CACHE: kv.binding });
+    expect(result.isError).not.toBe(true);
+    const uri = result.content.find((c) => c.type === "resource_link")?.uri;
+    expect(uri).toMatch(new RegExp(`^${ORIGIN}/p/[0-9a-f]{32}$`));
+    expect(shares(kv)).toHaveLength(1);
+    expect(JSON.parse(shares(kv)[0]!.value)).toEqual({ kind: piece.kind, args: piece.args });
+    expect(shares(kv)[0]!.options?.expirationTtl).toBe(30 * 24 * 60 * 60);
+    const page = await get(new URL(uri!).pathname, undefined, { DOCS_CACHE: kv.binding });
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    if (piece.kind === "play") expect(strudelInit(html).code).toBe(piece.args.code);
+    else for (const line of piece.args.abcNotation.split("\n")) expect(scoreInit(html).abc).toContain(line);
   });
 
-  it("survives a KV write failure without failing the tool call", async () => {
-    const content = await callPlayLive(`s("bd") // ${"x".repeat(4000)}`, {
-      DOCS_CACHE: {
-        get: async () => null,
-        put: async () => {
-          throw new Error("KV is having a day");
-        },
-      },
-    });
-    // No link, but a perfectly good tool result.
-    expect(content.some((c) => c.type === "resource_link")).toBe(false);
-    expect(content[0]!.text).toContain("Strudel pattern ready");
+  it.each([
+    ["missing storage", {}, /unavailable/i],
+    ["failed write", { DOCS_CACHE: { get: async () => null, put: async () => { throw new Error("KV failed"); } } }, /KV failed/],
+  ])("surfaces %s as a tool error without returning a link", async (_name, env, message) => {
+    const result = await callMusicTool("create-share-link", { kind: "play", pattern: { code: 's("bd")' } }, env);
+    expect(result.isError).toBe(true);
+    expect(result.content.some((c) => c.type === "resource_link")).toBe(false);
+    expect(result.content[0]!.text).toMatch(message as RegExp);
   });
 });
 

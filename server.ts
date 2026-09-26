@@ -72,6 +72,7 @@ import {
 } from "./src/shared/tool-defs.js";
 import { buildShareQueryUrl, toPlayShareArgs } from "./src/shared/share-url.js";
 import { validateStrudelCode } from "./src/shared/strudel-validate.js";
+import { CREATE_SHARE_ANNOTATIONS, CREATE_SHARE_DESCRIPTION, createShareInputSchema, createShareResult, uploadShare } from "./src/shared/share-tool.js";
 
 const DIST_DIR = import.meta.filename.endsWith(".ts")
   ? path.join(import.meta.dirname, "dist")
@@ -172,6 +173,13 @@ export function createServer(options?: ServerOptions): McpServer {
 
   // Slash-command prompts: compose-beat, harmonize-melody, arrange-tune.
   registerMusicPrompts(server);
+
+  server.registerTool("create-share-link", {
+    title: "Create Music Share Link",
+    description: CREATE_SHARE_DESCRIPTION,
+    inputSchema: createShareInputSchema,
+    annotations: CREATE_SHARE_ANNOTATIONS,
+  }, (args) => createShareResult(args, uploadShare));
 
   // Description is chosen once, deterministically, by the configured render mode.
   // In "auto" (default) the player renders inline for ext-apps clients; "html"/

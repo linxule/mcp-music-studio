@@ -3,6 +3,8 @@ import { Scale } from "tonal";
 import { describe, expect, it } from "vitest";
 import {
   analyzeHarmony,
+  analyzeHarmonyResult,
+  type AnalyzeHarmonyArgs,
   asciiChordSymbol,
   CHORD_SCALE_NAMES,
   friendlyChordSymbol,
@@ -398,9 +400,9 @@ describe("analyze-harmony handler", () => {
     expect(result.content[0]?.text).toContain("C ");
   });
 
-  it("returns help text rather than an error for missing arguments", async () => {
+  it("returns an MCP tool error with help for missing arguments", async () => {
     const result = await handleAnalyzeHarmony({ task: "detect-chord" });
-    expect(result.isError).toBeUndefined();
+    expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("at least 2 notes");
   });
 });
@@ -681,5 +683,71 @@ describe("chord symbols arrive as ASCII", () => {
     for (const no of ["rit.", "N.C.", "", "poco a poco", "cresc."]) {
       expect(isChordSymbol(no), no).toBe(false);
     }
+  });
+});
+
+
+describe("harmony execution status", () => {
+  it.each(HARMONY_TASKS)("rejects missing input for %s", (task) => {
+    expect(analyzeHarmonyResult({ task }).ok).toBe(false);
+  });
+
+  it.each<AnalyzeHarmonyArgs>([
+    { task: "detect-chord", notes: ["C", "not a note"] },
+    { task: "detect-key", notes: ["not a note"], chords: ["not a chord"] },
+    { task: "scale-for-chord", chords: ["not a chord"] },
+    { task: "key-chords", key: "Cmonsoon" },
+    { task: "suggest-progression", key: "Cmonsoon" },
+  ])("rejects unusable input: %j", (args) => {
+    expect(analyzeHarmonyResult(args).ok).toBe(false);
+  });
+
+  it("keeps a valid cluster with no standard chord as a successful analysis", async () => {
+    const args = { task: "detect-chord" as const, notes: ["c4", "c#4"] };
+    expect(analyzeHarmonyResult(args)).toMatchObject({ ok: true });
+    const result = await handleAnalyzeHarmony(args);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toContain("No standard chord matches");
+  });
+
+  it("keeps usable partial analyses and identifies ignored inputs", () => {
+    for (const args of [
+      { task: "detect-chord", notes: ["c4", "e4", "g4", "bad note"] },
+      { task: "detect-key", chords: ["C", "G7", "bad chord"] },
+      { task: "scale-for-chord", chords: ["C", "bad chord"] },
+    ] satisfies AnalyzeHarmonyArgs[]) {
+      const result = analyzeHarmonyResult(args);
+      expect(result.ok).toBe(true);
+      expect(result.text).toContain("Ignored unreadable");
+    }
+  });
+
+  it.each(["potato", "Vgarbage", "V/V"])("rejects an unresolved numeral %s without emitting broken code", (numeral) => {
+    const result = analyzeHarmonyResult({
+      task: "suggest-progression", key: "C", romanNumerals: ["I", numeral, "ii7"],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.text).toContain(numeral);
+    expect(result.text).not.toContain("ABC:");
+    expect(result.text).not.toContain("Strudel:");
+  });
+
+  it("keeps valid harmony outside the voicing dictionary successful and discloses the silent step", () => {
+    const result = analyzeHarmonyResult({
+      task: "suggest-progression", key: "C", romanNumerals: ["IM7sus4", "V7"],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('ABC: "CM7sus4" "G7"');
+    expect(result.text).toContain("No default Strudel voicing for CM7sus4");
+    expect(result.text).toContain('chord("<~ G7>")');
+  });
+
+  it("retains supported diminished, half-diminished and lowercase numeral qualities", () => {
+    const result = analyzeHarmonyResult({
+      task: "suggest-progression", key: "C", romanNumerals: ["iiø7", "V7", "i", "vii°"],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('ABC: "Dm7b5" "G7" "Cm" "Bdim"');
+    expect(result.text).toContain('chord("<Dm7b5 G7 Cm Bo>")');
   });
 });

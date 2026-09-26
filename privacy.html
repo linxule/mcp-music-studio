@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy — MCP Music Studio</title>
+  <style>body{font:17px/1.6 system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 20px;color:#222}h1,h2{line-height:1.2}a{color:#1554a0}li{margin:8px 0}code{overflow-wrap:anywhere}</style>
+</head>
+<body>
+<main>
+<h1>Privacy policy</h1>
+<p>MCP Music Studio is maintained by Xule Lin. This policy describes the hosted service at <code>music-studio.linxule.com</code> (also available at <code>mcp-music-studio.linxule.workers.dev</code>) and the optional local server. Updated September 26, 2026.</p>
+
+<h2>Playing and editing music</h2>
+<p>The hosted MCP server receives the arguments sent by your MCP client: notation or code, titles, playback settings, and reference or harmony questions. It processes those arguments to provide the requested tool result. Playback does not save your composition in the service's share database. A local installation processes playback locally.</p>
+<p>Short pieces may be included in a self-contained browser link. The link contains the composition in an encoded, not encrypted, form. Creating this link does not upload a local composition. Opening it sends the URL and its contents to the hosted service; the URL can also appear in browser history, host conversation records, previews, and infrastructure logs. Anyone you give the link to can decode or play it. Do not put secrets or sensitive information in music code or titles.</p>
+<p>Music synthesis, editing and recording run in your browser or MCP host. Audio and MIDI exports are created there and handed to that host or downloaded to your device; the Music Studio server does not receive the exported audio or MIDI. Your MCP host has its own data policies. Using “Send to chat” sends your current edited music to that conversation. The widget can also send playback/error status to the host so the assistant knows whether a pattern worked.</p>
+
+<h2>Creating a stored share</h2>
+<p>The separate <code>create-share-link</code> tool, or an explicit <code>POST /share</code> request, uploads the supplied piece and its playback settings to Cloudflare Workers KV. Anyone holding the resulting link can view and play it without an account. Links are not private storage or authentication, and the service asks search engines not to index player pages.</p>
+<p>Stored shares expire 30 days after creation. Creating an identical share again refreshes that period. Older versions of the server also created these shares automatically for long playback inputs; those existing links retain their expiry. Expiry does not remove copies held by recipients, conversations, browser history or caches. There is no account-based share library or self-service deletion control. Contact the maintainer to request removal; do not post a sensitive link in a public issue.</p>
+
+<h2>Reference search and browser dependencies</h2>
+<p><code>search-music-docs</code> sends your query and selected library to <a href="https://context7.com">Context7</a>. Results are cached for 24 hours under a hash of the query. The cached result may itself contain parts of the query. Other guide and harmony tools do not use this search service.</p>
+<p>The players load scripts, fonts or samples as needed from unpkg, jsDelivr, GitHub/GitHub Pages, and, for the corresponding sample feature, shabda.ndre.gr and cdn.freesound.org. These providers receive normal network request information such as your IP address and user agent. The hosted service runs on Cloudflare. These providers process requests under their own policies, including <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a> and <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy statement</a>.</p>
+
+<h2>Usage information and retention</h2>
+<p>To understand compatibility and usage, the hosted service records MCP method/tool names, guide topics or the selected documentation library, requested resource identifiers, and a coarse client label. For clients it does not recognize, it also records up to 200 characters of the user-agent header. These analytics do not intentionally include scores, pattern code, search queries or full conversations. Cloudflare Analytics Engine currently retains these events for up to three months.</p>
+<p>Cloudflare processes network metadata and operational logs to provide and protect the service. Request URLs, including music embedded in query strings, may appear in those logs. Cloudflare Workers Logs currently retain logs for up to seven days, depending on the plan. Share rate-limit records use the request IP address and expire with a one-hour window. The service does not use these records for advertising or to train an AI model.</p>
+<p>Widgets store a bounded list of playback identifiers and timestamps in browser local storage to avoid replaying music when a host rebuilds the view. They keep at most 300 entries, not the composition itself; these entries remain until evicted or browser/site data is cleared. Your browser, MCP host, Context7 and sample/CDN providers can have separate retention policies.</p>
+
+<h2>Contact and choices</h2>
+<p>You can use the local server, avoid opening hosted browser links, and refrain from using reference search or creating stored shares. Local playback can still load browser dependencies from the providers above. Clear your browser's site data to remove playback-memory entries.</p>
+<p>For privacy questions, access or removal requests, contact Xule Lin through the <a href="https://github.com/linxule/mcp-music-studio/issues">project support channel</a>. If your request includes sensitive material, ask for a private contact channel first instead of posting that material publicly.</p>
+<p><a href="/">Music Studio</a> · <a href="https://github.com/linxule/mcp-music-studio">Source and documentation</a></p>
+</main>
+</body>
+</html>

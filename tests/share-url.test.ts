@@ -161,7 +161,7 @@ describe("query params", () => {
     const parsed = parsePlaySearchParams(q);
     expect(parsed.bpm).toBeUndefined();
     expect(parsed.title).toBeUndefined();
-    // autoplay defaults to true in the generator; absent means "don't override".
+    // Preserve the legacy URL encoding; standalone pages now require Play.
     expect(parsed.autoplay).toBeUndefined();
   });
 

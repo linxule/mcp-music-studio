@@ -1,3 +1,4 @@
+import { bindSourceLink } from "./source-link.js";
 /**
  * @file Sheet Music App — renders ABC notation with abcjs, multi-instrument audio,
  *       style presets, note highlighting, and playback controls.
@@ -2129,3 +2130,6 @@ app.connect().then(() => {
     handleHostContextChanged(ctx);
   }
 });
+
+// Source access uses the host link API inside sandboxed MCP widgets.
+bindSourceLink(app);

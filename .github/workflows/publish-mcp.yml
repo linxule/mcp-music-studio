@@ -48,6 +48,20 @@ jobs:
       - name: Run tests
         run: bunx vitest run
 
+      - name: Install Chromium for audio regression
+        run: bunx playwright install --with-deps chromium
+      - name: Verify browser audio and exports
+        run: bun run test:audio
+      - name: Verify published source and notices
+        run: bun run test:package
+      - name: Keep failed browser evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-audio-failure
+          path: test-results/
+          retention-days: 7
+
       - name: Audit dependencies
         run: bun audit
 

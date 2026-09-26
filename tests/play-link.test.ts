@@ -13,7 +13,7 @@ import { createPlaySheetMusicResult, type ParseOnlyFn } from "../src/server-logi
 // attachPlayLink — the "Tier 3" click-to-play link
 // =============================================================================
 
-const URL = "https://mcp-music-studio.linxule.workers.dev/play?c=abc";
+const URL = "https://music-studio.linxule.com/play?c=abc";
 
 const textBlocks = (result: CallToolResult) =>
   result.content.filter((b) => b.type === "text") as { text: string }[];

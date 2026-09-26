@@ -10,7 +10,8 @@
 // Two shapes, same page:
 //
 //   short  →  GET /play?c=<base64url>&bpm=&title=&autoplay=      (stateless)
-//   long   →  POST /share → KV → GET /p/<id>                     (30-day TTL)
+//   explicit share → POST /share → KV → GET /p/<id>             (30-day TTL)
+// Playback never takes the storage path automatically, regardless of length.
 //
 // Everything here is pure: no KV, no fetch, no node: imports, no DOM. It is
 // imported by the Worker, by the local stdio server, and by the tests.
@@ -28,9 +29,9 @@ export const SHARE_PARAM_MAX_BYTES = 64 * 1024;
  *
  * Practical URL ceilings vary (browsers cope with ~64 KB, but chat clients,
  * terminals and link unfurlers truncate far earlier), so the query-string form
- * is reserved for patterns that stay comfortably short and everything else goes
- * through KV. ~1.5 KB of base64 ≈ 1.1 KB of source, which covers the great
- * majority of Strudel patterns and short ABC tunes.
+ * is reserved for patterns that stay comfortably short. Longer hosted links
+ * require an explicit create-share-link call. ~1.5 KB of base64 ≈ 1.1 KB of
+ * source, which covers most Strudel patterns and short ABC tunes.
  */
 export const SHARE_QUERY_MAX_CHARS = 1536;
 
@@ -38,7 +39,7 @@ export const SHARE_QUERY_MAX_CHARS = 1536;
 export const SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 /** Fallback origin when a share URL is built outside a request context. */
-export const DEFAULT_SHARE_ORIGIN = "https://mcp-music-studio.linxule.workers.dev";
+export const DEFAULT_SHARE_ORIGIN = "https://music-studio.linxule.com";
 
 /** Titles are cosmetic; cap them so a link can't carry a payload in the label. */
 export const SHARE_TITLE_MAX_CHARS = 200;

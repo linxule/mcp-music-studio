@@ -30,7 +30,7 @@ test("real worker preserves JSON MCP tools and widget resources", { timeout: 60_
       assert.equal(result.serverInfo.name, "Music Studio");
     }
     const { tools } = await rpc("tools/list");
-    assert.equal(tools.length, 7);
+    assert.equal(tools.length, 8);
     assert.ok(tools.some(tool => tool.name === "play-sheet-music"));
     assert.ok(tools.some(tool => tool.name === "play-live-pattern"));
     const score = await rpc("tools/call", {

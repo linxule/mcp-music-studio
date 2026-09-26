@@ -1,11 +1,7 @@
 // =============================================================================
-// Audit finding 8: the standalone /play page restarted itself after Stop.
-//
-// Autoplay installs a document-level click listener ("start on the first click
-// anywhere", because browsers keep the AudioContext suspended until a gesture).
-// It skipped clicks inside `.controls` and only removed itself when it had
-// started playback ITSELF — so Play → Stop left it armed, and the next click in
-// the editor re-evaluated the pattern and started the audio again.
+// Standalone pages execute shared JavaScript only after intentional Play.
+// Loading, inspecting the code, or clicking elsewhere must never evaluate it,
+// including for older share links that request autoplay.
 //
 // The generated page is a string, so string assertions are the cheap thing to
 // write and prove nothing about ORDER of effects. This test EXECUTES the script
@@ -83,6 +79,7 @@ interface Harness {
   editorEl: StubEl;
   playBtn: StubEl;
   stopBtn: StubEl;
+  retryBtn: StubEl;
   doc: StubEl;
   /** The status line's current text — an "Error: …" here means a real throw. */
   status(): string;
@@ -90,6 +87,7 @@ interface Harness {
   evaluations(): number;
   /** The stub scheduler's state: is the pattern running? */
   started(): boolean;
+  reloads(): number;
   click(target: StubEl): Promise<void>;
   /** How many document-level click listeners are still armed. */
   armedAutoStart(): number;
@@ -107,6 +105,7 @@ function bootstrap(html: string): Harness {
 
   let evaluations = 0;
   let started = false;
+  let reloads = 0;
 
   const editorEl = el("editor");
   const playBtn = el("play-btn", ".controls");
@@ -153,7 +152,7 @@ function bootstrap(html: string): Harness {
   const ctx = vm.createContext({
     document: doc,
     window: win,
-    location: { reload() {} },
+    location: { reload() { reloads++; } },
     setTimeout,
     clearTimeout,
     console: { log() {}, warn() {}, error() {}, debug() {} },
@@ -166,8 +165,7 @@ function bootstrap(html: string): Harness {
     const ev = { type: "click", target };
     for (const fn of [...(target.listeners.get("click") ?? [])]) await fn(ev);
     // Bubble to document — re-checking registration each time, because a
-    // listener removed during dispatch must not be invoked (DOM semantics, and
-    // exactly the mechanism the fix relies on).
+    // listener removed during dispatch must not be invoked (DOM semantics).
     for (const fn of [...(doc.listeners.get("click") ?? [])]) {
       if ((doc.listeners.get("click") ?? []).includes(fn)) await fn(ev);
     }
@@ -179,10 +177,12 @@ function bootstrap(html: string): Harness {
     editorEl,
     playBtn,
     stopBtn,
+    retryBtn,
     doc,
     status: () => statusEl.textContent,
     evaluations: () => evaluations,
     started: () => started,
+    reloads: () => reloads,
     click,
     armedAutoStart: () => (doc.listeners.get("click") ?? []).length,
   };
@@ -195,65 +195,65 @@ async function ready(h: Harness): Promise<void> {
   for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
-describe("standalone player: autoplay never overrides an explicit Stop", () => {
-  it("stays stopped when the editor is clicked after Play → Stop", async () => {
+describe("standalone player: intentional evaluation", () => {
+  it.each([true, false, undefined])("does not evaluate on load or incidental clicks with autoplay=%s", async (autoplay) => {
+    const h = bootstrap(generateStrudelPlayerHtml({ code: CODE, autoplay }));
+    await ready(h);
+    expect(h.armedAutoStart()).toBe(0);
+    expect(h.evaluations()).toBe(0);
+
+    await h.click(h.editorEl);
+    await h.click(h.doc.body as StubEl);
+    expect(h.evaluations()).toBe(0);
+    expect(h.started()).toBe(false);
+  });
+
+  it("plays explicitly, stays stopped after incidental clicks, and can play again", async () => {
     const h = bootstrap(generateStrudelPlayerHtml({ code: CODE, autoplay: true }));
     await ready(h);
-    expect(h.armedAutoStart()).toBe(1); // armed for the first gesture
 
     await h.click(h.playBtn);
     expect(h.status()).not.toMatch(/^Error:/);
     expect(h.evaluations()).toBe(1);
     expect(h.started()).toBe(true);
-    // Play was explicit, so autoplay's job is done — it must not still be armed.
-    expect(h.armedAutoStart()).toBe(0);
 
     await h.click(h.stopBtn);
-    expect(h.started()).toBe(false);
-
-    // THE BUG: this click used to re-evaluate and restart the pattern.
     await h.click(h.editorEl);
+    await h.click(h.doc.body as StubEl);
     expect(h.evaluations()).toBe(1);
     expect(h.started()).toBe(false);
-  });
 
-  it("stays stopped after autoplay itself started it and Stop was pressed", async () => {
-    const h = bootstrap(generateStrudelPlayerHtml({ code: CODE, autoplay: true }));
-    await ready(h);
-
-    await h.click(h.editorEl); // the first gesture — autoplay's own path
-    expect(h.status()).not.toMatch(/^Error:/);
-    expect(h.evaluations()).toBe(1);
+    await h.click(h.playBtn);
+    expect(h.evaluations()).toBe(2);
     expect(h.started()).toBe(true);
-    expect(h.armedAutoStart()).toBe(0);
-
-    await h.click(h.stopBtn);
-    await h.click(h.editorEl);
-    expect(h.evaluations()).toBe(1);
+    // The same button still toggles a running pattern off.
+    await h.click(h.playBtn);
+    expect(h.evaluations()).toBe(2);
     expect(h.started()).toBe(false);
   });
 
-  it("keeps the listener armed for a click that lands before the editor is ready", async () => {
-    // The one case autoplay exists for: the page is still loading, the click
-    // cannot start anything, so the NEXT click must still be able to.
+  it("does not queue a premature Play or incidental click to run after loading", async () => {
     const html = generateStrudelPlayerHtml({ code: CODE, autoplay: true });
     const h = bootstrap(html);
     // Deliberately do NOT let waitForEditor settle: `ready` is still false.
+    await h.click(h.playBtn);
     await h.click(h.editorEl);
     expect(h.evaluations()).toBe(0);
-    expect(h.armedAutoStart()).toBe(1);
 
     await ready(h);
     await h.click(h.editorEl);
+    expect(h.evaluations()).toBe(0);
+    expect(h.started()).toBe(false);
+    await h.click(h.playBtn);
     expect(h.evaluations()).toBe(1);
     expect(h.started()).toBe(true);
   });
 
-  it("arms nothing at all when autoplay is off", async () => {
-    const h = bootstrap(generateStrudelPlayerHtml({ code: CODE, autoplay: false }));
+  it("keeps Retry as a reload without evaluating the pattern", async () => {
+    const h = bootstrap(generateStrudelPlayerHtml({ code: CODE, autoplay: true }));
     await ready(h);
-    expect(h.armedAutoStart()).toBe(0);
-    await h.click(h.editorEl);
+    await h.click(h.retryBtn);
+    expect(h.reloads()).toBe(1);
     expect(h.evaluations()).toBe(0);
   });
 });

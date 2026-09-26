@@ -1,3 +1,4 @@
+import { bindSourceLink } from "./source-link.js";
 // =============================================================================
 // Strudel ext-apps client — uses @strudel/repl with layout fixes
 //
@@ -2894,3 +2895,6 @@ app.connect().then(() => {
     handleHostContextChanged(ctx);
   }
 });
+
+// Source access uses the host link API inside sandboxed MCP widgets.
+bindSourceLink(app);

@@ -1,5 +1,9 @@
 {
   "name": "mcp-music-studio",
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "music-studio.linxule.com", "custom_domain": true }
+  ],
   "main": "src/entry.ts",
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],

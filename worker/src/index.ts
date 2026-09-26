@@ -1,3 +1,4 @@
+import { SOURCE_URL } from "../../src/source-info.js";
 // =============================================================================
 // MCP Music Studio — Cloudflare Worker
 //
@@ -92,10 +93,12 @@ import { ABCJS_CDN_BASE } from "../../src/abcjs-version.js";
 // generators are node-free (see src/open-in-browser.ts for the half that isn't).
 import { generatePlayerHtml } from "../../src/browser-fallback.js";
 import { generateStrudelPlayerHtml } from "../../src/strudel-browser-fallback.js";
+import { CREATE_SHARE_ANNOTATIONS, CREATE_SHARE_DESCRIPTION, createShareInputSchema, createShareResult } from "../../src/shared/share-tool.js";
 
 // Bundled ext-apps HTML (wrangler imports as text via rules config)
 import sheetMusicHtml from "../../dist/mcp-app.html";
 import strudelHtml from "../../dist/strudel-app.html";
+import privacyHtml from "../../privacy.html";
 
 // =============================================================================
 // Types
@@ -220,10 +223,8 @@ export const WIDGET_BUILD = {
 // local `--render-mode browser` path writes to disk, and the tool results link
 // to them.
 //
-// Short patterns travel in the query string — stateless, no storage, and the
-// link keeps working across a KV wipe. Anything longer is stored in KV under a
-// content digest and served from /p/<id>. The namespace is the existing
-// DOCS_CACHE, keyed under a `share:` prefix, so no new binding is needed.
+// Playback only returns stateless links for short pieces. Persistent links are
+// created explicitly by create-share-link or POST /share, never by playback.
 
 /** Response headers shared by every hosted player page. */
 function playerResponse(html: string, csp: string): Response {
@@ -413,9 +414,7 @@ function coerceSharePayload(raw: unknown): SharePayload {
 // limiter is deliberately best-effort — if KV can't answer, the request goes
 // through rather than the route going down.
 //
-// The tool handlers reach the same logic IN-PROCESS via shareUrlFor(), which
-// never passes through here: they are not the public route, and their rate is
-// already bounded by whatever is calling the MCP server.
+// The explicit share tool uses this same limiter before storing anything.
 
 /** Accepted POST /share requests per IP per window. */
 export const SHARE_RATE_LIMIT_MAX = 30;
@@ -515,9 +514,8 @@ async function enforceShareRateLimit(
  * the tool schemas cap `code`/`abcNotation` in CHARACTERS, so a multibyte
  * pattern of 23 011 chars is 69 011 bytes, sailed past the schema, wrote fine to
  * KV, and then made `/p/<id>` answer 413 — the tool handed back a link that was
- * dead the moment it was minted. Throwing here is what `shareUrlFor` turns into
- * "no link at all", which leaves the result's honest tail standing instead of a
- * broken URL.
+ * dead the moment it was minted. Reject before writing; the explicit share
+ * operation reports the error instead of returning a broken URL.
  */
 async function storeShare(
   env: Env,
@@ -530,26 +528,6 @@ async function storeShare(
     expirationTtl: SHARE_TTL_SECONDS,
   });
   return buildStoredShareUrl(id, origin);
-}
-
-/**
- * The URL a tool result should link to: the stateless query-string form when the
- * pattern fits, otherwise a stored share. Never throws — a share link is a bonus,
- * and a KV hiccup must not turn a working tool call into a failed one.
- */
-async function shareUrlFor(
-  env: Env,
-  origin: string,
-  payload: SharePayload,
-): Promise<string | undefined> {
-  try {
-    const direct = buildShareQueryUrl(payload, origin);
-    if (direct) return direct;
-    if (!env.DOCS_CACHE) return undefined;
-    return await storeShare(env, payload, origin);
-  } catch {
-    return undefined;
-  }
 }
 
 // =============================================================================
@@ -568,6 +546,7 @@ async function shareUrlFor(
 export function createMusicServer(
   env: Env,
   origin: string = DEFAULT_SHARE_ORIGIN,
+  request?: Request,
 ): McpServer {
   const server = new McpServer(
     {
@@ -584,6 +563,20 @@ export function createMusicServer(
 
   // Slash-command prompts: compose-beat, harmonize-melody, arrange-tune.
   registerMusicPrompts(server);
+
+  server.registerTool("create-share-link", {
+    title: "Create Music Share Link",
+    description: CREATE_SHARE_DESCRIPTION,
+    inputSchema: createShareInputSchema,
+    annotations: CREATE_SHARE_ANNOTATIONS,
+  }, (args) => createShareResult(args, async (payload) => {
+    if (!env.DOCS_CACHE) throw new Error("Share storage is unavailable. Try again later.");
+    if (request) {
+      const limited = await enforceShareRateLimit(env, request);
+      if (limited) throw new Error("Too many share requests. Try again later.");
+    }
+    return storeShare(env, payload, origin);
+  }));
 
   // ===========================================================================
   // Ext-Apps UI Resources
@@ -650,7 +643,7 @@ export function createMusicServer(
       return withViewId(
         attachPlayLink(
           result,
-          await shareUrlFor(env, origin, { kind: "score", args }),
+          buildShareQueryUrl({ kind: "score", args }, origin),
         ),
       );
     },
@@ -683,10 +676,10 @@ export function createMusicServer(
           // toPlayShareArgs folds the `visuals` preset into the code (and drops
           // `theme`, which is editor chrome the standalone page doesn't have), so
           // the linked page shows the animation the tool call asked for.
-          await shareUrlFor(env, origin, {
+          buildShareQueryUrl({
             kind: "play",
             args: toPlayShareArgs(args),
-          }),
+          }, origin),
         ),
       ),
   );
@@ -817,6 +810,14 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
 
+    if (url.pathname === "/privacy") {
+      return new Response(privacyHtml, { headers: {
+        "content-type": "text/html; charset=utf-8",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+      } });
+    }
+
     // Lightweight liveness probe — keeps uptime checks off the MCP transport.
     if (url.pathname === "/health" || url.pathname === "/healthz") {
       return new Response(
@@ -879,10 +880,8 @@ export default {
       }
     }
 
-    // POST /share — store a payload too long for a query string, get its URL.
-    //
-    // The play tools reach this logic in-process (`shareUrlFor`); the route
-    // exists so a non-MCP caller can mint the same link. It is unauthenticated,
+    // POST /share — explicitly store a piece and return a 30-day link.
+    // The local create-share-link tool uses this route. It is unauthenticated,
     // so it is capped hard: 64 KiB of body, and only the handful of fields the
     // generators read survive `coerceSharePayload`. Ids are content digests, so
     // repeated posts of the same pattern rewrite one key rather than growing KV.
@@ -903,16 +902,13 @@ export default {
       if (!env.DOCS_CACHE) {
         return new Response("Share storage unavailable.", { status: 503 });
       }
-      // Before the body is read: the cheapest place to shed a flood. Only the
-      // public route is limited — the tool handlers call shareUrlFor() directly.
+      // Before the body is read: the cheapest place to shed a flood.
       const limited = await enforceShareRateLimit(env, request);
       if (limited) return limited;
       try {
         const body = await readBodyWithinLimit(request, SHARE_PARAM_MAX_BYTES);
         const payload = coerceSharePayload(JSON.parse(body));
-        const shareUrl =
-          buildShareQueryUrl(payload, url.origin) ??
-          (await storeShare(env, payload, url.origin));
+        const shareUrl = await storeShare(env, payload, url.origin);
         return new Response(JSON.stringify({ url: shareUrl }), {
           headers: { "content-type": "application/json" },
         });
@@ -931,7 +927,7 @@ export default {
       // enableJsonResponse is required for Claude Desktop Connectors to render
       // ext-apps UI — the default SSE response format isn't parsed correctly
       // by the Connector client for resources/read calls.
-      const server = createMusicServer(env, url.origin);
+      const server = createMusicServer(env, url.origin, request);
       // Keep the SDK v1 server on Agents' explicit legacy adapter. The default
       // createMcpHandler now accepts SDK v2 servers with a different context API.
       const handler = createLegacyMcpHandler(
@@ -1005,7 +1001,8 @@ export default {
 <li><strong>Claude Code:</strong> <code>claude mcp add --transport http music-studio ${url.origin}/mcp</code></li>
 <li><strong>npm:</strong> <code>npx -y mcp-music-studio</code></li>
 </ul>
-<p><a href="https://github.com/linxule/mcp-music-studio">Source on GitHub</a></p>
+<p><a href="${SOURCE_URL}">Source &amp; licenses</a></p>
+<p><a href="/privacy">Privacy policy</a></p>
 </body></html>`,
         { headers: { "content-type": "text/html" } },
       );

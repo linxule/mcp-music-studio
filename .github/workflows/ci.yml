@@ -28,6 +28,20 @@ jobs:
       - run: bun run build   # runs `tsc --noEmit` inline (no standalone typecheck script)
       - run: bunx vitest run
 
+      - name: Install Chromium for audio regression
+        run: bunx playwright install --with-deps chromium
+      - name: Verify browser audio and exports
+        run: bun run test:audio
+      - name: Verify published source and notices
+        run: bun run test:package
+      - name: Keep failed browser evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-audio-failure
+          path: test-results/
+          retention-days: 7
+
       # The Worker is a separate package with its own lockfile and tsconfig, and
       # it is deployed by hand (not from CI) — so nothing else typechecks it.
       - run: bun install --frozen-lockfile

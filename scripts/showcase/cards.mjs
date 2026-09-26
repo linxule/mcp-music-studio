@@ -23,7 +23,7 @@ const md = s => s.replace(/`([^`]+)`/g, '<code>$1</code>');
 const cards = [
   ['00-intro', page('MCP Music Studio <span style="color:#a99cff">v0.5</span>', 'What\'s new: Hydra shaders behind the code, audio-reactive visuals, honest feedback to the model, a sheet-music editor.', 'mcp-music-studio')],
   ...manifest.filter(m => m.card).map(m => [`${m.id}`, page(md(m.card[0]), md(m.card[1]), 'new in 0.5')]),
-  ['99-outro', page('Try it', '<code>npx mcp-music-studio</code> · remote: <code>mcp-music-studio.linxule.workers.dev/mcp</code><br>Recorded in the dev ext-apps harness, headless Chromium — every frame is the shipped widget.', 'github.com/linxule/mcp-music-studio')],
+  ['99-outro', page('Try it', '<code>npx mcp-music-studio</code> · remote: <code>music-studio.linxule.com/mcp</code><br>Recorded in the dev ext-apps harness, headless Chromium — every frame is the shipped widget.', 'github.com/linxule/mcp-music-studio')],
 ];
 
 const browser = await chromium.launch({ headless: true });

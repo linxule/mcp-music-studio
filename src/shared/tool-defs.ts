@@ -14,7 +14,7 @@ import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { STYLE_NAMES } from "../music-logic.js";
 import { DEFAULT_ABC_NOTATION } from "../abc-guide.js";
-import { analyzeHarmony, HARMONY_TASKS } from "./harmony.js";
+import { analyzeHarmonyResult, HARMONY_TASKS } from "./harmony.js";
 import {
   convertAbcToStrudel,
   DEFAULT_STRUDEL_SOUND,
@@ -68,7 +68,9 @@ export const SERVER_INSTRUCTIONS =
   "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
   '("C", "Am7") above the notes and set a style. ' +
   "If unsure about chord spelling or the key, call analyze-harmony; " +
-  "convert-abc-to-strudel turns a scored melody into a live pattern.";
+  "convert-abc-to-strudel turns a scored melody into a live pattern. " +
+  "Playback never stores a composition. create-share-link uploads a piece for 30 days " +
+  "and is only for an explicit user request to share or store it online.";
 
 // -----------------------------------------------------------------------------
 // Server identity — icon + website (emitted verbatim in serverInfo by both
@@ -78,7 +80,7 @@ export const SERVER_INSTRUCTIONS =
 // 256px square variant — not the 1MB master — so the connect handshake stays light.
 // -----------------------------------------------------------------------------
 
-export const WEBSITE_URL = "https://mcp-music-studio.linxule.workers.dev";
+export const WEBSITE_URL = "https://music-studio.linxule.com";
 
 /** Canonical square icon, served from the repo via GitHub raw (direct bytes). */
 export const LOGO_URL =
@@ -103,11 +105,12 @@ export const WORKER_SERVER_ICONS = [
 ];
 
 // -----------------------------------------------------------------------------
-// Tool annotations (MCP hints — all tools here are read-only, non-destructive)
+// Playback/reference annotations. Explicit sharing has separate write hints.
 // -----------------------------------------------------------------------------
 
 /**
- * The play tools mutate no server state, but they are NOT idempotent: each call
+ * The play tools never store compositions; long pieces need create-share-link.
+ * They are NOT idempotent: each call
  * instantiates a widget and starts audio, so repeating one with the same
  * arguments has an additional effect on the world. `idempotentHint: true` would
  * invite a client to coalesce or silently retry a call the user can hear.
@@ -236,7 +239,8 @@ export const PLAY_SHEET_FALLBACK_SUFFIX =
 // from a dead end into an instruction — see `attachPlayLink`.
 
 export const NO_INLINE_PLAYER_TAIL =
-  "The server cannot tell whether a player rendered: if the user reports no player, this client can't play it inline and nothing has played yet.";
+  "The server cannot tell whether a player rendered: if the user reports no player, this client can't play it inline and nothing has played yet. " +
+  "A stored browser link can be created with create-share-link only if the user asks to share or store this piece online.";
 
 export const NO_INLINE_PLAYER_TAIL_WITH_LINK =
   "The server cannot tell whether a player rendered: if the user reports no player, this client can't play it inline — give them the link below to play it in the browser.";
@@ -344,7 +348,7 @@ export function attachPlayLink(
 // Every free-form field below is bounded. Unbounded strings/arrays are the
 // cheapest way to make a server do unbounded work: a multi-megabyte `code` or
 // `abcNotation` is parsed, hashed, URL-encoded for the share link, and (on the
-// worker) written to KV. These caps are far above any real piece of music.
+// explicit share path) written to KV. These caps bound work per request.
 // -----------------------------------------------------------------------------
 
 /** Max length of a score or pattern, in characters. */
@@ -947,7 +951,7 @@ export const analyzeHarmonyInputSchema = z.object({
   task: z
     .enum(HARMONY_TASKS)
     .describe(
-      "What to work out. detect-chord/detect-key need notes or chords; " +
+      "What to work out. detect-chord needs notes; detect-key needs notes or chords; scale-for-chord needs chords; " +
         "suggest-progression/key-chords need a key.",
     ),
   notes: z
@@ -978,7 +982,11 @@ export const analyzeHarmonyInputSchema = z.object({
 export function buildAnalyzeHarmonyResult(
   args: z.infer<typeof analyzeHarmonyInputSchema>,
 ): CallToolResult {
-  return { content: [{ type: "text", text: analyzeHarmony(args) }] };
+  const result = analyzeHarmonyResult(args);
+  return {
+    ...(result.ok ? {} : { isError: true }),
+    content: [{ type: "text", text: result.text }],
+  };
 }
 
 // -----------------------------------------------------------------------------

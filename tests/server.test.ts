@@ -9,6 +9,7 @@ import { SERVER_INSTRUCTIONS } from "../src/shared/tool-defs";
 const EXPECTED_TOOLS = [
   "analyze-harmony",
   "convert-abc-to-strudel",
+  "create-share-link",
   "get-music-guide",
   "get-strudel-guide",
   "play-live-pattern",
@@ -38,7 +39,7 @@ describe("tool registration", () => {
     await cleanup();
   });
 
-  it("lists all seven tools", async () => {
+  it("lists all eight tools", async () => {
     const res = await client.listTools();
     expect(res.tools.map((t) => t.name).sort()).toEqual(EXPECTED_TOOLS);
   });

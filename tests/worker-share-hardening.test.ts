@@ -18,7 +18,7 @@ import {
 // worker's own paths.
 // =============================================================================
 
-const ORIGIN = "https://mcp-music-studio.linxule.workers.dev";
+const ORIGIN = "https://music-studio.linxule.com";
 const CTX = { waitUntil: () => {}, passThroughOnException: () => {} } as never;
 
 const call = (path: string, init?: RequestInit, env: unknown = {}) =>
@@ -48,7 +48,7 @@ const postShare = (body: unknown, env: unknown, ip = "203.0.113.7") =>
     env,
   );
 
-/** A pattern too long for a query string, so POST /share actually stores. */
+/** A pattern too long for a stateless playback link. */
 const longCode = (tag: string) => `s("bd") // ${tag} ${"x".repeat(4000)}`;
 
 const strudelInit = (html: string): { code: string } => {
@@ -150,19 +150,59 @@ describe("POST /share rate limit", () => {
     expect(res.status).toBe(200);
   });
 
-  it("does not limit the in-process tool path", async () => {
-    // shareUrlFor() is called by the worker's own handlers, not through /share.
+  it.each([
+    { kind: "play", pattern: { code: 's("bd")' } },
+    { kind: "score", score: { abcNotation: "X:1\nK:C\nCDEF|" } },
+  ])("prevents capped MCP $kind share requests from storing anything", async (args) => {
+    const ip = "198.51.100.8";
     const kv = fakeKv({
-      [shareRateLimitKey("unknown")]: JSON.stringify({
-        n: SHARE_RATE_LIMIT_MAX * 10,
+      [shareRateLimitKey(ip)]: JSON.stringify({
+        n: SHARE_RATE_LIMIT_MAX,
         reset: Math.floor(Date.now() / 1000) + SHARE_RATE_LIMIT_WINDOW_SECONDS,
       }),
     });
-    const content = await callPlayLive(
-      { code: longCode("tool") },
-      { DOCS_CACHE: kv.binding },
+    const result = await callMusicTool(
+      "create-share-link", args, { DOCS_CACHE: kv.binding },
+      new Request(`${ORIGIN}/mcp`, { headers: { "CF-Connecting-IP": ip } }),
     );
-    expect(content.some((c) => c.type === "resource_link")).toBe(true);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/too many share requests/i);
+    expect(result.content.some((c) => c.type === "resource_link")).toBe(false);
+    expect(kv.puts).toHaveLength(0);
+  });
+
+  it("shares one budget between POST /share and the MCP share tool", async () => {
+    const ip = "198.51.100.9";
+    const kv = fakeKv({
+      [shareRateLimitKey(ip)]: JSON.stringify({
+        n: SHARE_RATE_LIMIT_MAX - 1,
+        reset: Math.floor(Date.now() / 1000) + SHARE_RATE_LIMIT_WINDOW_SECONDS,
+      }),
+    });
+    const env = { DOCS_CACHE: kv.binding };
+    const request = new Request(`${ORIGIN}/mcp`, { headers: { "CF-Connecting-IP": ip } });
+    const created = await callMusicTool("create-share-link", {
+      kind: "play", pattern: { code: 's("bd")' },
+    }, env, request);
+    expect(created.isError).not.toBe(true);
+    expect(kv.puts.filter((p) => p.key.startsWith("share:"))).toHaveLength(1);
+    const before = kv.puts.length;
+    const blockedPost = await postShare({ kind: "play", args: { code: longCode("blocked") } }, env, ip);
+    expect(blockedPost.status).toBe(429);
+    const blockedTool = await callMusicTool("create-share-link", {
+      kind: "score", score: { abcNotation: "X:1\nK:C\nCDEF|" },
+    }, env, request);
+    expect(blockedTool.isError).toBe(true);
+    expect(kv.puts).toHaveLength(before);
+  });
+
+  it("does not store or consume the share budget when playing a long pattern", async () => {
+    const kv = fakeKv();
+    const result = await callMusicTool("play-live-pattern", { code: longCode("playback") },
+      { DOCS_CACHE: kv.binding }, new Request(`${ORIGIN}/mcp`));
+    expect(result.isError).not.toBe(true);
+    expect(result.content.some((c) => c.type === "resource_link")).toBe(false);
+    expect(kv.puts).toHaveLength(0);
   });
 });
 
@@ -170,18 +210,27 @@ describe("POST /share rate limit", () => {
 // F6 — numbers reaching the page generators, on the KV path
 // -----------------------------------------------------------------------------
 
-async function callPlayLive(
+async function callMusicTool(
+  name: string,
   args: Record<string, unknown>,
   env: unknown,
-): Promise<{ type: string; text?: string; uri?: string }[]> {
+  request?: Request,
+) {
   const client = new Client({ name: "share-hardening", version: "0.0.0" });
+  const server = createMusicServer(env as never, ORIGIN, request);
   const [c, s] = InMemoryTransport.createLinkedPair();
-  await Promise.all([
-    client.connect(c),
-    createMusicServer(env as never, ORIGIN).connect(s),
-  ]);
-  const res = await client.callTool({ name: "play-live-pattern", arguments: args });
-  return res.content as { type: string; text?: string; uri?: string }[];
+  try {
+    await Promise.all([client.connect(c), server.connect(s)]);
+    const res = await client.callTool({ name, arguments: args });
+    return { ...res, content: res.content as { type: string; text?: string; uri?: string }[] };
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
+
+async function callPlayLive(args: Record<string, unknown>, env: unknown) {
+  return (await callMusicTool("play-live-pattern", args, env)).content;
 }
 
 describe("share numbers are clamped on every path", () => {
@@ -406,7 +455,7 @@ describe("POST /share does not buffer an oversized body", () => {
 const multibyte = (chars: number) => "音".repeat(chars);
 
 describe("a stored share is always readable", () => {
-  it("omits the link rather than minting one /p/<id> would reject", async () => {
+  it("rejects an explicit share that /p/<id> would reject", async () => {
     const kv = fakeKv();
     // 23011 chars is inside the tool's character limit; x3 bytes is over the
     // 64 KiB byte cap the reader applies.
@@ -415,9 +464,11 @@ describe("a stored share is always readable", () => {
       SHARE_PARAM_MAX_BYTES,
     );
 
-    const content = await callPlayLive({ code }, { DOCS_CACHE: kv.binding });
+    const result = await callMusicTool("create-share-link", { kind: "play", pattern: { code } }, { DOCS_CACHE: kv.binding });
+    const content = result.content;
 
-    // No link at all — the result keeps its honest "nothing has played" tail.
+    expect(result.isError).toBe(true);
+    expect(content[0]!.text).toMatch(/64 KiB/);
     expect(content.some((c) => c.type === "resource_link")).toBe(false);
     expect(content.some((c) => c.type === "text")).toBe(true);
     // And nothing unreadable was written.
@@ -426,14 +477,15 @@ describe("a stored share is always readable", () => {
 
   it("round-trips a multibyte payload that sits just under the cap", async () => {
     const kv = fakeKv();
-    // Long enough to miss the query-string form (so it goes through KV), short
-    // enough in BYTES to survive the reader.
+    // Sharing is explicit; this multibyte payload must survive the byte cap.
     const code = `s("bd") // ${multibyte(2000)}`;
     expect(new TextEncoder().encode(code).length).toBeLessThan(
       SHARE_PARAM_MAX_BYTES,
     );
 
-    const content = await callPlayLive({ code }, { DOCS_CACHE: kv.binding });
+    const result = await callMusicTool("create-share-link", { kind: "play", pattern: { code } }, { DOCS_CACHE: kv.binding });
+    expect(result.isError).not.toBe(true);
+    const content = result.content;
     const link = content.find((c) => c.type === "resource_link");
     expect(link?.uri).toContain("/p/");
 
@@ -447,17 +499,11 @@ describe("a stored share is always readable", () => {
   it("rejects an oversized score payload before writing it", async () => {
     const kv = fakeKv();
     const abcNotation = `X:1\nK:C\n% ${multibyte(23000)}\nCDEF|`;
-    const client = new Client({ name: "share-store", version: "0.0.0" });
-    const [c, s] = InMemoryTransport.createLinkedPair();
-    await Promise.all([
-      client.connect(c),
-      createMusicServer({ DOCS_CACHE: kv.binding } as never, ORIGIN).connect(s),
-    ]);
-    const res = await client.callTool({
-      name: "play-sheet-music",
-      arguments: { abcNotation },
-    });
-    const content = res.content as { type: string }[];
+    const res = await callMusicTool("create-share-link", {
+      kind: "score", score: { abcNotation },
+    }, { DOCS_CACHE: kv.binding });
+    expect(res.isError).toBe(true);
+    const content = res.content;
     expect(content.some((b) => b.type === "resource_link")).toBe(false);
     expect(kv.puts.some((p) => p.key.startsWith("share:"))).toBe(false);
   });

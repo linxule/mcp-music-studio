@@ -1,7 +1,7 @@
 // Showcase recorder: drives the dev harness (real ext-apps AppBridge) with
 // Playwright, records the page as video, and taps every AudioContext's
 // destination through a MediaStreamDestination so the audio can be muxed back.
-import { chromium } from '/Users/xulelin/node_modules/playwright/index.mjs';
+import { chromium } from '@playwright/test';
 import fs from 'node:fs';
 
 const BASE = 'http://localhost:5210/';

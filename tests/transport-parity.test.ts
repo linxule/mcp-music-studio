@@ -303,7 +303,7 @@ describe("tool results — the click-to-play link", () => {
       arguments: { code: 's("bd")' },
     });
     expect(linkOf(localRes.content)?.uri).toContain(
-      "https://mcp-music-studio.linxule.workers.dev/play?",
+      "https://music-studio.linxule.com/play?",
     );
   });
 });
@@ -326,7 +326,7 @@ describe("serverInfo — documented, deliberate differences", () => {
       "https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/icons/logo-256.png",
     );
     expect(w.icons?.[0]?.src).toBe(
-      "https://mcp-music-studio.linxule.workers.dev/icon.png",
+      "https://music-studio.linxule.com/icon.png",
     );
 
     // Everything else about serverInfo is identical — normalise the one
