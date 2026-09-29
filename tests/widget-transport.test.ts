@@ -142,8 +142,12 @@ describe("sheet music transport", () => {
     // Every call, but not the declaration or ABCJS.renderAbc.
     const calls = code.match(/[^.\w]renderAbc\((?!\s*abcNotation)/g) ?? [];
     const explicit = code.match(/[^.\w]renderAbc\([^)]*\{ autoplay[^}]*\}\)/g) ?? [];
-    expect(explicit.length).toBe(3); // tool input, Style change, editor fallback
-    expect(calls.length).toBe(explicit.length);
+    expect(explicit.length).toBe(2); // Style change, editor fallback
+    const forwarded = code.match(/renderAbc\(abc, preparedInput\.synthOptions, transport\)/g) ?? [];
+    expect(forwarded.length).toBe(1); // shared input path requires RenderTransport
+    expect(code).toContain("transport: RenderTransport, instrumentOverride = false");
+    expect(code).toContain("applyScoreInput(args, { autoplay: true, permit })");
+    expect(calls.length).toBe(explicit.length + forwarded.length);
   });
 
   it("after a Sound change, says whether the tune plays on (not always 'Click ▶ to play')", () => {

@@ -1,4 +1,6 @@
 import { bindSourceLink } from "./source-link.js";
+import { installStudioBridge } from "./studio-session";
+import { installStrudelCompanion } from "./studio-strudel-companion";
 // =============================================================================
 // Strudel ext-apps client — uses @strudel/repl with layout fixes
 //
@@ -84,6 +86,7 @@ const vizCanvas = document.getElementById("test-canvas") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 const container = document.getElementById("strudel-container")!;
 
+let companion: ReturnType<typeof installStrudelCompanion> | undefined;
 let editorEl: HTMLElement | null = null;
 let currentCode = "";
 /** The code exactly as the tool call sent it — before bpm/visuals added lines. */
@@ -249,7 +252,7 @@ function watchPrebake(editor: any): void {
   const prebaked = editor?.prebaked;
   if (!prebaked || typeof prebaked.then !== "function") return;
   prebaked.then(
-    () => { soundfontWarning = false; },
+    () => { soundfontWarning = false; companion?.refresh(); },
     () => { soundfontWarning = true; },
   );
 }
@@ -2195,6 +2198,7 @@ function installEvaluateHook(editor: any): void {
   editor.__musicStudioHooked = true;
   const original = editor.evaluate.bind(editor);
   editor.evaluate = async (shouldPlay?: unknown) => {
+    companion?.stop();
     // Checked after every await below (evaluationSuperseded).
     const generation = renderGeneration;
     // One evaluation at a time. repl.evaluate() installs its pattern only when
@@ -2738,7 +2742,7 @@ function startStreamingBoot(): Promise<void> {
  * @param permit a tool call's autoplay also waits for this: false when the
  *   host rebuilt a widget this view already autoplayed in (src/view-memory.ts).
  */
-async function renderPattern(args: Record<string, unknown>, permit?: Promise<boolean>) {
+async function renderPattern(args: Record<string, unknown>, permit?: Promise<boolean>, canReplace?: () => boolean) {
   const code = args.code as string | undefined;
   if (!code) return;
 
@@ -2805,6 +2809,11 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
     setStatus("Initializing...");
     const editor = await prepareEditor();
     if (superseded()) return;
+
+    if (canReplace && !canReplace()) {
+      setStatus("The editor changed while loading. Read the current session before editing again.", "error");
+      return;
+    }
 
     editor.setCode(finalCode);
     lastProgrammaticCode = finalCode;
@@ -3458,3 +3467,68 @@ app.connect().then(() => {
 
 // Source access uses the host link API inside sandboxed MCP widgets.
 bindSourceLink(app);
+
+installStudioBridge({
+  read: () => ({
+    args: {
+      // Read the LIVE buffer, including edits not evaluated yet.
+      code: getEditor()?.code ?? currentCode,
+      title: titleEl.textContent ?? "",
+      ...(runtimeCps !== null ? { bpm: runtimeCps * 240 } : {}),
+      ...(pendingTheme ? { theme: pendingTheme } : {}),
+    },
+    selection: (() => {
+      const range = getEditor()?.editor?.state?.selection?.main;
+      const from = range?.from ?? 0;
+      const to = range?.to ?? from;
+      return { from, to, text: (getEditor()?.code ?? currentCode).slice(from, to) };
+    })(),
+    playback: currentPlaybackState(),
+    status: statusEl.textContent ?? "",
+    error: statusEl.classList.contains("error") ? statusEl.textContent : null,
+  }),
+  apply: async (args) => {
+    // A replacement is staged stopped; Play is a separate, explicit action.
+    if (isRecording) stopRecording();
+    getEditor()?.stop?.();
+    updatePlayState(false);
+    const before = getEditor()?.code;
+    if (args.code === "") {
+      renderGeneration++;
+      getEditor()?.setCode(""); currentCode = "";
+      pendingTheme = typeof args.theme === "string" ? args.theme : undefined;
+      setPatternTitle(args.title);
+      if (getEditor()) applyEditorTheme(getEditor(), pendingTheme);
+      setStatus("Enter a Strudel pattern");
+      return;
+    }
+    await renderPattern({ ...args, autoplay: false }, undefined, () => getEditor()?.code === before || before === undefined);
+  },
+  play: async () => {
+    const editor = getEditor();
+    if (!editor) throw new Error("The editor has not loaded yet.");
+    playPresses++;
+    void ensureAudioRunning();
+    await editor.evaluate(true);
+  },
+  stop: () => {
+    companion?.stop();
+    renderGeneration++;
+    playPresses++;
+    if (isRecording) stopRecording();
+    getEditor()?.stop?.();
+    updatePlayState(false);
+    scheduleStateReport();
+    setStatus("Stopped");
+  },
+});
+
+if (document.documentElement.dataset.audition) container.inert = true;
+
+if (document.documentElement.dataset.studio === "true" && !document.documentElement.dataset.audition) {
+  companion = installStrudelCompanion({
+    container, stage: replSection, status: statusEl, editor: getEditor,
+    playing: isSchedulerStarted, recording: () => isRecording,
+  });
+  playBtn.addEventListener("click", () => companion?.stop(), { capture: true });
+}

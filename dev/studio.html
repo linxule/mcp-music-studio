@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Music studio · Local</title></head>
+<body>
+  <a class="skip-link" href="#workspace">Skip to music workspace</a>
+  <main class="studio">
+    <header class="studio-header">
+      <div><p class="eyebrow">An open session <span class="accident" aria-hidden="true"></span></p><h1>Music studio</h1></div>
+      <p class="opening-note">Compose in code.<br>Listen, then revise.</p>
+    </header>
+    <nav class="studio-nav" aria-label="Studio mode">
+      <div class="modes"><button data-mode="live" aria-pressed="true"><span class="chapter" aria-hidden="true">01</span> Live performance</button><button data-mode="score" aria-pressed="false"><span class="chapter" aria-hidden="true">02</span> Written score</button></div>
+      <div class="session-actions"><button id="stop">Stop all sound</button><button id="focus" aria-pressed="false">Focus workspace ↗</button></div>
+    </nav>
+    <div class="studio-spread">
+      <section class="work-area" aria-label="Composition">
+        <div class="workspace-heading"><div><span id="workspace-label">Pattern / Strudel</span></div><div class="source-actions"><button id="capture-selection">Share selection</button><button id="undo" disabled>↶ Undo edit</button><button id="save-source" disabled>Download Strudel</button></div></div>
+        <p id="session-status" role="status">Opening the live editor…</p>
+        <section id="workspace" aria-label="Music workspace" tabindex="-1"></section>
+      </section>
+      <aside class="margin" aria-label="Session notes">
+        <section class="margin-section"><h2>This session</h2><p id="webmcp-status" class="connection" role="status">Checking WebMCP…</p><p id="draft-status" class="session-retention" role="status">No changes since opening or export</p><div class="file-actions"><button id="save-session">Save session</button><button id="open-session">Open session</button></div><input id="session-file" type="file" accept=".json,application/json" hidden><p id="file-status" role="status"></p><details class="session-help"><summary>What gets saved</summary><p>Both drafts and current sound settings. Reviews, undo history, and recordings stay in this tab.</p><p>Suggestions wait for Apply edit. Direct agent edits change the source immediately; Undo edit restores it.</p></details></section>
+        <details class="margin-section practice"><summary id="practice-title">At the keyboard</summary><p class="margin-copy" id="practice-note">Edit the pattern, then press Play. Use Visuals to see the sound; Stage gives it the whole canvas.</p><p class="shortcut"><kbd>⌘ / Ctrl</kbd> + <kbd>Enter</kbd><br><span id="shortcut-note">Evaluate and play</span></p></details>
+        <details class="margin-section"><summary>Session activity</summary><ol id="activity" tabindex="0" aria-label="Recent session activity"></ol></details>
+      </aside>
+    </div>
+    <section class="review-panel" aria-labelledby="review-title">
+      <div class="review-heading"><h2 id="review-title" tabindex="-1">Work on a passage</h2></div>
+      <p id="review-empty" class="review-intro">Select music in the editor, then share it with your agent. Explanations and suggested edits appear here.</p>
+      <p id="review-status" role="status"></p>
+      <div id="review-content" hidden>
+        <div class="review-columns">
+          <section><h3 id="passage-label">Selected passage</h3><pre id="selected-passage" tabindex="0" aria-label="Selected passage"></pre><p id="review-explanation" class="review-explanation"></p></section>
+          <section id="suggestion" hidden><h3>Proposed edit</h3><pre id="proposed-passage" tabindex="0" aria-label="Proposed edit"></pre><div class="review-actions"><button id="hear-suggestion">Preview in context</button><button id="apply-suggestion">Apply edit</button></div></section>
+        </div>
+        <details id="chat-handoff" class="chat-handoff"><summary>Copy for chat</summary><label for="passage-question">Ask about this passage</label><textarea id="passage-question" rows="2">Explain this passage and suggest one small musical change.</textarea><button id="copy-passage">Copy passage and question</button><p id="copy-status" role="status"></p><label for="copy-fallback" id="copy-fallback-label" hidden>Copy this text manually</label><textarea id="copy-fallback" rows="6" readonly hidden></textarea></details>
+        <div class="review-options"><details id="manual-edit"><summary>Try your own edit</summary><label for="replacement">Replace the selected text with</label><textarea id="replacement" spellcheck="false" rows="5"></textarea><button id="try-edit">Review this edit</button></details><button id="dismiss-suggestion">Clear review</button></div>
+      </div>
+      <section id="audition" hidden aria-label="Audition proposed edit"><div class="review-heading"><p>Preview · your draft stays unchanged</p><button id="stop-preview">Close preview</button></div><div id="audition-player"></div></section>
+    </section>
+    <footer class="studio-footer">
+      <div><span class="studio-credit">Music Studio, by Xule Lin</span><p class="footer-note">Local workspace. Save a session file before leaving.</p></div>
+      <nav class="footer-links" aria-label="Project information">
+        <a href="https://github.com/linxule/mcp-music-studio" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+        <a href="https://github.com/linxule/mcp-music-studio/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">AGPL-3.0-or-later ↗</a>
+        <a href="https://github.com/linxule/mcp-music-studio/blob/main/SOURCE.md" target="_blank" rel="noopener noreferrer">Source and licenses ↗</a>
+        <a href="./privacy.html" target="_blank" rel="noopener noreferrer">Privacy notice ↗</a>
+      </nav>
+    </footer>
+  </main>
+  <script type="module" src="./studio.ts"></script>
+</body>
+</html>

@@ -75,6 +75,7 @@ async function loadHook() {
     stops: 0,
     hydraStruck: 0,
     stateReports: 0,
+    previewStops: 0,
   };
   // `pattern` is what the scheduler would play: repl.evaluate() sets it when
   // it FINISHES, so the last evaluation to finish is the one you hear.
@@ -95,6 +96,7 @@ async function loadHook() {
   });
   vm.runInContext(
     `
+    const companion = { stop: () => { log.previewStops++; } };
     let renderGeneration = 0;
     let isPlaying = false;
     let audioBlocked = false;
@@ -176,6 +178,7 @@ describe("an evaluation superseded while in flight", () => {
     expect(log.reports).toEqual(['ok:s("bd")']);
     // Its onFrame/onEvent/onTap registrations went live.
     expect(log.stage).toEqual(["begin", "commit"]);
+    expect(log.previewStops).toBe(1);
     expect(log.stops).toBe(0);
   });
 

@@ -64,6 +64,7 @@
     "start": "cross-env NODE_ENV=development bun run build && bun run serve",
     "start:stdio": "cross-env NODE_ENV=development bun run build 1>&2 && bun run serve:stdio",
     "dev": "cross-env NODE_ENV=development concurrently \"bun run watch\" \"bun run serve\"",
+    "studio": "bun run build && bunx vite --config dev/vite.config.ts --host 127.0.0.1",
     "prepublishOnly": "bun run build",
     "deploy": "bun run build && bun --cwd worker run deploy",
     "preview": "bun run build && bun --cwd worker run dev",

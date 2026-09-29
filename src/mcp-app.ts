@@ -1,4 +1,5 @@
 import { bindSourceLink } from "./source-link.js";
+import { installStudioBridge } from "./studio-session";
 /**
  * @file Sheet Music App — renders ABC notation with abcjs, multi-instrument audio,
  *       style presets, note highlighting, and playback controls.
@@ -1112,7 +1113,9 @@ async function applyEditorAbc(forcePlay: boolean): Promise<void> {
     setEditorMessage("Nothing to render — the editor is empty.", "error");
     return;
   }
-  if (!forcePlay && abc === lastEditRendered) return;
+  // A correction can return exactly to the last good source. Revalidate in
+  // that case so feedback from the intervening broken draft does not linger.
+  if (!forcePlay && abc === lastEditRendered && editorMessageEl.hidden && !statusEl.classList.contains("error")) return;
 
   const effective = effectiveAbc(abc);
 
@@ -1201,6 +1204,8 @@ function engraveEdit(abc: string, effective: string, messages: string[]): ABCJS.
   renderTitle();
   syncInstrumentSelect();
   setEditorMessage(messages.length > 0 ? messages.join("\n") : null, "warn");
+  // The score is already corrected, even if sound preparation is still queued.
+  setStatus(withTransposeNote("Score updated — preparing audio…"));
   return visualObj;
 }
 
@@ -1903,13 +1908,18 @@ app.ontoolinput = (params) => {
     toolCallKey(app.getHostContext()?.toolInfo?.id, args),
     viewIds.take(),
   );
+  void applyScoreInput(args, { autoplay: true, permit }).catch(console.error);
+};
+
+async function applyScoreInput(args: Record<string, unknown>, transport: RenderTransport, instrumentOverride = false) {
+  cancelPartialRender();
   const preparedInput = prepareToolInput(args);
   // A new tool call replaces the previous one's transposition caveat, if any.
   transposeNote = null;
 
   state.currentInstrument = preparedInput.instrument;
   // A new tool call hands the instrument back to the score (#25).
-  state.instrumentOverride = false;
+  state.instrumentOverride = instrumentOverride;
   instrumentSelect.value = preparedInput.instrument;
 
   state.currentStyle = preparedInput.style;
@@ -1939,11 +1949,11 @@ app.ontoolinput = (params) => {
     lastEditRendered = abc;
     lastEditReported = abc;
     setEditorMessage(null, "error");
-    renderAbc(abc, preparedInput.synthOptions, { autoplay: true, permit }).catch(console.error);
+    await renderAbc(abc, preparedInput.synthOptions, transport);
   } else {
     setStatus("No ABC notation provided", true);
   }
-};
+}
 
 // Handle streaming/partial tool input — render as AI types
 // Debounce streaming renders to avoid excessive re-renders and scroll thrashing
@@ -2133,3 +2143,121 @@ app.connect().then(() => {
 
 // Source access uses the host link API inside sandboxed MCP widgets.
 bindSourceLink(app);
+
+let studioEmptyTransport = { warp: 100, loop: false };
+installStudioBridge({
+  read: () => {
+    const started = state.synthControl ? readTransport(state.synthControl).wasPlaying : false;
+    const status = statusEl.textContent ?? "";
+    return {
+      args: {
+        abcNotation: editorEl.value,
+        title: state.toolTitle ?? "",
+        instrument: state.currentInstrument,
+        ...(state.currentStyle ? { style: state.currentStyle } : {}),
+        swing: state.toolSynthOpts.swing ?? 0,
+        drumIntro: state.toolSynthOpts.drumIntro ?? 0,
+      },
+      selection: { from: editorEl.selectionStart, to: editorEl.selectionEnd, text: editorEl.value.slice(editorEl.selectionStart, editorEl.selectionEnd) },
+      playback: started ? (audioContext()?.state === "running" ? "playing" : "audio-blocked") : "stopped",
+      status,
+      error: statusEl.classList.contains("error") ? status : null,
+      settings: {
+        soundFont: state.currentSoundFont,
+        room: liveRoom.isEnabled,
+        instrumentOverride: state.instrumentOverride,
+        warp: state.synthControl ? readTransport(state.synthControl).warp : studioEmptyTransport.warp,
+        loop: state.synthControl ? readTransport(state.synthControl).wasLooping : studioEmptyTransport.loop,
+      },
+    };
+  },
+  apply: async (args, settings) => {
+    if (typeof settings?.soundFont === "string" && settings.soundFont in SOUNDFONTS) {
+      state.currentSoundFont = settings.soundFont as SoundFontName;
+      soundFontSelect.value = state.currentSoundFont;
+    }
+    if (typeof settings?.room === "boolean") {
+      liveRoom.setEnabled(settings.room, audioContext());
+      syncRoomButton();
+    }
+    if (args.abcNotation === "") {
+      newGeneration(); cancelEditRender(); cancelPartialRender(); retireSynthControl();
+      const prepared = prepareToolInput(args);
+      state.currentInstrument = prepared.instrument; instrumentSelect.value = prepared.instrument;
+      state.currentStyle = prepared.style; styleSelect.value = prepared.style;
+      state.instrumentOverride = settings?.instrumentOverride === true;
+      state.toolSynthOpts = prepared.synthOptions;
+      state.toolTitle = typeof args.title === "string" && args.title.trim() ? args.title.trim() : null;
+      studioEmptyTransport = { warp: Number(settings?.warp ?? 100), loop: settings?.loop === true };
+      syncEditor(""); state.currentAbc = ""; sheetMusicEl.replaceChildren(); renderTitle();
+      setEditorMessage(null, "error");
+      setStatus("Enter ABC notation");
+      return;
+    }
+    const override = settings?.instrumentOverride === true;
+    await applyScoreInput(args, {
+      autoplay: false,
+      carry: { wasPlaying: false, wasLooping: settings?.loop === true, warp: typeof args.tempo === "number" ? 100 : Number(settings?.warp ?? 100) },
+    }, override);
+  },
+  play: async (isCancelled) => {
+    // A blank draft must never play the last successfully rendered score.
+    const source = editorEl.value;
+    if (!source.trim()) {
+      setEditorMessage("Nothing to render — the editor is empty.", "error");
+      setStatus("Enter ABC notation before playing", true);
+      return;
+    }
+    const presses = ++playPresses;
+    const superseded = () => isCancelled() || disposed || playPresses !== presses || editorEl.value !== source;
+    const running = await resumeAudioContext(audioContext(), AUDIO_RESUME_TIMEOUT_MS);
+    if (superseded()) return;
+    if (!running) {
+      setStatus("Tap Play to start audio");
+      return;
+    }
+    if (editorEl.value !== state.currentAbc) await applyEditorAbc(false);
+    if (superseded()) return;
+    if (statusEl.classList.contains("error")) return;
+    const control = state.synthControl;
+    if (!control || readTransport(control).wasPlaying) return;
+    const generation = renderGeneration;
+    ownSynthControl(control, generation);
+    await control.play();
+    // abcjs can finish loading and start after Stop has already returned.
+    if (isStale(generation)) releaseStaleControl(control, generation);
+  },
+  stop: () => {
+    newGeneration();
+    cancelPartialRender();
+    cancelEditRender();
+    stopPlayback();
+    setStatus("Stopped");
+  },
+});
+
+// The local webpage has room to show the source from the outset, without
+// taking keyboard focus away from the host navigation.
+if (document.documentElement.dataset.studio) {
+  // Local writing layout: feedback owns its own bounded region. Moving the
+  // existing nodes preserves live validation, transport status, and ARIA updates.
+  const feedback = document.createElement("section");
+  feedback.className = "editor-feedback";
+  feedback.setAttribute("aria-label", "Notation and playback feedback");
+  const feedbackTitle = document.createElement("h2");
+  feedbackTitle.className = "feedback-title";
+  feedbackTitle.textContent = "Notation and playback";
+  const feedbackContent = document.createElement("div");
+  feedbackContent.className = "feedback-content";
+  feedbackContent.tabIndex = 0;
+  feedbackContent.setAttribute("role", "region");
+  feedbackContent.setAttribute("aria-label", "Current editor feedback");
+  feedbackContent.append(statusEl, editorMessageEl);
+  const hint = document.getElementById("editor-hint")!;
+  feedback.append(feedbackTitle, feedbackContent, hint);
+  editorPaneEl.after(feedback);
+  editorEl.setAttribute("wrap", "off");
+  editorPaneEl.hidden = false;
+  editBtn.setAttribute("aria-pressed", "true");
+  editBtn.setAttribute("aria-expanded", "true");
+}
