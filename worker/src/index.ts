@@ -845,8 +845,26 @@ export const TTS_TTL_SECONDS = 30 * 24 * 60 * 60;
 const TTS_MAX_BYTES = 4 * 1024 * 1024;
 
 export function ttsRateLimitKey(ip: string): string {
-  return `ratelimit:tts:${ip}`;
+  return `ratelimit:tts:${clientBucket(ip)}`;
 }
+
+/**
+ * The address a budget belongs to. IPv6 is bucketed by /64 — one subscriber
+ * line usually gets a whole /64, so keying on the full address would hand a
+ * single client 2^64 budgets (Opus, 0.7.0 gauntlet).
+ */
+export function clientBucket(ip: string): string {
+  if (!ip.includes(":")) return ip;
+  const [head] = ip.split("%");
+  const parts = head.split("::");
+  const left = parts[0] ? parts[0].split(":") : [];
+  const right = parts.length > 1 && parts[1] ? parts[1].split(":") : [];
+  const groups = [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
+  return `${groups.slice(0, 4).map((g) => g.toLowerCase().replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
+
+/** New renders across everyone per UTC day — a tripwire, not accounting (KV is approximate). */
+export const TTS_DAILY_MAX = 4000;
 
 export async function ttsCacheKey(request: TtsRequest): Promise<string> {
   const bytes = new TextEncoder().encode(`${request.voice}\u0000${request.text}`);
@@ -897,10 +915,14 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
   } catch {
     /* KV unwell — render instead */
   }
+  // A miss on HEAD renders nothing: HEAD only answers "is it cached?".
+  if (request.method === "HEAD") {
+    return new Response(null, { status: 404, headers: { "access-control-allow-origin": "*" } });
+  }
   // A miss costs a model call. First gate: Cloudflare's rate-limit bindings
   // (per address, then everyone) — they hold when KV is down or racing, which
   // the KV hourly budget below does not (non-atomic read/write; fails open).
-  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  const ip = clientBucket(request.headers.get("CF-Connecting-IP") ?? "unknown");
   const tooMany = (why: string) =>
     new Response(why, {
       status: 429,
@@ -928,6 +950,20 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
   if (limited) {
     limited.headers.set("access-control-allow-origin", "*");
     return limited;
+  }
+  // Daily tripwire across everyone. Approximate (KV is not atomic), and it
+  // fails open on a KV error: the bindings above still hold then.
+  const dayKey = `tts:day:${new Date().toISOString().slice(0, 10)}`;
+  try {
+    const today = Number((await env.DOCS_CACHE?.get(dayKey)) ?? 0);
+    if (today >= TTS_DAILY_MAX) return tooMany("Speech rendering has reached today's limit. Try again tomorrow.");
+    ctx.waitUntil(
+      Promise.resolve(env.DOCS_CACHE?.put(dayKey, String(today + 1), { expirationTtl: 2 * 24 * 60 * 60 })).catch(
+        () => undefined,
+      ),
+    );
+  } catch {
+    /* KV unwell: the bindings are the gate */
   }
   if (!env.AI) {
     return new Response("Speech rendering is unavailable.", {
@@ -962,7 +998,7 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
     })(),
   );
   track(env, { blobs: ["tts", "miss", parsed.voice], doubles: [parsed.text.length], indexes: ["tts"] });
-  return new Response(request.method === "HEAD" ? null : bytes, { headers: TTS_HEADERS });
+  return new Response(bytes, { headers: TTS_HEADERS });
 }
 
 // =============================================================================

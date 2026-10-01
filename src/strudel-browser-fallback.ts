@@ -590,6 +590,9 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     tapArea: document.documentElement,
     reportError: function (api, err) { console.error('[stage] ' + api + ' callback threw:', err); },
     ttsOrigin: ${JSON.stringify(DEFAULT_SHARE_ORIGIN)},
+    reportSpeech: function (url, reason) {
+      console.warn('[stage] a say() line could not load: ' + reason);
+    },
   });
   var stage = globalThis.MusicStudioStage.createStage(stageBundle.env);
   Object.assign(globalThis, stage.globals);
@@ -609,16 +612,26 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     // An instance property, so Play AND the editor's own shortcut both pass here.
     ed.evaluate = function (shouldPlay) {
       var run = evaluationTail.then(async function () {
-        stage.begin();
+        var token = stage.begin();
+        var code = getLiveCode(ed);
+        // Voiced and about to start: load the say() clips first (superdough
+        // drops a sample that isn't ready by its start time).
+        var hold = shouldPlay !== false && /\\bsay\\s*\\(/.test(code) &&
+          !(ed.repl && ed.repl.state && ed.repl.state.started);
         try {
-          await originalEvaluate(shouldPlay);
+          await originalEvaluate(hold ? false : shouldPlay);
         } catch (e) {
-          stage.rollback();
+          stage.rollback(token);
           throw e;
         }
         var st = (ed.repl && ed.repl.state) || {};
-        if (st.evalError || st.schedulerError) stage.rollback();
-        else stage.commit();
+        if (st.evalError || st.schedulerError) { stage.rollback(token); return; }
+        stage.commit(token);
+        if (hold) {
+          setStatus('Loading voice…');
+          await stageBundle.speechReady(4000);
+          if (ed.repl && typeof ed.repl.start === 'function') ed.repl.start();
+        }
       });
       evaluationTail = run.catch(function () {});
       return run;

@@ -317,3 +317,50 @@ describe("async callbacks and event duration (Kimi, 0.7.0 gauntlet)", () => {
     expect(stageEvent({ whole: { begin: 3, end: 3.5 }, value: {} }, 3).duration).toBe(0.5);
   });
 });
+
+describe("Opus gauntlet fixes", () => {
+  it("a stale evaluation's commit or rollback can't touch a newer one's registrations", () => {
+    const h = harness();
+    const runs: string[] = [];
+    const a = h.stage.begin();
+    h.stage.globals.onFrame(() => runs.push("A"));
+    const b = h.stage.begin(); // A outlived the queue timeout; B began
+    h.stage.globals.onFrame(() => runs.push("B"));
+    h.stage.commit(a); // stale: ignored
+    h.stage.rollback(a); // stale: ignored
+    h.stage.commit(b);
+    h.frame(0.1);
+    expect(runs).toEqual(["B"]);
+  });
+
+  it("a touch that scrolls is not a tap; a touch that stays is, at the press position", async () => {
+    const { createBrowserStageEnv } = await import("../src/shared/stage-runtime");
+    const listeners = new Map<string, (e: any) => void>();
+    const area: any = {
+      addEventListener: (type: string, fn: (e: any) => void) => listeners.set(type, fn),
+      removeEventListener: (type: string) => listeners.delete(type),
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 200 }),
+    };
+    const { env } = createBrowserStageEnv({
+      getScheduler: () => null,
+      isPlaying: () => false,
+      tapArea: area,
+      reportError: () => {},
+      ttsOrigin: "https://music-studio.linxule.com",
+    });
+    const taps: Array<[number, number]> = [];
+    env.listenTaps((x, y) => taps.push([x, y]));
+    const ev = (type: string, x: number, y: number, pointerType = "touch") =>
+      listeners.get(type)!({ type, clientX: x, clientY: y, pointerId: 1, pointerType, isPrimary: true, target: null });
+    ev("pointerdown", 100, 100);
+    ev("pointermove", 100, 160); // a scroll
+    ev("pointerup", 100, 160);
+    expect(taps).toEqual([]);
+    ev("pointerdown", 200, 50);
+    ev("pointermove", 203, 52);
+    ev("pointerup", 203, 52);
+    expect(taps).toEqual([[0.5, 0.25]]);
+    ev("pointerdown", 0, 0, "mouse"); // a click is immediate
+    expect(taps).toHaveLength(2);
+  });
+});

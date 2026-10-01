@@ -325,6 +325,7 @@ const SANDBOX_DOCUMENT = () => {
  * Dish came back "failed to evaluate: window is not defined" — code that plays.
  */
 const SANDBOX_BROWSER = () => {
+  let timersLeft = 64;
   const window = inert();
   window.innerWidth = 800;
   window.innerHeight = 450;
@@ -347,8 +348,21 @@ const SANDBOX_BROWSER = () => {
     },
     requestAnimationFrame: () => 0,
     cancelAnimationFrame: () => undefined,
-    setTimeout: () => 0,
-    clearTimeout: () => undefined,
+    // Real, but short and few: `await new Promise(r => setTimeout(r, 500))` at
+    // the top level must resolve (a stub that never calls back made a working
+    // piece time out as "may loop forever" — Opus, 0.7.0 gauntlet), while a
+    // self-rescheduling timer loop must not run on in the warm child.
+    setTimeout: (fn: unknown, ms?: unknown) => {
+      if (typeof fn !== "function" || timersLeft-- <= 0) return 0;
+      return setTimeout(() => {
+        try {
+          (fn as () => void)();
+        } catch {
+          /* a stand-in world; errors here are not the pattern's */
+        }
+      }, Math.min(Math.max(0, Number(ms) || 0), 50)) as unknown as number;
+    },
+    clearTimeout: (id: unknown) => clearTimeout(id as never),
     setInterval: () => 0,
     clearInterval: () => undefined,
     addEventListener: () => undefined,

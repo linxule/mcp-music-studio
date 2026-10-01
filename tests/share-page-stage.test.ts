@@ -92,7 +92,13 @@ describe("share page evaluate wrapper (0.7.0 gauntlet)", () => {
           });
         }),
     };
-    const ctx = vm.createContext({ stage, Promise });
+    const ctx = vm.createContext({
+      stage,
+      Promise,
+      getLiveCode: () => 's("bd")',
+      setStatus: () => {},
+      stageBundle: { speechReady: async () => {} },
+    });
     vm.runInContext(`${source}; hookStage(ed)`, Object.assign(ctx, { ed }));
     const a = ed.evaluate("A");
     const b = ed.evaluate("B");
@@ -106,4 +112,19 @@ describe("share page evaluate wrapper (0.7.0 gauntlet)", () => {
     await b;
     expect(log).toEqual(["begin", "commit:A", "begin", "rollback:B"]);
   });
+});
+
+describe("the standalone page's scripts parse", () => {
+  // The page script lives inside a TS template literal: a single `\b` in a
+  // regex there became a backspace and broke the WHOLE script (0.7.0, caught
+  // before release). Parse every inline script of a real generated page.
+  it.each([{ code: 's("bd")' }, { code: 'say(\'hi\'); s("bd")', bpm: 120, visuals: "pianoroll" }])(
+    "%o",
+    (opts) => {
+      const html = generateStrudelPlayerHtml(opts as any);
+      const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>([\s\S]*?)<\/script>/g)];
+      expect(scripts.length).toBeGreaterThanOrEqual(2);
+      for (const [, src] of scripts) expect(() => new vm.Script(src)).not.toThrow();
+    },
+  );
 });

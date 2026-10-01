@@ -95,3 +95,11 @@ describe("async stage callbacks in the validator (Kimi, 0.7.0 gauntlet)", () => 
     expect(result.warnings).toEqual([expect.stringMatching(/onFrame callback threw on a test frame: boom/)]);
   });
 });
+
+describe("timers in the validator (Opus, 0.7.0 gauntlet)", () => {
+  it("a top-level await on setTimeout resolves instead of timing out", async () => {
+    const result = await validateStrudelInProcess(`await new Promise(r => setTimeout(r, 500)); s("bd*2")`, { timeoutMs: 3000 });
+    expect(result.error).toBeUndefined();
+    expect(result.ok).toBe(true);
+  });
+});

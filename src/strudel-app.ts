@@ -398,7 +398,14 @@ function syncAudioState(): void {
 installSampleUrlFix(window as any);
 
 let stageErrorReported = false;
-const { env: stageEnv, speech: stageSpeech } = createBrowserStageEnv({
+let speechFailureReported = false;
+/** How long a voiced piece waits for its say() clips before starting anyway. */
+const SAY_PRELOAD_TIMEOUT_MS = 4000;
+const {
+  env: stageEnv,
+  speech: stageSpeech,
+  speechReady: stageSpeechReady,
+} = createBrowserStageEnv({
   getScheduler: () => getEditor()?.repl?.scheduler ?? null,
   isPlaying: () => isSchedulerStarted(),
   tapArea: replSection,
@@ -413,6 +420,16 @@ const { env: stageEnv, speech: stageSpeech } = createBrowserStageEnv({
     );
   },
   ttsOrigin: DEFAULT_SHARE_ORIGIN,
+  reportSpeech(url, reason) {
+    const text = new URL(url).searchParams.get("text") ?? "";
+    console.warn(`[stage] say("${text}") could not load: ${reason}`);
+    if (speechFailureReported) return;
+    speechFailureReported = true;
+    reportToModel(
+      `Strudel widget: a say() line could not be rendered ("${text.slice(0, 60)}": ${reason}). ` +
+        "That line stays silent; the rest plays. Re-running the piece retries it.",
+    );
+  },
 });
 const stage = createStage(stageEnv);
 
@@ -1688,6 +1705,8 @@ let missingSoundReported = false;
 let consoleWatchInstalled = false;
 
 function noteMissingSound(name: string): void {
+  // say() clips register when they load and report their own failures.
+  if (name.startsWith("say_")) return;
   if (missingSoundReported || missingSounds.has(name)) return;
   missingSounds.add(name);
   if (missingSoundTimer !== null) return;
@@ -1963,8 +1982,8 @@ function stageCapabilityNote(code: string): string {
   const parts: string[] = [];
   if (voiced) {
     parts.push(
-      "voice: say() lines are rendered by the server and play as samples — if one stays " +
-        "silent, a missing-sound report follows",
+      "voice: say() lines are rendered by the server and play as samples (the widget waits " +
+        "for them before starting); a line that can't be rendered is reported separately",
     );
   }
   if (rawSpeech) {
@@ -2080,27 +2099,48 @@ function installEvaluateHook(editor: any): void {
       missingSoundTimer = null;
     }
     // This evaluation's onFrame/onEvent/onTap go live only if it succeeds.
-    stage.begin();
+    const stageToken = stage.begin();
+    speechFailureReported = false;
+    // A voiced piece that is about to START: evaluate it without starting,
+    // let its say() clips load, then start — superdough drops a sample that is
+    // not decoded by its start time, so a line in bar 0 used to be lost on the
+    // first play. (A re-evaluation of a running piece keeps playing.)
+    const holdForVoice = shouldPlay !== false && /\bsay\s*\(/.test(code) && !isSchedulerStarted();
     try {
-      await original(shouldPlay !== false);
+      await original(holdForVoice ? false : shouldPlay !== false);
     } catch (err) {
-      stage.rollback();
+      stage.rollback(stageToken);
       if (evaluationSuperseded(editor, generation, seq)) return;
       reportEvaluation(code, err as Error);
       return;
     }
     if (evaluationSuperseded(editor, generation, seq)) {
-      stage.rollback();
+      stage.rollback(stageToken);
       return;
     }
     // A pattern that failed keeps the old one playing — and its layers, and
     // its stage loops.
     if (!readEvalError()) {
       pruneDrawLayers(code);
-      stage.commit();
+      stage.commit(stageToken);
       stageErrorReported = false;
+      if (holdForVoice) {
+        setStatus("Loading voice…", "normal");
+        await stageSpeechReady(SAY_PRELOAD_TIMEOUT_MS);
+        if (evaluationSuperseded(editor, generation, seq)) return;
+        try {
+          editor.repl?.start?.();
+        } catch { /* the state listener reports what actually happened */ }
+        // start() flips repl.state.started asynchronously; the one report this
+        // evaluation makes must not say "loaded, not playing" over audible
+        // music (measured: it did, and the status stayed "Ready").
+        for (let waited = 0; !isSchedulerStarted() && waited < 1000; waited += 25) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        if (evaluationSuperseded(editor, generation, seq)) return;
+      }
     } else {
-      stage.rollback();
+      stage.rollback(stageToken);
     }
     // Some of the clobbered globals (`time`) are only published onto globalThis
     // by the evaluation itself, so the pre-eval snapshot above cannot see them

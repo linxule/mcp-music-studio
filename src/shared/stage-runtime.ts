@@ -194,12 +194,16 @@ export interface Stage {
     onTap: (fn: (tap: StageTap) => void) => () => void;
     say: (text: unknown, options?: SayOptions) => unknown;
   };
-  /** An evaluation is starting: collect its registrations separately. */
-  begin(): void;
+  /**
+   * An evaluation is starting: collect its registrations separately. Returns
+   * a token for commit/rollback, so a stale evaluation (one that outlived a
+   * queue timeout) can neither adopt nor clear a newer one's registrations.
+   */
+  begin(): number;
   /** It succeeded: its registrations replace the previous evaluation's. */
-  commit(): void;
+  commit(token?: number): void;
   /** It failed (or was superseded): drop its registrations, keep the old ones. */
-  rollback(): void;
+  rollback(token?: number): void;
   /** Teardown: end everything, for good — later registrations are ignored. */
   stop(): void;
   /** How many registrations are live (tests, diagnostics). */
@@ -217,6 +221,7 @@ export function createStage(env: StageEnv): Stage {
   // when the widget was torn down would otherwise land its onFrame in `active`
   // (pending is gone) and start a loop nobody can stop.
   let disposed = false;
+  let generation = 0;
 
   const cycle = (): number => {
     const c = env.audibleCycle();
@@ -374,16 +379,18 @@ export function createStage(env: StageEnv): Stage {
     globals,
     begin() {
       pending = new Set();
+      return ++generation;
     },
-    commit() {
-      if (!pending) return;
+    commit(token) {
+      if (!pending || (token !== undefined && token !== generation)) return;
       active = pending;
       pending = null;
       // The previous piece's sentence does not belong to this one.
       env.cancelSpeech?.();
       sync();
     },
-    rollback() {
+    rollback(token) {
+      if (token !== undefined && token !== generation) return;
       pending = null;
       sync();
     },
@@ -440,6 +447,9 @@ export function guardBrowserSpeech(
 // Browser wiring — shared by the widget and the share page
 // -----------------------------------------------------------------------------
 
+/** A touch that travels further than this is a scroll, not a tap (as in audio-unlock.ts). */
+const TAP_SLOP_PX = 10;
+
 /** Taps on these are the UI's, not the piece's. Blank editor space still counts. */
 export const TAP_EXCLUDE =
   "button, input, select, textarea, a, label, summary, .cm-line, .cm-gutters, .cm-panels, .cm-tooltip, [role=button]";
@@ -453,19 +463,65 @@ export interface BrowserStageOptions {
   reportError(api: string, error: unknown): void;
   /** Where say() clips are rendered. */
   ttsOrigin: string;
+  /** A say() clip could not be loaded — once per clip, with the server's reason. */
+  reportSpeech?(url: string, reason: string): void;
+}
+
+/** The browser env plus what only a page needs: waiting for say() clips. */
+export interface BrowserStage {
+  env: StageEnv;
+  speech: ReturnType<typeof guardBrowserSpeech>;
+  /**
+   * Resolves when every say() clip requested so far has loaded or failed, or
+   * after `timeoutMs`. A page evaluates a voiced piece WITHOUT starting, waits
+   * on this, then starts — superdough drops a sample that isn't decoded by its
+   * start time, so a line in bar 0 was lost on first play.
+   */
+  speechReady(timeoutMs: number): Promise<void>;
 }
 
 /**
  * The StageEnv for a real page. `window` is only touched when this is called,
  * so importing the module stays side-effect free.
  */
-export function createBrowserStageEnv(options: BrowserStageOptions): {
-  env: StageEnv;
-  speech: ReturnType<typeof guardBrowserSpeech>;
-} {
+export function createBrowserStageEnv(options: BrowserStageOptions): BrowserStage {
   const w = globalThis as any;
   const speech = guardBrowserSpeech(w.speechSynthesis, w.SpeechSynthesisUtterance);
-  const prefetched = new Set<string>();
+  // superdough 1.3.0's loadBuffer never checks res.ok and caches a failed load
+  // for the session, so a clip is registered with it only once OUR fetch has
+  // succeeded — a 429 or 502 can't poison it, and a later evaluation retries.
+  type Clip = { state: "loading" | "ok" | "failed"; done: Promise<void>; names: Set<string> };
+  const clips = new Map<string, Clip>();
+  const register = (name: string, url: string) => {
+    if (typeof w.samples !== "function") throw new Error("say(): samples() is not loaded yet");
+    void w.samples({ [name]: [url] });
+  };
+  const loadClip = (url: string): Clip => {
+    const existing = clips.get(url);
+    if (existing && existing.state !== "failed") return existing;
+    const clip: Clip = { state: "loading", done: Promise.resolve(), names: existing?.names ?? new Set() };
+    clip.done = (async () => {
+      try {
+        const res = await w.fetch(url, { mode: "cors" });
+        if (!res.ok) {
+          const why = String(await res.text().catch(() => "")).slice(0, 160);
+          throw new Error(`HTTP ${res.status}${why ? ` — ${why}` : ""}`);
+        }
+        // Into the HTTP cache (served immutable): superdough's fetch is local.
+        await res.arrayBuffer();
+        clip.state = "ok";
+        for (const name of clip.names) register(name, url);
+        // Decode ahead too, where superdough exposes its loader.
+        const ac = typeof w.getAudioContext === "function" ? w.getAudioContext() : null;
+        if (typeof w.loadBuffer === "function" && ac) await w.loadBuffer(url, ac).catch(() => undefined);
+      } catch (err) {
+        clip.state = "failed";
+        options.reportSpeech?.(url, (err as Error)?.message ?? String(err));
+      }
+    })();
+    clips.set(url, clip);
+    return clip;
+  };
   const num = (v: unknown): number | null => {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
@@ -492,43 +548,82 @@ export function createBrowserStageEnv(options: BrowserStageOptions): {
     requestFrame: (cb) => w.requestAnimationFrame(cb),
     cancelFrame: (id) => w.cancelAnimationFrame(id),
     listenTaps(deliver) {
+      // A mouse or pen press is a tap at once. A TOUCH is a tap only when it
+      // ends where it began — otherwise it was the finger scrolling the
+      // conversation past the widget (the same rule the audio unlock uses,
+      // src/audio-unlock.ts, since 0.5.9). Delivered with the press position.
       const area = options.tapArea;
-      const handler = (event: PointerEvent) => {
+      const touches = new Map<number, { x: number; y: number; moved: boolean }>();
+      const position = (event: PointerEvent): [number, number] | null => {
+        const rect = area.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        const x = (event.clientX - rect.left) / rect.width;
+        const y = (event.clientY - rect.top) / rect.height;
+        return x < 0 || x > 1 || y < 0 || y > 1 ? null : [x, y];
+      };
+      const down = (event: PointerEvent) => {
         if (event.isPrimary === false) return;
         const target = event.target as Element | null;
         if (target?.closest?.(TAP_EXCLUDE)) return;
-        const rect = area.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return;
-        const x = (event.clientX - rect.left) / rect.width;
-        const y = (event.clientY - rect.top) / rect.height;
-        if (x < 0 || x > 1 || y < 0 || y > 1) return;
-        deliver(x, y);
+        const at = position(event);
+        if (!at) return;
+        if (event.pointerType === "touch") {
+          touches.set(event.pointerId, { x: event.clientX, y: event.clientY, moved: false });
+          (touches.get(event.pointerId) as any).at = at;
+        } else {
+          deliver(at[0], at[1]);
+        }
       };
-      area.addEventListener("pointerdown", handler);
-      return () => area.removeEventListener("pointerdown", handler);
+      const move = (event: PointerEvent) => {
+        const t = touches.get(event.pointerId);
+        if (t && Math.hypot(event.clientX - t.x, event.clientY - t.y) > TAP_SLOP_PX) t.moved = true;
+      };
+      const up = (event: PointerEvent) => {
+        const t = touches.get(event.pointerId) as ({ moved: boolean; at: [number, number] } | undefined);
+        touches.delete(event.pointerId);
+        if (t && !t.moved) deliver(t.at[0], t.at[1]);
+      };
+      const cancel = (event: PointerEvent) => void touches.delete(event.pointerId);
+      area.addEventListener("pointerdown", down);
+      area.addEventListener("pointermove", move);
+      area.addEventListener("pointerup", up);
+      area.addEventListener("pointercancel", cancel);
+      return () => {
+        area.removeEventListener("pointerdown", down);
+        area.removeEventListener("pointermove", move);
+        area.removeEventListener("pointerup", up);
+        area.removeEventListener("pointercancel", cancel);
+      };
     },
     toPattern: (value) => (typeof w.reify === "function" ? w.reify(value) : undefined),
     reportError: options.reportError,
     ttsOrigin: options.ttsOrigin,
     registerSample(name, url) {
-      // Strudel's samples() registers an object map synchronously (its first
-      // await comes after), so the name resolves on the very next trigger.
-      if (typeof w.samples !== "function") throw new Error("say(): samples() is not loaded yet");
-      void w.samples({ [name]: [url] });
+      // Registered when (and only if) the clip loads — see loadClip.
+      const clip = loadClip(url);
+      clip.names.add(name);
+      if (clip.state === "ok") register(name, url);
     },
     sound(name) {
       if (typeof w.s !== "function") throw new Error("say(): s() is not loaded yet");
       return w.s(name);
     },
     prefetch(url) {
-      if (prefetched.has(url) || typeof w.fetch !== "function") return;
-      prefetched.add(url);
-      // Warms the HTTP cache (the clip is served immutable), so superdough's own
-      // fetch on the first trigger is local. Failures surface there, as a
-      // missing sound — not here.
-      void w.fetch(url, { mode: "cors" }).catch(() => prefetched.delete(url));
+      loadClip(url);
     },
     cancelSpeech: () => speech.cancel(),
   };
-  return { env, speech };
+  const speechReady = async (timeoutMs: number) => {
+    const loading = [...clips.values()].filter((c) => c.state === "loading").map((c) => c.done);
+    if (!loading.length) return;
+    let timer: unknown;
+    await Promise.race([
+      Promise.allSettled(loading),
+      new Promise((resolve) => {
+        timer = w.setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+    w.clearTimeout(timer);
+  };
+  return { env, speech, speechReady };
 }

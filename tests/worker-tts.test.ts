@@ -152,3 +152,43 @@ describe("GET /tts — the rate-limit bindings gate misses (0.7.0 gauntlet)", ()
     expect(global.used.get("all")).toBe(5);
   });
 });
+
+describe("GET /tts — Opus gauntlet fixes", () => {
+  it("buckets IPv6 by /64, leaves IPv4 alone", async () => {
+    const { clientBucket } = await import("../worker/src/index");
+    expect(clientBucket("203.0.113.5")).toBe("203.0.113.5");
+    expect(clientBucket("2001:db8:abcd:12:1:2:3:4")).toBe("2001:db8:abcd:12::/64");
+    expect(clientBucket("2001:db8:abcd:12::99")).toBe("2001:db8:abcd:12::/64");
+    expect(clientBucket("2001:0db8::1")).toBe("2001:db8:0:0::/64");
+  });
+
+  it("one /64 shares one budget", async () => {
+    const used = new Map<string, number>();
+    const ipLimiter = { limit: async ({ key }: { key: string }) => { const n = (used.get(key) ?? 0) + 1; used.set(key, n); return { success: n <= 2 }; } };
+    const env = { DOCS_CACHE: fakeKv(), AI: fakeAi(), TTS_IP_LIMITER: ipLimiter };
+    const statuses = [];
+    for (let i = 0; i < 4; i++) statuses.push((await get(line(`v6 ${i}`), env, `2001:db8:1:2::${i + 1}`)).status);
+    expect(statuses).toEqual([200, 200, 429, 429]);
+  });
+
+  it("HEAD never renders: 404 on a miss, 200 on a hit", async () => {
+    const ai = fakeAi();
+    const env = { DOCS_CACHE: fakeKv(), AI: ai };
+    const head = (p: string) => worker.fetch(new Request(`${ORIGIN}${p}`, { method: "HEAD" }), env as never, CTX);
+    expect((await head(line("probe"))).status).toBe(404);
+    expect(ai.calls).toHaveLength(0);
+    await get(line("probe"), env);
+    await Promise.all(waits);
+    expect((await head(line("probe"))).status).toBe(200);
+    expect(ai.calls).toHaveLength(1);
+  });
+
+  it("a daily tripwire stops new renders across everyone", async () => {
+    const { TTS_DAILY_MAX } = await import("../worker/src/index");
+    const kv = fakeKv();
+    kv.store.set(`tts:day:${new Date().toISOString().slice(0, 10)}`, String(TTS_DAILY_MAX));
+    const res = await get(line("over budget"), { DOCS_CACHE: kv, AI: fakeAi() });
+    expect(res.status).toBe(429);
+    expect(await res.text()).toMatch(/today/);
+  });
+});

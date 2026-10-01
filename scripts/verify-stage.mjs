@@ -16,16 +16,22 @@ import { chromium } from "playwright";
 const HARNESS = process.env.HARNESS ?? "http://localhost:5177/";
 const TTS_ORIGIN = process.env.TTS_ORIGIN ?? "http://127.0.0.1:8799";
 const CPS = 0.5;
+// Two random short words: a line the Worker has (almost surely) never
+// rendered, so the check covers a FRESH render, and short enough to end
+// inside its 2-second cycle.
+const WORDS = ["amber", "river", "glass", "orbit", "velvet", "ember", "cedar", "lumen", "quartz", "harbor",
+  "violet", "signal", "meadow", "copper", "tidal", "nimbus", "saffron", "hollow", "zephyr", "marble"];
 
-// Odd cycles speak; even cycles are silent. The kick is muted so the voice is
-// the only sound — loudness per cycle then says whether say() is on schedule.
+// EVEN cycles speak — including cycle 0 of the very first play, the line a
+// fresh render used to miss (superdough drops a sample not decoded by its start
+// time). The kick is muted so the voice is the only sound.
 const CODE = `setcps(${CPS})
-const line = say('one, two, three, four', { voice: 'orion' })
+const line = say('${WORDS[Math.floor(Math.random() * WORDS.length)]} ${WORDS[Math.floor(Math.random() * WORDS.length)]}', { voice: 'orion' })
 let frames = 0, events = 0, taps = 0
 onFrame(f => { frames++; window.__stage = { frames, events, taps, cycle: f.cycle, playing: f.playing } })
 onEvent(s("bd*4"), () => { events++ })
 onTap(() => { taps++ })
-stack(s("bd*4").gain(0), line.mask("<0 1>"))`;
+stack(s("bd*4").gain(0), line.mask("<1 0>"))`;
 
 const LEVEL_TAP = `
 (() => {
@@ -50,7 +56,8 @@ const LEVEL_TAP = `
           a.getFloatTimeDomainData(buf);
           let peak = 0;
           for (const v of buf) peak = Math.max(peak, Math.abs(v));
-          globalThis.__levels.push([this.currentTime, peak]);
+          // Binned by the widget's own audible cycle when it has one.
+          globalThis.__levels.push([this.currentTime, peak, typeof globalThis.cycle === 'function' ? globalThis.cycle() : NaN]);
         }, 25);
         t = g;
         taps.set(this, t);
@@ -120,7 +127,9 @@ if (process.argv.includes("--gallery")) {
     diff /= a.length;
     const lit = mean > 8 && diff > 0.5;
     const real = errors.filter((e) => !/favicon|DevTools|Download the React/i.test(e));
-    const good = !/error/i.test(status) && peak > 0.02 && lit && real.length === 0;
+    // "Playing" — not merely "no error": DUET once read "Ready" over audible
+    // music because the report ran before the held start took effect.
+    const good = /^Playing/.test(status) && peak > 0.02 && lit && real.length === 0;
     (good ? ok : fail)(`${piece.id}: status "${status}", peak ${peak.toFixed(2)}, stage ${lit ? "moving" : "still/dark"} (mean ${mean.toFixed(1)}, change ${diff.toFixed(2)})` +
       (tts.length ? `, tts ${tts.join(",")}` : "") + (real.length ? `, errors: ${real.slice(0, 2).join(" | ")}` : ""));
     await context.close();
@@ -173,25 +182,21 @@ else {
 }
 ttsRequests.includes(200) ? ok(`GET /tts served the line (${ttsRequests.join(", ")})`) : fail(`no successful /tts request (${ttsRequests.join(", ") || "none"})`);
 
-// Loudness per cycle, from the tapped AudioContext's own clock.
+// Loudness per cycle, binned by the widget's cycle() — so a line dropped in
+// cycle 0 shows as a quiet cycle 0, not as "the first loud cycle".
 const levels = (await frame()?.evaluate(() => globalThis.__levels)) ?? [];
-const loud = levels.filter(([, p]) => p > 0.02);
-if (!loud.length) fail("no audio above -34 dBFS at all — the line never sounded");
-else {
-  const t0 = loud[0][0];
-  const byCycle = new Map();
-  for (const [t, p] of levels) {
-    const c = Math.floor((t - t0) * CPS + 1e-3);
-    if (c >= 0) byCycle.set(c, Math.max(byCycle.get(c) ?? 0, p));
-  }
-  const row = [...byCycle].sort((a, b) => a[0] - b[0]).map(([c, p]) => `${c}:${p.toFixed(2)}`);
-  console.log(`  peak by cycle since first sound: ${row.join("  ")}`);
-  // The voice speaks every other cycle: cycle 0 (its first) loud, 1 quiet, 2 loud.
-  const [c0, c1, c2] = [byCycle.get(0) ?? 0, byCycle.get(1) ?? 0, byCycle.get(2) ?? 0];
-  c0 > 0.05 && c2 > 0.05 && c1 < c0 / 4
-    ? ok("say() is audible on its cycles and silent between — on the beat, in the mix")
-    : fail(`speech pattern not alternating (c0 ${c0.toFixed(3)}, c1 ${c1.toFixed(3)}, c2 ${c2.toFixed(3)})`);
+const byCycle = new Map();
+for (const [, p, c] of levels) {
+  if (!Number.isFinite(c) || c < 0) continue;
+  const k = Math.floor(c + 1e-3);
+  byCycle.set(k, Math.max(byCycle.get(k) ?? 0, p));
 }
+const row = [...byCycle].sort((a, b) => a[0] - b[0]).map(([c, p]) => `${c}:${p.toFixed(2)}`);
+console.log(`  peak by cycle: ${row.join("  ")}`);
+const [c0, c1, c2] = [byCycle.get(0) ?? 0, byCycle.get(1) ?? 0, byCycle.get(2) ?? 0];
+c0 > 0.05 && c2 > 0.05 && c1 < c0 / 4
+  ? ok("say() speaks in bar 0 of the first play, and on the beat after — silent between")
+  : fail(`speech not on its cycles (c0 ${c0.toFixed(3)}, c1 ${c1.toFixed(3)}, c2 ${c2.toFixed(3)})`);
 
 // Re-evaluate the same piece: its loop must REPLACE the old one, not join it.
 const before = await frame().evaluate(() => window.__stage.frames);
