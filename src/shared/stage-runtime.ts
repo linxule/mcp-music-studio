@@ -140,6 +140,15 @@ const MAX_DT = 0.25;
  */
 const TAP_MARGIN_SECONDS = 0.03;
 
+/**
+ * How far past the audible playhead an unknown scheduler may already have
+ * committed events: latency 0.1 s + the clock worker's lookahead 0.15 s
+ * (interval + overlap, @strudel/core clockworker.js) + one 0.05 s query chunk,
+ * rounded up. An over-estimate only delays a tapped note a little; an
+ * under-estimate loses it.
+ */
+const UNKNOWN_HORIZON_SECONDS = 0.35;
+
 /** Number(x) when it's a finite number (a Fraction's valueOf), else undefined. */
 function finite(value: unknown): number | undefined {
   if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
@@ -189,7 +198,7 @@ export interface Stage {
   commit(): void;
   /** It failed (or was superseded): drop its registrations, keep the old ones. */
   rollback(): void;
-  /** Teardown: end everything. */
+  /** Teardown: end everything, for good — later registrations are ignored. */
   stop(): void;
   /** How many registrations are live (tests, diagnostics). */
   size(): number;
@@ -202,6 +211,10 @@ export function createStage(env: StageEnv): Stage {
   let lastMs: number | null = null;
   let tapOff: (() => void) | null = null;
   let lastCycle = 0;
+  // After teardown nothing may register again: an evaluation still in flight
+  // when the widget was torn down would otherwise land its onFrame in `active`
+  // (pending is gone) and start a loop nobody can stop.
+  let disposed = false;
 
   const cycle = (): number => {
     const c = env.audibleCycle();
@@ -271,10 +284,12 @@ export function createStage(env: StageEnv): Stage {
     const heard = cycle();
     const horizon = env.scheduledUntil?.();
     const cps = env.cps?.() ?? 0.5;
-    // Unknown horizon: assume the scheduler looks a generous 0.2 s ahead.
+    // Unknown horizon (NeoCyclist keeps none): what you hear trails scheduling
+    // time by `latency` (0.1 s), and the clock worker queries interval +
+    // overlap (0.15 s) past that, in chunks — so assume UNKNOWN_HORIZON_SECONDS.
     const from = (horizon !== null && horizon !== undefined && Number.isFinite(horizon)
       ? Math.max(horizon, heard)
-      : heard + 0.2 * cps) + TAP_MARGIN_SECONDS * cps;
+      : heard + UNKNOWN_HORIZON_SECONDS * cps) + TAP_MARGIN_SECONDS * cps;
     return Math.ceil(from * n - 1e-9) / n;
   };
 
@@ -302,6 +317,7 @@ export function createStage(env: StageEnv): Stage {
   };
 
   const add = (reg: Registration): (() => void) => {
+    if (disposed) return () => undefined;
     (pending ?? active).add(reg);
     sync();
     return () => {
@@ -365,6 +381,7 @@ export function createStage(env: StageEnv): Stage {
       sync();
     },
     stop() {
+      disposed = true;
       active = new Set();
       pending = null;
       env.cancelSpeech?.();

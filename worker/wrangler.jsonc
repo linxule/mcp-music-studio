@@ -19,6 +19,13 @@
   ],
   // Workers AI renders say() lines (GET /tts, src/shared/tts.ts).
   "ai": { "binding": "AI", "remote": true },
+  // GET /tts spends money on every cache MISS. These gate misses before the
+  // KV hourly budget, which is best-effort (non-atomic, fails open if KV is
+  // down): per address, and across everyone, per Cloudflare location.
+  "ratelimits": [
+    { "name": "TTS_IP_LIMITER", "namespace_id": "7101", "simple": { "limit": 12, "period": 60 } },
+    { "name": "TTS_GLOBAL_LIMITER", "namespace_id": "7102", "simple": { "limit": 240, "period": 60 } }
+  ],
   "kv_namespaces": [
     {
       "binding": "DOCS_CACHE",

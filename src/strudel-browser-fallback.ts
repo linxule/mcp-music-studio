@@ -602,18 +602,26 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     if (ed.__stageHooked) return;
     ed.__stageHooked = true;
     var originalEvaluate = ed.evaluate.bind(ed);
+    // One evaluation at a time: they share one pending set of registrations,
+    // so two in flight would commit each other's (Play pressed during a slow
+    // evaluation, or Play plus the editor shortcut).
+    var evaluationTail = Promise.resolve();
     // An instance property, so Play AND the editor's own shortcut both pass here.
-    ed.evaluate = async function (shouldPlay) {
-      stage.begin();
-      try {
-        await originalEvaluate(shouldPlay);
-      } catch (e) {
-        stage.rollback();
-        throw e;
-      }
-      var st = (ed.repl && ed.repl.state) || {};
-      if (st.evalError || st.schedulerError) stage.rollback();
-      else stage.commit();
+    ed.evaluate = function (shouldPlay) {
+      var run = evaluationTail.then(async function () {
+        stage.begin();
+        try {
+          await originalEvaluate(shouldPlay);
+        } catch (e) {
+          stage.rollback();
+          throw e;
+        }
+        var st = (ed.repl && ed.repl.state) || {};
+        if (st.evalError || st.schedulerError) stage.rollback();
+        else stage.commit();
+      });
+      evaluationTail = run.catch(function () {});
+      return run;
     };
   }
   // stage:end

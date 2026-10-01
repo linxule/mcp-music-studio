@@ -66,3 +66,44 @@ describe("share page stage runtime", () => {
     expect(html).toContain("Object.assign(globalThis, stage.globals);");
   });
 });
+
+describe("share page evaluate wrapper (0.7.0 gauntlet)", () => {
+  it("serialises evaluations, so one never commits another's registrations", async () => {
+    const html = generateStrudelPlayerHtml({ code: 's("bd")' } as any);
+    const start = html.indexOf("function hookStage(ed) {");
+    const end = html.indexOf("// stage:end");
+    const source = html.slice(start, end);
+    const log: string[] = [];
+    let current = "";
+    const stage = {
+      begin: () => log.push(`begin`),
+      commit: () => log.push(`commit:${current}`),
+      rollback: () => log.push(`rollback:${current}`),
+    };
+    const releases: Array<() => void> = [];
+    const ed: any = {
+      repl: { state: {} as Record<string, unknown> },
+      evaluate: (which: string) =>
+        new Promise<void>((resolve) => {
+          releases.push(() => {
+            current = which;
+            ed.repl.state = which === "B" ? { evalError: new Error("broken") } : {};
+            resolve();
+          });
+        }),
+    };
+    const ctx = vm.createContext({ stage, Promise });
+    vm.runInContext(`${source}; hookStage(ed)`, Object.assign(ctx, { ed }));
+    const a = ed.evaluate("A");
+    const b = ed.evaluate("B");
+    await new Promise((r) => setTimeout(r, 0));
+    // Only A has started: B waits its turn instead of sharing A's pending set.
+    expect(releases).toHaveLength(1);
+    releases[0]();
+    await a;
+    await new Promise((r) => setTimeout(r, 0));
+    releases[1]();
+    await b;
+    expect(log).toEqual(["begin", "commit:A", "begin", "rollback:B"]);
+  });
+});

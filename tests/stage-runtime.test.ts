@@ -272,3 +272,30 @@ describe("guardBrowserSpeech", () => {
     expect(() => guardBrowserSpeech(undefined, undefined).unlock()).not.toThrow();
   });
 });
+
+describe("review fixes (0.7.0 gauntlet)", () => {
+  it("nothing registers after teardown — an evaluation still in flight can't restart a loop", () => {
+    const h = harness();
+    h.stage.begin();
+    h.stage.stop(); // the host tore the widget down mid-evaluation
+    h.stage.globals.onFrame(() => {});
+    h.stage.globals.onTap(() => {});
+    h.stage.rollback();
+    expect(h.stage.size()).toBe(0);
+    expect(h.framesQueued()).toBe(0);
+    expect(h.listening()).toBe(false);
+  });
+
+  it("an unknown horizon (NeoCyclist) still lands past the scheduler's lookahead", () => {
+    // Codex measured NeoCyclist committed through 0.60 with the playhead at
+    // ~0.45 (cps 0.5): heard + 0.35 s·cps + margin clears it.
+    const h = harness({ cps: () => 0.5 });
+    let slot = 0;
+    h.stage.globals.onTap((t) => {
+      slot = t.next(16);
+    });
+    h.frame(0.45);
+    h.tap(0.5, 0.5);
+    expect(slot).toBeGreaterThan(0.6);
+  });
+});

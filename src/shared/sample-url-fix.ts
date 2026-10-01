@@ -31,6 +31,11 @@ export function installSampleUrlFix(scope: { fetch?: typeof fetch } & Record<str
   const wrapped = function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
     if (typeof input === "string") input = fixSampleUrl(input);
     else if (input instanceof URL) input = new URL(fixSampleUrl(input.href));
+    else if (typeof Request !== "undefined" && input instanceof Request) {
+      const fixed = fixSampleUrl(input.url);
+      // A Request carries method/headers/signal; keep them, change only the URL.
+      if (fixed !== input.url) input = new Request(fixed, input);
+    }
     return original.call(this ?? scope, input, init);
   } as typeof fetch & { __sampleUrlFix?: boolean };
   wrapped.__sampleUrlFix = true;

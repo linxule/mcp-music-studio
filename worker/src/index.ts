@@ -114,7 +114,12 @@ type Env = {
   CONTEXT7_API_KEY: string;
   /** Workers AI — renders say() lines (GET /tts). */
   AI?: { run(model: string, input: Record<string, unknown>): Promise<unknown> };
+  /** Cloudflare rate-limit bindings for /tts misses (see wrangler.jsonc). */
+  TTS_IP_LIMITER?: RateLimiterBinding;
+  TTS_GLOBAL_LIMITER?: RateLimiterBinding;
 };
+
+type RateLimiterBinding = { limit(options: { key: string }): Promise<{ success: boolean }> };
 
 // =============================================================================
 // Analytics
@@ -891,6 +896,29 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
     }
   } catch {
     /* KV unwell — render instead */
+  }
+  // A miss costs a model call. First gate: Cloudflare's rate-limit bindings
+  // (per address, then everyone) — they hold when KV is down or racing, which
+  // the KV hourly budget below does not (non-atomic read/write; fails open).
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  const tooMany = (why: string) =>
+    new Response(why, {
+      status: 429,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "retry-after": "60",
+        "access-control-allow-origin": "*",
+      },
+    });
+  try {
+    if (env.TTS_IP_LIMITER && !(await env.TTS_IP_LIMITER.limit({ key: ip })).success) {
+      return tooMany("Too many new spoken lines from this address. Try again in a minute.");
+    }
+    if (env.TTS_GLOBAL_LIMITER && !(await env.TTS_GLOBAL_LIMITER.limit({ key: "all" })).success) {
+      return tooMany("Speech rendering is busy. Try again in a minute.");
+    }
+  } catch {
+    return tooMany("Speech rendering is busy. Try again in a minute.");
   }
   const limited = await enforceRateLimit(env, request, {
     key: ttsRateLimitKey,

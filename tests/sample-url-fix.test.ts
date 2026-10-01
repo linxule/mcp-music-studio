@@ -28,3 +28,14 @@ describe("VCSL comma paths (silent in Chromium)", () => {
     expect(seen[2]).toBe("https://example.com/a,b");
   });
 });
+
+describe("Request inputs", () => {
+  it("rewrites a Request's URL and keeps its init", async () => {
+    let seen: Request | undefined;
+    const scope: any = { fetch: async (input: any) => { seen = input; return new Response(""); } };
+    installSampleUrlFix(scope);
+    await scope.fetch(new Request(STEINWAY, { headers: { "x-test": "1" } }));
+    expect(seen!.url).toContain("cdn.jsdelivr.net");
+    expect(seen!.headers.get("x-test")).toBe("1");
+  });
+});

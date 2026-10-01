@@ -102,3 +102,53 @@ describe("GET /tts", () => {
     expect(await res.text()).toMatch(/capacity/);
   });
 });
+
+describe("GET /tts — the rate-limit bindings gate misses (0.7.0 gauntlet)", () => {
+  function limiter(budget: number) {
+    const used = new Map<string, number>();
+    return {
+      used,
+      limit: async ({ key }: { key: string }) => {
+        const n = (used.get(key) ?? 0) + 1;
+        used.set(key, n);
+        return { success: n <= budget };
+      },
+    };
+  }
+
+  it("concurrent misses can't race past the binding the way they race KV", async () => {
+    const ai = fakeAi();
+    const ip = limiter(12);
+    const env = { DOCS_CACHE: fakeKv(), AI: ai, TTS_IP_LIMITER: ip, TTS_GLOBAL_LIMITER: limiter(240) };
+    const results = await Promise.all(
+      Array.from({ length: 32 }, (_, i) => get(line(`burst ${i}`), env, "198.51.100.1")),
+    );
+    expect(results.filter((r) => r.status === 200)).toHaveLength(12);
+    expect(results.filter((r) => r.status === 429)).toHaveLength(20);
+    expect(ai.calls).toHaveLength(12);
+  });
+
+  it("still limits when KV is down (the KV budget fails open; the binding doesn't)", async () => {
+    const ai = fakeAi();
+    const brokenKv = {
+      get: async () => { throw new Error("kv down"); },
+      put: async () => { throw new Error("kv down"); },
+    };
+    const env = { DOCS_CACHE: brokenKv, AI: ai, TTS_IP_LIMITER: limiter(12), TTS_GLOBAL_LIMITER: limiter(240) };
+    let ok = 0;
+    for (let i = 0; i < 20; i++) if ((await get(line(`down ${i}`), env, "198.51.100.2")).status === 200) ok++;
+    expect(ok).toBe(12);
+  });
+
+  it("a global ceiling holds across addresses, and cache hits never touch the bindings", async () => {
+    const global = limiter(3);
+    const kv = fakeKv();
+    const env = { DOCS_CACHE: kv, AI: fakeAi(), TTS_IP_LIMITER: limiter(100), TTS_GLOBAL_LIMITER: global };
+    const statuses = [];
+    for (let i = 0; i < 5; i++) statuses.push((await get(line(`g ${i}`), env, `198.51.100.${10 + i}`)).status);
+    expect(statuses).toEqual([200, 200, 200, 429, 429]);
+    await Promise.all(waits);
+    expect((await get(line("g 0"), env, "198.51.100.99")).status).toBe(200);
+    expect(global.used.get("all")).toBe(5);
+  });
+});
