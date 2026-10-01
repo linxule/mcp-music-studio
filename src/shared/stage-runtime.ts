@@ -172,7 +172,9 @@ export function stageEvent(hap: any, begin: number): StageEvent {
   else midi = finite(note);
   return {
     cycle: begin,
-    duration: finite(hap?.duration) ?? finite(hap?.whole?.end) ?? 0,
+    duration:
+      finite(hap?.duration) ??
+      (finite(hap?.whole?.end) !== undefined ? finite(hap?.whole?.end)! - begin : 0),
     note,
     midi,
     s: obj?.s,
@@ -223,13 +225,18 @@ export function createStage(env: StageEnv): Stage {
   };
 
   const call = (reg: Registration, api: string, arg: unknown): void => {
-    try {
-      (reg.fn as (a: unknown) => void)(arg);
-    } catch (error) {
+    const fail = (error: unknown) => {
       if (!reg.failed) {
         reg.failed = true;
         env.reportError(api, error);
       }
+    };
+    try {
+      const result = (reg.fn as (a: unknown) => unknown)(arg) as { then?: unknown } | undefined;
+      // An async callback throws by rejecting — report that the same way.
+      if (result && typeof result.then === "function") Promise.resolve(result).catch(fail);
+    } catch (error) {
+      fail(error);
     }
   };
 

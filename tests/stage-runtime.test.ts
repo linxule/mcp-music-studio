@@ -299,3 +299,21 @@ describe("review fixes (0.7.0 gauntlet)", () => {
     expect(slot).toBeGreaterThan(0.6);
   });
 });
+
+describe("async callbacks and event duration (Kimi, 0.7.0 gauntlet)", () => {
+  it("reports an async onFrame's rejection once", async () => {
+    const h = harness();
+    h.stage.globals.onFrame(async () => {
+      throw new Error("later");
+    });
+    h.frame(0.1);
+    h.frame(0.2);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.errors).toHaveLength(1);
+  });
+
+  it("duration falls back to whole.end − begin, not the end position", async () => {
+    const { stageEvent } = await import("../src/shared/stage-runtime");
+    expect(stageEvent({ whole: { begin: 3, end: 3.5 }, value: {} }, 3).duration).toBe(0.5);
+  });
+});

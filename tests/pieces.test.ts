@@ -87,3 +87,11 @@ describe("the stage runtime in the validator", () => {
     expect(result.error?.message).toMatch(/not one of/);
   });
 });
+
+describe("async stage callbacks in the validator (Kimi, 0.7.0 gauntlet)", () => {
+  it("an async onFrame that rejects is a warning, not silence and not a crash", async () => {
+    const result = await validateStrudelInProcess(`onFrame(async f => { throw new Error('boom') }); s("bd*2")`, { timeoutMs: 8000 });
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual([expect.stringMatching(/onFrame callback threw on a test frame: boom/)]);
+  });
+});

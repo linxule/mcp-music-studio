@@ -24,3 +24,14 @@ describe("error lines in the code the model sent", () => {
     expect(mapLineToSent("setcps(0.5);\n" + sent, sent, 1)).toBeNull();
   });
 });
+
+describe("ambiguous insertions (Kimi, 0.7.0 gauntlet)", () => {
+  it("makes no claim when an inserted line duplicates one of the piece's own", () => {
+    const own = ["setcps(0.5);", "stack(", '  s("bd"))),', ")"].join("\n");
+    const shown = "setcps(0.5);\n" + own;
+    // Line 4 of shown is line 3 of own — but which setcps was inserted is
+    // ambiguous only for line 1/2; the rest still maps.
+    expect(mapLineToSent(shown, own, 4)).toBe(3);
+    expect(mapLineToSent(shown, own, 1)).toBeNull();
+  });
+});

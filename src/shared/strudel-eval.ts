@@ -366,16 +366,23 @@ const SANDBOX_BROWSER = () => {
  * warning, not a failure: in the widget it is reported and skipped, and the
  * music plays on. onTap callbacks are never called — a tap is the user's.
  */
-const SANDBOX_STAGE = (checks: Array<() => void>) => {
+const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknown>>) => {
   const requireFunction = (api: string, fn: unknown) => {
     if (typeof fn !== "function") throw new TypeError(`${api} needs a function, got ${typeof fn}`);
   };
-  const testCall = (api: string, fn: (arg: unknown) => void, arg: () => unknown) =>
+  const warn = (api: string, err: unknown) =>
+    active?.warnings.push(`${api} callback threw on a test frame: ${(err as Error)?.message ?? String(err)}`);
+  const testCall = (api: string, fn: (arg: unknown) => unknown, arg: () => unknown) =>
     checks.push(() => {
       try {
-        fn(arg());
+        const result = fn(arg()) as { then?: unknown } | undefined;
+        // An async callback throws by REJECTING: catch that too, or the
+        // warning is silently lost (Kimi, 0.7.0 gauntlet).
+        if (result && typeof result.then === "function") {
+          settling.push(Promise.resolve(result).catch((err) => warn(api, err)));
+        }
       } catch (err) {
-        active?.warnings.push(`${api} callback threw on a test frame: ${(err as Error)?.message ?? String(err)}`);
+        warn(api, err);
       }
     });
   return {
@@ -658,15 +665,21 @@ export async function evalStrudelSandboxed(
     // the Hydra no-ops). `console` is not a Strudel name but guide examples
     // use it; route it to the outer one, which runTraced is capturing.
     const stageChecks: Array<() => void> = [];
+    const stageSettling: Array<Promise<unknown>> = [];
     const sandbox = Object.assign(Object.create(null), C.strudelScope, {
       console: { log: console.log, info: console.info, warn: console.warn, error: console.error },
       ...SANDBOX_BROWSER(),
-      ...SANDBOX_STAGE(stageChecks),
+      ...SANDBOX_STAGE(stageChecks, stageSettling),
       document: SANDBOX_DOCUMENT(),
       __musicStudioStageChecks: () => {
         for (const check of stageChecks.splice(0)) check();
       },
     });
+    // codeGeneration only governs THIS context's eval/Function. Every outer-
+    // realm function in the sandbox (all of Strudel's, console.log, the inert()
+    // stand-ins) still leads to the outer Function via .constructor — measured
+    // in 0.7.0. The boundary is the forked env-less child + SIGKILL
+    // (strudel-validate-host.ts), never this vm.
     const context = vm.createContext(sandbox, {
       codeGeneration: { strings: false, wasm: false },
     });
@@ -685,6 +698,13 @@ export async function evalStrudelSandboxed(
       vm.runInContext("__musicStudioStageChecks()", context, {
         timeout: Math.max(50, timeoutMs - (Date.now() - started)),
       });
+      // Async callbacks settle after the checks return; give them a moment.
+      if (stageSettling.length) {
+        await Promise.race([
+          Promise.allSettled(stageSettling),
+          new Promise((resolve) => setTimeout(resolve, 250)),
+        ]);
+      }
     }
     return finishEvaluation(value);
   } catch (err) {

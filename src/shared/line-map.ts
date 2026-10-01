@@ -17,14 +17,28 @@ export function mapLineToSent(shown: string, sent: string, line: number): number
   const a = shown.split("\n");
   const b = sent.split("\n");
   if (a.length < b.length) return null;
+  // Align from the front AND from the back. When an inserted line is
+  // textually identical to one of the piece's own (a bpm `setcps(…);` the
+  // piece already had), the two alignments disagree — and then no mapping is
+  // honest, so make no claim rather than a confident one-line-off one.
+  const forward = align(a, b);
+  const backward = align([...a].reverse(), [...b].reverse());
+  if (!forward || !backward) return null;
+  const f = forward[line - 1] ?? null;
+  const r = backward[a.length - line];
+  const fromBack = r === null || r === undefined ? null : b.length + 1 - r;
+  return f !== null && f === fromBack ? f : null;
+}
+
+/** Greedy alignment of `a` (b with whole lines inserted) onto `b`; 1-based b lines, null for inserted. */
+function align(a: string[], b: string[]): Array<number | null> | null {
   const map: Array<number | null> = [];
   let j = 0;
   for (let i = 0; i < a.length; i++) {
     if (j < b.length && a[i] === b[j]) map.push(++j);
     else map.push(null);
   }
-  if (j !== b.length) return null;
-  return map[line - 1] ?? null;
+  return j === b.length ? map : null;
 }
 
 /**

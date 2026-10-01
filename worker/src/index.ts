@@ -929,7 +929,12 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
     limited.headers.set("access-control-allow-origin", "*");
     return limited;
   }
-  if (!env.AI) return new Response("Speech rendering is unavailable.", { status: 503 });
+  if (!env.AI) {
+    return new Response("Speech rendering is unavailable.", {
+      status: 503,
+      headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
+    });
+  }
   let bytes: Uint8Array;
   try {
     bytes = await audioBytes(
@@ -942,7 +947,10 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
     });
   }
   if (bytes.byteLength === 0 || bytes.byteLength > TTS_MAX_BYTES) {
-    return new Response("Speech rendering returned an unusable clip.", { status: 502 });
+    return new Response("Speech rendering returned an unusable clip.", {
+      status: 502,
+      headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
+    });
   }
   ctx.waitUntil(
     (async () => {
