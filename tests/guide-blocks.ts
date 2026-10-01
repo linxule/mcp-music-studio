@@ -33,6 +33,11 @@ const START_TOKENS = [
   "let ",
   "const ",
   "await initHydra",
+  // The stage runtime (topics stage/film/interactive): a callback body is part
+  // of its example, never the start of one.
+  "onFrame(",
+  "onEvent(",
+  "onTap(",
 ];
 
 /**
@@ -131,6 +136,20 @@ function stripProse(code: string): string {
 }
 
 const hasDeclaration = (code: string) => /^\s*(let|const|var)\s/m.test(code);
+
+/**
+ * The audiovisual topics build a piece in steps: declare a canvas, then
+ * `onFrame(...)` draws on it, `s1.init(...)` feeds it to Hydra, `hook.s(...)`
+ * plays the declared pattern. Those lines continue the example when the block
+ * so far declared what they use — otherwise each step would be cut off as an
+ * example of its own, and none of them would run.
+ */
+const STAGE_STEP = /^(onFrame|onEvent|onTap|src|s[0-3]\.init)\(/;
+const declaredNames = (code: string) =>
+  [...code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
+const extendsDeclared = (code: string, line: string) =>
+  hasDeclaration(code) &&
+  (STAGE_STEP.test(line) || declaredNames(code).some((name) => new RegExp(`^${name.replace(/\$/g, "\\$")}\\b`).test(line)));
 const isOnlyPreamble = (lines: string[]) =>
   lines.every(
     (l) =>
@@ -190,7 +209,7 @@ export function extractBlocks(topic: string, text: string): GuideBlock[] {
         cur.push(line);
         continue;
       }
-      if (depth > 0 || continues(line) || startsBlock(line)) {
+      if (depth > 0 || continues(line) || startsBlock(line) || extendsDeclared(cur.join("\n"), line)) {
         cur.push(line);
         continue;
       }
@@ -221,6 +240,10 @@ const DECLARATION = /^(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*.+$/;
 function withTopicDeclarations(blocks: GuideBlock[], text: string): GuideBlock[] {
   const decls = new Map<string, string>();
   for (const line of text.split("\n")) {
+    // Top-level declarations only: an indented `const bar = …` inside an
+    // onFrame body is that callback's local, not a recipe name to share (it
+    // used to be glued onto every block that merely said `bar:`).
+    if (/^\s/.test(line)) continue;
     const trimmed = line.trim();
     const m = DECLARATION.exec(trimmed);
     if (m && depthOf(trimmed) === 0) decls.set(m[1], trimmed);

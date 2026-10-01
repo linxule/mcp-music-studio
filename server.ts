@@ -1,3 +1,4 @@
+import type { GALLERY_IDS } from "./src/strudel-gallery.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   CallToolResult,
@@ -51,7 +52,8 @@ import {
   GET_MUSIC_GUIDE_DESCRIPTION,
   GET_MUSIC_GUIDE_TOPIC_DESCRIPTION,
   GET_STRUDEL_GUIDE_DESCRIPTION,
-  GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION,
+  getStrudelGuideInputSchema,
+  buildStrudelGuideResult,
   SEARCH_DOCS_DESCRIPTION,
   searchDocsInputSchema,
   searchMusicDocs,
@@ -134,12 +136,10 @@ export async function handleConvertAbcToStrudel(
   return buildConvertAbcResult(args, parseOnly);
 }
 
-export async function handleGetStrudelGuide({
-  topic,
-}: {
-  topic: StrudelGuideTopic;
-}): Promise<CallToolResult> {
-  return { content: [{ type: "text", text: STRUDEL_GUIDES[topic] }] };
+export async function handleGetStrudelGuide(
+  args: { topic: StrudelGuideTopic; piece?: (typeof GALLERY_IDS)[number] },
+): Promise<CallToolResult> {
+  return buildStrudelGuideResult(args);
 }
 
 export type RenderMode = "auto" | "html" | "browser";
@@ -483,11 +483,7 @@ export function createServer(options?: ServerOptions): McpServer {
     {
       title: "Strudel Reference Guide",
       description: GET_STRUDEL_GUIDE_DESCRIPTION,
-      inputSchema: z.object({
-        topic: z
-          .enum(STRUDEL_GUIDE_TOPICS)
-          .describe(GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION),
-      }),
+      inputSchema: getStrudelGuideInputSchema,
       annotations: GUIDE_TOOL_ANNOTATIONS,
     },
     handleGetStrudelGuide,

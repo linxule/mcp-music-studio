@@ -32,7 +32,10 @@ describe("play-live-pattern handler", () => {
     expect(result.content[0]?.text).toBe(
       "Strudel pattern ready — parses OK: 2 events/cycle, sounds: bd sd (all registered).\n" +
         "It plays in an editable REPL widget in MCP-app hosts " +
-        "(e.g. Claude Desktop, claude.ai). The server cannot tell whether a player rendered: if the user " +
+        "(e.g. Claude Desktop, claude.ai). After each run the widget reports what actually happened — " +
+        "playing, an error, silence, missing sounds, a callback that threw — into the host's model context; " +
+        "if your host has a tool to read widget context (claude.ai: read_widget_context), read it before " +
+        "assuming the piece played. The server cannot tell whether a player rendered: if the user " +
         "reports no player, this client can't play it inline and nothing has played yet. " +
         "A stored browser link can be created with create-share-link only if the user asks to share or store this piece online.",
     );
@@ -43,7 +46,10 @@ describe("play-live-pattern handler", () => {
 
     expect(result.content[0]?.text).toBe(
       "Strudel pattern ready. It plays in an editable REPL widget in MCP-app hosts " +
-        "(e.g. Claude Desktop, claude.ai). The server cannot tell whether a player rendered: if the user " +
+        "(e.g. Claude Desktop, claude.ai). After each run the widget reports what actually happened — " +
+        "playing, an error, silence, missing sounds, a callback that threw — into the host's model context; " +
+        "if your host has a tool to read widget context (claude.ai: read_widget_context), read it before " +
+        "assuming the piece played. The server cannot tell whether a player rendered: if the user " +
         "reports no player, this client can't play it inline and nothing has played yet. " +
         "A stored browser link can be created with create-share-link only if the user asks to share or store this piece online.",
     );
@@ -74,8 +80,11 @@ describe("get-strudel-guide handler", () => {
     }
   });
 
-  it("covers all 9 topics", () => {
-    expect(STRUDEL_GUIDE_TOPICS).toHaveLength(9);
+  it("covers all 15 topics — music, then the audiovisual ones (0.7)", () => {
+    expect(STRUDEL_GUIDE_TOPICS).toHaveLength(15);
+    for (const topic of ["stage", "film", "interactive", "craft", "debugging", "gallery"]) {
+      expect(STRUDEL_GUIDE_TOPICS).toContain(topic);
+    }
     expect(STRUDEL_GUIDE_TOPICS).toContain("visuals");
     expect(STRUDEL_GUIDE_TOPICS).toContain("hydra");
   });

@@ -67,6 +67,68 @@ const fail = (msg) => {
 };
 const ok = (msg) => console.log(`✓ ${msg}`);
 
+// --gallery: every gallery piece through the real widget instead — it must
+// evaluate without error, keep drawing, and make sound.
+if (process.argv.includes("--gallery")) {
+  const { STRUDEL_GALLERY } = await import("../src/strudel-gallery.ts");
+  const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+  for (const piece of STRUDEL_GALLERY) {
+    const context = await browser.newContext({ viewport: { width: 1200, height: 900 } });
+    await context.addInitScript(LEVEL_TAP);
+    const tts = [];
+    await context.route("https://music-studio.linxule.com/tts**", async (route) => {
+      const url = new URL(route.request().url());
+      const res = await fetch(`${TTS_ORIGIN}/tts${url.search}`);
+      tts.push(res.status);
+      await route.fulfill({ status: res.status, headers: Object.fromEntries(res.headers), body: Buffer.from(await res.arrayBuffer()) });
+    });
+    const page = await context.newPage();
+    const errors = [];
+    page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await page.goto(HARNESS);
+    await page.waitForFunction(() => document.getElementById("state")?.textContent?.startsWith("connected"), null, { timeout: 30000 });
+    await page.fill("#args", JSON.stringify({ code: piece.code, autoplay: true }));
+    await page.click("#send");
+    const frame = () => page.frames().find((f) => f.url().includes("/widgets/"));
+    for (let i = 0; i < 100 && !frame(); i++) await sleep(100);
+    await page.mouse.click(600, 700);
+    await sleep(9000);
+    const status = await frame().evaluate(() => document.getElementById("status")?.textContent ?? "");
+    const levels = (await frame().evaluate(() => globalThis.__levels)) ?? [];
+    const peak = levels.reduce((m, [, p]) => Math.max(m, p), 0);
+    // Is the stage drawing? A screenshot of the frame (a WebGL canvas reads
+    // back black without preserveDrawingBuffer), decoded in the page; then a
+    // second one a beat later must DIFFER — a lit but frozen stage fails.
+    const shoot = async () => (await (await page.$("iframe")).screenshot()).toString("base64");
+    const stats = (b64) => page.evaluate(async (data) => {
+      const img = new Image();
+      img.src = "data:image/png;base64," + data;
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = 96; c.height = 54;
+      const g = c.getContext("2d");
+      g.drawImage(img, 0, 0, 96, 54);
+      return Array.from(g.getImageData(0, 0, 96, 54).data);
+    }, b64);
+    const a = await stats(await shoot());
+    await sleep(700);
+    const b = await stats(await shoot());
+    const mean = a.reduce((n, v) => n + v, 0) / a.length;
+    let diff = 0;
+    for (let k = 0; k < a.length; k++) diff += Math.abs(a[k] - b[k]);
+    diff /= a.length;
+    const lit = mean > 8 && diff > 0.5;
+    const real = errors.filter((e) => !/favicon|DevTools|Download the React/i.test(e));
+    const good = !/error/i.test(status) && peak > 0.02 && lit && real.length === 0;
+    (good ? ok : fail)(`${piece.id}: status "${status}", peak ${peak.toFixed(2)}, stage ${lit ? "moving" : "still/dark"} (mean ${mean.toFixed(1)}, change ${diff.toFixed(2)})` +
+      (tts.length ? `, tts ${tts.join(",")}` : "") + (real.length ? `, errors: ${real.slice(0, 2).join(" | ")}` : ""));
+    await context.close();
+  }
+  await browser.close();
+  process.exit(process.exitCode ?? 0);
+}
+
 const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
 const context = await browser.newContext({ viewport: { width: 1200, height: 900 } });
 await context.addInitScript(LEVEL_TAP);

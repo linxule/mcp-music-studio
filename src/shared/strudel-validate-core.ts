@@ -42,7 +42,7 @@
 // every pattern against it, and the validation child bundles it), so it lives
 // under src/. There is exactly one copy on purpose — a second would drift from
 // the one the guide tests assert against, which is the whole point of having it.
-import { TTS_SAMPLE_PREFIX } from "./tts";
+import { TTS_SAMPLE_PREFIX } from "./tts.js";
 import strudelSounds from "./data/strudel-sounds.json" with { type: "json" };
 
 // Result shapes live in a leaf module so tool-defs.ts (shared with the

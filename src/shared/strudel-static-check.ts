@@ -11,7 +11,7 @@
 
 // @ts-ignore -- no types published
 import { transpiler } from "@strudel/transpiler";
-import type { StrudelValidationError } from "./strudel-validation-types";
+import type { StrudelValidationError } from "./strudel-validation-types.js";
 
 /** A syntax or mini-notation error with its position, or null when the code parses. */
 export function staticCheckStrudel(code: string): StrudelValidationError | null {

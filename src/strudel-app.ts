@@ -25,6 +25,7 @@ import { hapNumber } from "./shared/hap-number";
 import { AUDIO_ANALYSER, bandLevels, stepBands } from "./shared/audio-bands";
 import { injectTempo } from "./shared/tempo";
 import { createBrowserStageEnv, createStage } from "./shared/stage-runtime";
+import { installSampleUrlFix } from "./shared/sample-url-fix";
 import { sourceLineNote } from "./shared/line-map";
 import { DEFAULT_SHARE_ORIGIN } from "./shared/share-url";
 import { applyVisualPreset } from "./shared/visual-presets";
@@ -391,6 +392,10 @@ function syncAudioState(): void {
 // (src/shared/stage-runtime.ts has why each exists). Registrations belong to
 // the evaluation that made them: the evaluate hook begins/commits/rolls back.
 // =============================================================================
+
+// 22 VCSL sounds (kalimba, steinway, …) are silent in Chromium without this —
+// see src/shared/sample-url-fix.ts. Installed before the REPL loads a sample.
+installSampleUrlFix(window as any);
 
 let stageErrorReported = false;
 const { env: stageEnv, speech: stageSpeech } = createBrowserStageEnv({

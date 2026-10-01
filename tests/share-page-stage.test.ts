@@ -12,6 +12,8 @@ const INPUTS = [
   "src/shared/stage-runtime.ts",
   "src/shared/stage-runtime-global.ts",
   "src/shared/hap-number.ts",
+  "src/shared/tts.ts",
+  "src/shared/sample-url-fix.ts",
 ];
 
 describe("share page stage runtime", () => {

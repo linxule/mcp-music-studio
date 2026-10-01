@@ -44,8 +44,8 @@ import * as mini from "@strudel/mini";
 import * as tonal from "@strudel/tonal";
 // @ts-ignore -- no types published
 import { transpiler } from "@strudel/transpiler";
-import { stageEvent } from "./stage-runtime";
-import { normalizeTts, ttsSampleName } from "./tts";
+import { stageEvent } from "./stage-runtime.js";
+import { normalizeTts, ttsSampleName } from "./tts.js";
 
 type Any = Record<string, any>;
 const C = core as unknown as Any;

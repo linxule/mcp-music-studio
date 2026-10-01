@@ -2,6 +2,9 @@
 // Strudel Guide — comprehensive reference for AI systems
 // =============================================================================
 
+import { STAGE_GUIDES } from "./strudel-guide-stage.js";
+import { galleryIndex } from "./strudel-gallery.js";
+
 export const STRUDEL_GUIDE_TOPICS = [
   "mini-notation",
   "sounds",
@@ -12,11 +15,21 @@ export const STRUDEL_GUIDE_TOPICS = [
   "visuals",
   "hydra",
   "advanced",
+  // The audiovisual topics — src/strudel-guide-stage.ts.
+  "stage",
+  "film",
+  "interactive",
+  "craft",
+  "debugging",
+  // Complete pieces, fetched one at a time — src/strudel-gallery.ts.
+  "gallery",
 ] as const;
 
 export type StrudelGuideTopic = (typeof STRUDEL_GUIDE_TOPICS)[number];
 
 export const STRUDEL_GUIDES: Record<StrudelGuideTopic, string> = {
+  ...STAGE_GUIDES,
+  gallery: galleryIndex(),
   "mini-notation": `# Strudel Mini-Notation
 
 Strudel uses TidalCycles-inspired mini-notation inside JavaScript.

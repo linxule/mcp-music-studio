@@ -4,6 +4,16 @@ import gmNames from "./fixtures/gm-sound-names.json";
 import strudelSounds from "../src/shared/data/strudel-sounds.json";
 import { extractBlocks, parses, type GuideBlock } from "./guide-blocks";
 import { evalStrudel, queryHaps, setupStrudel } from "./strudel-eval";
+import { evalStrudelSandboxed } from "../src/shared/strudel-eval";
+import { TTS_SAMPLE_PREFIX } from "../src/shared/tts";
+
+/**
+ * The audiovisual topics (stage, film, interactive, …) draw on canvases and
+ * use the stage runtime. They run where the production validator runs them:
+ * the vm sandbox, with its inert browser and stage stand-ins.
+ */
+const USES_BROWSER = /\bdocument\.|\bwindow\.|\bonFrame\(|\bonEvent\(|\bonTap\(|\bsay\(|\bcycle\(\)/;
+const evaluate = (code: string) => (USES_BROWSER.test(code) ? evalStrudelSandboxed(code) : evalStrudel(code));
 
 /**
  * RUN the guide's examples.
@@ -39,6 +49,8 @@ const PLACEHOLDER_NAMES = new Set([
   "bass",
   "melody",
   "lead",
+  // The stage runtime's reference table: `onFrame(fn)`, `onEvent(pattern, fn)`.
+  "fn",
 ]);
 
 /** Blocks the guide itself marks as needing an explicit samples() load. */
@@ -90,7 +102,7 @@ describe("strudel guide examples actually run", () => {
   it.each(runnable.map((b) => [label(b), b] as const))(
     "%s produces events",
     async (_name, block) => {
-      const { pattern, error } = await evalStrudel(block.code);
+      const { pattern, error } = await evaluate(block.code);
       expect(error, `evaluating:\n${block.code}`).toBeUndefined();
       expect(pattern, `evaluating:\n${block.code}`).toBeDefined();
 
@@ -113,13 +125,14 @@ describe("strudel guide examples actually run", () => {
       .filter((b) => !b.code.includes(NEEDS_SAMPLES))
       .map((b) => [label(b), b] as const),
   )("%s only plays registered sounds", async (_name, block) => {
-    const { pattern } = await evalStrudel(block.code);
+    const { pattern } = await evaluate(block.code);
     if (!pattern) return; // reported by the previous assertion
     const { haps } = queryHaps(pattern, CYCLES);
     const unknown = new Set<string>();
     for (const hap of haps) {
       const s = (hap as any)?.value?.s;
-      if (typeof s === "string" && !registeredSounds.has(s)) unknown.add(s);
+      // say() lines are samples the Worker renders at runtime.
+      if (typeof s === "string" && !registeredSounds.has(s) && !s.startsWith(TTS_SAMPLE_PREFIX)) unknown.add(s);
     }
     expect(
       [...unknown],
@@ -141,7 +154,9 @@ describe("strudel guide method names exist", () => {
    * runtime this suite deliberately does not bring up. (`visuals` — draw
    * methods, presets, theme — is Strudel's own API and IS checked.)
    */
-  const CHECKED = Object.entries(STRUDEL_GUIDES).filter(([topic]) => topic !== "hydra");
+  // `stage` too: its pipelines (RGB split, bloom, datamosh) are Hydra chains,
+  // and its canvas code is the 2D context's API.
+  const CHECKED = Object.entries(STRUDEL_GUIDES).filter(([topic]) => topic !== "hydra" && topic !== "stage");
 
   /** Method names the guides name in order to say they do NOT exist. */
   const COUNTEREXAMPLES = new Set([

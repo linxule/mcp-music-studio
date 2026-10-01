@@ -22,6 +22,8 @@ import {
   type ParseOnlyFn,
 } from "./abc-to-strudel.js";
 import { EDITOR_THEMES, VISUAL_PRESETS } from "./visual-presets.js";
+import { STRUDEL_GUIDE_TOPICS, STRUDEL_GUIDES } from "../strudel-guide.js";
+import { GALLERY_IDS, STRUDEL_GALLERY } from "../strudel-gallery.js";
 // Type-only: the validator itself (and the ~200 KiB of Strudel behind it) is
 // imported by each transport's handler, not by this module. The shape comes
 // from the types leaf rather than from strudel-validate.ts on purpose: this
@@ -64,7 +66,10 @@ export const SERVER_INSTRUCTIONS =
   "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'; 'visuals' and 'hydra' for the animation layers). " +
   "play-live-pattern can paint as well as play: add .pianoroll() to a pattern, pass visuals (a preset) and theme, or write " +
   "`await initHydra()` shader code that follows the music via H(pattern) and a.fft — the " +
-  "'hydra' topic has copy-ready recipes. Use search-music-docs only " +
+  "'hydra' topic has copy-ready recipes. Pattern code is real browser JavaScript, so a piece can also " +
+  "draw its own canvases into Hydra, react to every note (onEvent), take taps (onTap) and speak on the beat " +
+  "(say) — music videos, short films and duets: topics 'craft', 'stage', 'film', 'interactive', and finished " +
+  "pieces in 'gallery'. Use search-music-docs only " +
   "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
   '("C", "Am7") above the notes and set a style. ' +
   "If unsure about chord spelling or the key, call analyze-harmony; " +
@@ -452,6 +457,9 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "(pianoroll/punchcard/scope/spectrum, or hydra-kaleid/pulse/wash/feed). " +
   "`theme` sets the code-editor colour scheme, which also tints the visuals — match it to the mood " +
   "(teletext chiptune, sonicPink synthwave, nord ambient, gruvboxDark lofi). " +
+  "Beyond music: the code is real browser JavaScript — cycle(), onFrame, onEvent(pattern, fn), onTap and " +
+  "say(text) (a spoken line as a sample) build music videos, short films and interactive pieces; " +
+  "see topics 'stage', 'film', 'interactive' and 'gallery'. " +
   "Each call creates a NEW player rather than updating the last one — for a tweak, send the whole revised pattern and ask the user to stop the previous one. " +
   "Use get-strudel-guide for genre templates, sound references, and advanced features " +
   "like arrangement and sample loading.";
@@ -535,7 +543,10 @@ export const PLAY_LIVE_UNVALIDATED_REMOTE =
 /** Where the pattern actually plays — the one sentence every branch ends on. */
 const PLAY_LIVE_PLAYBACK_TAIL =
   "It plays in an editable REPL widget in MCP-app hosts " +
-  `(e.g. Claude Desktop, claude.ai). ${NO_INLINE_PLAYER_TAIL}`;
+  "(e.g. Claude Desktop, claude.ai). After each run the widget reports what actually happened — " +
+  "playing, an error, silence, missing sounds, a callback that threw — into the host's model context; " +
+  "if your host has a tool to read widget context (claude.ai: read_widget_context), read it before " +
+  `assuming the piece played. ${NO_INLINE_PLAYER_TAIL}`;
 
 /** Trim float noise off a cps computed as e.g. 120/60/4. */
 const showCps = (cps: number) => String(Math.round(cps * 1000) / 1000);
@@ -695,12 +706,42 @@ export const GET_STRUDEL_GUIDE_DESCRIPTION =
   "tips (tempo, common mistakes, ABC↔Strudel crossover), " +
   "visuals (pianoroll/scope draw methods, the visuals presets and the theme parameter), " +
   "hydra (WebGL shader backgrounds: initHydra, H(pattern), the audio-reactive a.fft object, recipes, cheat-sheet), " +
-  "advanced (sample loading, wavetables, ZZFX, continuous signals, chord voicings).";
+  "advanced (sample loading, wavetables, ZZFX, continuous signals, chord voicings). " +
+  "Beyond music — pattern code is real browser JavaScript: " +
+  "stage (your own canvases into Hydra, an ASCII camera, cycle/onFrame/onEvent/onTap/say), " +
+  "film (music videos and short films: scenes on bars, typewriter text, letterbox, narration), " +
+  "interactive (taps become notes, call and response, a voice that speaks on the beat), " +
+  "craft (what makes a piece land), debugging (what the widget reports back), " +
+  "gallery (complete pieces — a short film, a spoken duet, a Game of Life composer; fetch one with `piece`).";
 
 export const GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION =
   "Reference topic. Start with 'genres' for working templates, " +
   "'sounds' for instruments, 'visuals' for draw methods and presets, 'hydra' for shader backgrounds, " +
-  "'advanced' for sample loading.";
+  "'advanced' for sample loading. For a music video, film or interactive piece: 'craft', then " +
+  "'stage', 'film' or 'interactive', and a worked example from 'gallery'.";
+
+export const getStrudelGuideInputSchema = z.object({
+  topic: z.enum(STRUDEL_GUIDE_TOPICS).describe(GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION),
+  piece: z
+    .enum(GALLERY_IDS)
+    .optional()
+    .describe("With topic 'gallery': the complete code of one piece (the index lists them)."),
+});
+
+/** get-strudel-guide, both transports. */
+export function buildStrudelGuideResult({
+  topic,
+  piece,
+}: z.infer<typeof getStrudelGuideInputSchema>): CallToolResult {
+  if (piece) {
+    const found = STRUDEL_GALLERY.find((p) => p.id === piece)!;
+    const text =
+      `# ${found.title} (gallery: ${found.id})\n\n${found.summary}\nTeaches: ${found.teaches.join("; ")}\n\n` +
+      `Pass this to play-live-pattern as-is, or take it apart. It runs as written.\n\n${found.code}`;
+    return { content: [{ type: "text", text }] };
+  }
+  return { content: [{ type: "text", text: STRUDEL_GUIDES[topic] }] };
+}
 
 // -----------------------------------------------------------------------------
 // search-music-docs — shared core (cache + key are injected per transport)

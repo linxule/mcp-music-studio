@@ -47,6 +47,8 @@ import {
   GET_MUSIC_GUIDE_TOPIC_DESCRIPTION,
   GET_STRUDEL_GUIDE_DESCRIPTION,
   GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION,
+  getStrudelGuideInputSchema,
+  buildStrudelGuideResult,
   SEARCH_DOCS_DESCRIPTION,
   searchDocsInputSchema,
   searchMusicDocs,
@@ -732,16 +734,10 @@ export function createMusicServer(
     {
       title: "Strudel Reference Guide",
       description: GET_STRUDEL_GUIDE_DESCRIPTION,
-      inputSchema: z.object({
-        topic: z
-          .enum(STRUDEL_GUIDE_TOPICS)
-          .describe(GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION),
-      }),
+      inputSchema: getStrudelGuideInputSchema,
       annotations: GUIDE_TOOL_ANNOTATIONS,
     },
-    async ({ topic }) => ({
-      content: [{ type: "text" as const, text: STRUDEL_GUIDES[topic] }],
-    }),
+    async (args) => buildStrudelGuideResult(args),
   );
 
   // ===========================================================================

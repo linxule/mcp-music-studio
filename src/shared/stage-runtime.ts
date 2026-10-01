@@ -41,8 +41,8 @@
 // drive it with a fake clock and a fake requestAnimationFrame.
 // =============================================================================
 
-import { noteNameToMidi } from "./hap-number";
-import { normalizeTts, ttsSampleName, ttsUrl } from "./tts";
+import { noteNameToMidi } from "./hap-number.js";
+import { normalizeTts, ttsSampleName, ttsUrl } from "./tts.js";
 
 export interface StageEnv {
   /** The cycle being heard now, or null when there is no running scheduler. */
