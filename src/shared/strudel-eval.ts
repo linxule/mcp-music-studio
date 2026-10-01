@@ -44,6 +44,8 @@ import * as mini from "@strudel/mini";
 import * as tonal from "@strudel/tonal";
 // @ts-ignore -- no types published
 import { transpiler } from "@strudel/transpiler";
+import { stageEvent } from "./stage-runtime";
+import { normalizeTts, ttsSampleName } from "./tts";
 
 type Any = Record<string, any>;
 const C = core as unknown as Any;
@@ -108,6 +110,8 @@ export interface StrudelTrace {
   deadline: number;
   /** Per-query span ceiling, in cycles. */
   spanCeiling: number;
+  /** Stage callbacks that threw on a test frame (see SANDBOX_STAGE). */
+  warnings: string[];
 }
 
 export function createTrace(opts: {
@@ -122,6 +126,7 @@ export function createTrace(opts: {
     logs: [],
     deadline: opts.deadline,
     spanCeiling: opts.spanCeiling ?? DEFAULT_SPAN_CEILING,
+    warnings: [],
   };
 }
 
@@ -263,25 +268,144 @@ function installSpanGuard(): void {
 // -----------------------------------------------------------------------------
 
 /**
+ * An inert stand-in for any browser object: every property is another inert
+ * value, every call and `new` returns one, assignments are remembered (so
+ * `cvs.width = 640; cvs.width / 64` is 10, not NaN), and it converts to 0 / ""
+ * in arithmetic and strings. Audiovisual pieces run their draw function once at
+ * the top level (`draw()` before handing it to requestAnimationFrame), so the
+ * stand-in must survive `kick * 30`, `g.measureText(msg).width`, a spread, and
+ * `for…of` — before 0.7 each of those failed validation for code that plays.
+ *
+ * Never thenable: a chain as the LAST expression (a Hydra `.out()` after `$:`
+ * blocks) is returned from an async function, which awaits a thenable — and
+ * this one would never resolve.
+ */
+export function inert(): Any {
+  const stored = new Map<PropertyKey, unknown>();
+  const self: Any = new Proxy(function () {} as Any, {
+    get: (_t, prop) => {
+      if (stored.has(prop)) return stored.get(prop);
+      if (prop === "then") return undefined;
+      if (prop === Symbol.toPrimitive) return (hint: string) => (hint === "string" ? "" : 0);
+      if (prop === Symbol.iterator) return function* () {};
+      if (prop === "length") return 0;
+      const child = inert();
+      stored.set(prop, child);
+      return child;
+    },
+    set: (_t, prop, value) => {
+      stored.set(prop, value);
+      return true;
+    },
+    has: () => true,
+    apply: () => inert(),
+    construct: () => inert(),
+  });
+  return self;
+}
+
+/**
  * A `document` for the PATTERN only (the sandbox's own scope, never
- * globalThis): an offscreen canvas fed to Hydra, `s0.init({src:
+ * globalThis): an offscreen canvas fed to Hydra, `s1.init({src:
  * document.createElement('canvas')})`, runs in the widget and must not be
  * reported as failed. Setting a global `document` instead made Strudel's own
  * error path call `document.dispatchEvent` in the server (measured).
  */
 const SANDBOX_DOCUMENT = () => {
-  const chain: Any = new Proxy(function () {} as Any, {
-    // Never thenable: a chain as the LAST expression (a Hydra \`.out()\` after
-    // \`$:\` blocks) is returned from an async function, which awaits a
-    // thenable — and this one would never resolve.
-    get: (_t, prop) => (prop === "then" ? undefined : chain),
-    apply: () => chain,
-  });
+  const doc = inert();
+  doc.createElement = () => inert();
+  return doc;
+};
+
+/**
+ * The rest of the browser a piece reaches for — again on the sandbox only.
+ * `requestAnimationFrame` never calls back (the piece's top-level first frame
+ * is what gets checked); listeners are dropped; speech is silent. Measured on
+ * the 2026-10-01 claude.ai pieces: without these, First Light, DUET and Petri
+ * Dish came back "failed to evaluate: window is not defined" — code that plays.
+ */
+const SANDBOX_BROWSER = () => {
+  const window = inert();
+  window.innerWidth = 800;
+  window.innerHeight = 450;
+  window.devicePixelRatio = 1;
   return {
-    createElement: () => chain,
-    getElementById: () => chain,
-    querySelector: () => chain,
-    body: chain,
+    window,
+    self: window,
+    innerWidth: 800,
+    innerHeight: 450,
+    devicePixelRatio: 1,
+    navigator: inert(),
+    location: inert(),
+    localStorage: inert(),
+    speechSynthesis: inert(),
+    SpeechSynthesisUtterance: function SpeechSynthesisUtterance() {
+      return inert();
+    },
+    Image: function Image() {
+      return inert();
+    },
+    requestAnimationFrame: () => 0,
+    cancelAnimationFrame: () => undefined,
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    setInterval: () => 0,
+    clearInterval: () => undefined,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    performance: { now: () => performance.now() },
+  };
+};
+
+/**
+ * The stage runtime (src/shared/stage-runtime.ts) for the validator: the same
+ * names, the same argument checks, and one test call of every onFrame/onEvent
+ * callback — queued, and run only after the top level has finished (a draw
+ * function may close over a `const` declared further down, which the browser
+ * never sees in its temporal dead zone). A callback that throws there is a
+ * warning, not a failure: in the widget it is reported and skipped, and the
+ * music plays on. onTap callbacks are never called — a tap is the user's.
+ */
+const SANDBOX_STAGE = (checks: Array<() => void>) => {
+  const requireFunction = (api: string, fn: unknown) => {
+    if (typeof fn !== "function") throw new TypeError(`${api} needs a function, got ${typeof fn}`);
+  };
+  const testCall = (api: string, fn: (arg: unknown) => void, arg: () => unknown) =>
+    checks.push(() => {
+      try {
+        fn(arg());
+      } catch (err) {
+        active?.warnings.push(`${api} callback threw on a test frame: ${(err as Error)?.message ?? String(err)}`);
+      }
+    });
+  return {
+    cycle: () => 0,
+    onFrame(fn: (frame: unknown) => void) {
+      requireFunction("onFrame(fn)", fn);
+      testCall("onFrame", fn, () => ({ cycle: 0.5, dt: 1 / 60, time: 1, playing: true }));
+      return () => undefined;
+    },
+    onEvent(pattern: Any, fn: (event: unknown) => void) {
+      requireFunction("onEvent(pattern, fn)", fn);
+      const pat = pattern?.queryArc ? pattern : C.reify?.(pattern);
+      if (!pat || typeof pat.queryArc !== "function") {
+        throw new TypeError('onEvent(pattern, fn) needs a pattern — e.g. onEvent(note("c e g"), fn)');
+      }
+      testCall("onEvent", fn, () => {
+        const hap = pat.queryArc(0, 1).find((h: Any) => h?.hasOnset?.() !== false);
+        return hap ? stageEvent(hap, Number(hap.whole?.begin ?? 0)) : stageEvent({ value: {} }, 0);
+      });
+      return () => undefined;
+    },
+    onTap(fn: unknown) {
+      requireFunction("onTap(fn)", fn);
+      return () => undefined;
+    },
+    say(text: unknown, options?: { voice?: unknown }) {
+      const request = normalizeTts(text, options?.voice);
+      if ("error" in request) throw new TypeError(request.error);
+      return C.s(ttsSampleName(request));
+    },
   };
 };
 
@@ -290,13 +414,10 @@ const AUDIO_BAND_GLOBALS = 16;
 
 /** Browser-only globals the visuals topic legitimately uses. */
 const HYDRA_GLOBALS = () => {
-  const chain: Any = new Proxy(function () {} as Any, {
-    // Never thenable: a chain as the LAST expression (a Hydra \`.out()\` after
-    // \`$:\` blocks) is returned from an async function, which awaits a
-    // thenable — and this one would never resolve.
-    get: (_t, prop) => (prop === "then" ? undefined : chain),
-    apply: () => chain,
-  });
+  // inert(): chainable, never thenable, and 0 in arithmetic — `a.fft[0] * 30`
+  // in a top-level first frame used to throw "Cannot convert object to
+  // primitive value".
+  const chain: Any = inert();
   const src = () => chain;
   return {
     initHydra: async () => {
@@ -313,7 +434,7 @@ const HYDRA_GLOBALS = () => {
     gradient: src,
     solid: src,
     src,
-    a: new Proxy({} as Any, { get: () => chain }),
+    a: inert(),
     // The widget publishes a0…aN for however many bins `a.setBins(n)` asked
     // for; a5 after setBins(6) used to fail here as "not defined".
     ...Object.fromEntries(Array.from({ length: AUDIO_BAND_GLOBALS }, (_, i) => [`a${i}`, chain])),
@@ -325,6 +446,8 @@ const HYDRA_GLOBALS = () => {
     getDrawContext: () => chain,
     s0: chain,
     s1: chain,
+    s2: chain,
+    s3: chain,
     o0: chain,
     o1: chain,
     o2: chain,
@@ -534,9 +657,15 @@ export async function evalStrudelSandboxed(
     // including everything setupStrudel() stubbed in (setcps, samples, stack,
     // the Hydra no-ops). `console` is not a Strudel name but guide examples
     // use it; route it to the outer one, which runTraced is capturing.
+    const stageChecks: Array<() => void> = [];
     const sandbox = Object.assign(Object.create(null), C.strudelScope, {
       console: { log: console.log, info: console.info, warn: console.warn, error: console.error },
+      ...SANDBOX_BROWSER(),
+      ...SANDBOX_STAGE(stageChecks),
       document: SANDBOX_DOCUMENT(),
+      __musicStudioStageChecks: () => {
+        for (const check of stageChecks.splice(0)) check();
+      },
     });
     const context = vm.createContext(sandbox, {
       codeGeneration: { strings: false, wasm: false },
@@ -545,10 +674,18 @@ export async function evalStrudelSandboxed(
     // re-nested inside an IIFE because a Script has no `return`.
     const source = `(function(){"use strict";return ((async ()=>{${output}})());})()`;
     resetTransforms();
+    const started = Date.now();
     const value = await vm.runInContext(source, context, {
       filename: "strudel-pattern.js",
       timeout: timeoutMs,
     });
+    // The stage test frames, under the same vm ceiling (a `while(true)` in a
+    // draw loop must not wedge the validator either).
+    if (stageChecks.length) {
+      vm.runInContext("__musicStudioStageChecks()", context, {
+        timeout: Math.max(50, timeoutMs - (Date.now() - started)),
+      });
+    }
     return finishEvaluation(value);
   } catch (err) {
     resetTransforms();

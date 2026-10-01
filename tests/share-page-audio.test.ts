@@ -11,6 +11,7 @@ import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { generateStrudelPlayerHtml } from "../src/strudel-browser-fallback";
 import { AUDIO_ANALYSER, AUDIO_DEFAULTS, bandLevels, stepBands } from "../src/shared/audio-bands";
+import { signal } from "@strudel/core";
 import { hapNumber } from "../src/shared/hap-number";
 import { drawLayerIds } from "../src/shared/viz-detect";
 
@@ -100,6 +101,12 @@ describe("share page H() values", () => {
     ]) {
       expect(pageHap(value), JSON.stringify(value)).toBe(hapNumber(value));
     }
+    // Strudel Fractions (the frozen-clock bug) and BigInts — not JSON-able.
+    const at = (t: number) => signal((x: unknown) => x).queryArc(t, t)[0].value;
+    for (const value of [at(2.5), at(0.75), { n: at(1.5) }, 5n]) {
+      expect(pageHap(value)).toBe(hapNumber(value));
+    }
+    expect(pageHap(at(2.5))).toBe(2.5);
     expect(html).toContain("return hapNumber(sample());");
   });
 });

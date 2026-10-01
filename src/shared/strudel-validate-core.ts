@@ -42,6 +42,7 @@
 // every pattern against it, and the validation child bundles it), so it lives
 // under src/. There is exactly one copy on purpose — a second would drift from
 // the one the guide tests assert against, which is the whole point of having it.
+import { TTS_SAMPLE_PREFIX } from "./tts";
 import strudelSounds from "./data/strudel-sounds.json" with { type: "json" };
 
 // Result shapes live in a leaf module so tool-defs.ts (shared with the
@@ -102,6 +103,8 @@ const DRUM_BANKS = new Set(strudelSounds.drumBanks as string[]);
 
 /** Sounds prebake() registers by name, with no bank qualifier. */
 function isRegistered(name: string): boolean {
+  // say() clips register at runtime, rendered by the Worker (src/shared/tts.ts).
+  if (name.startsWith(TTS_SAMPLE_PREFIX)) return true;
   return SAMPLES.has(name) || GM.has(name) || SYNTHS.has(name);
 }
 
@@ -284,8 +287,10 @@ function context(trace: {
   visuals: string[];
   stackArity: number;
   sampleUrls: string[];
+  warnings?: string[];
 }): Partial<StrudelValidation> {
   return {
+    ...(trace.warnings?.length ? { warnings: [...new Set(trace.warnings)] } : {}),
     ...(trace.stackArity > 0 ? { layers: trace.stackArity } : {}),
     ...(trace.cps !== undefined ? { cps: trace.cps } : {}),
     ...(trace.usesHydra ? { usesHydra: true } : {}),

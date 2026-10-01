@@ -1,6 +1,7 @@
 // H() used to flatten every non-number to 0, so pitch could never drive a
 // shader. hapNumber() follows @strudel/core's noteToMidi for note names.
 import { describe, expect, it } from "vitest";
+import { signal } from "@strudel/core";
 import { hapNumber, noteNameToMidi } from "../src/shared/hap-number";
 
 describe("noteNameToMidi (Strudel's rule)", () => {
@@ -60,5 +61,29 @@ describe("hapNumber", () => {
     expect(hapNumber({ s: "bd" })).toBe(0);
     expect(hapNumber(undefined)).toBe(0);
     expect(hapNumber(null)).toBe(0);
+  });
+});
+
+// The frozen-clock bug (found from claude.ai, 2026-10-01): signal(t => t)
+// yields a fraction.js Fraction `{s, n, d}` with BigInt fields. The object
+// branch read its `n` (the numerator, as a BigInt) as Strudel's `n` control and
+// returned 0, so every H(signal(...)) clock stood still with no error.
+describe("hapNumber on Strudel time values", () => {
+  const at = (t: number) => signal((x: unknown) => x).queryArc(t, t)[0].value;
+
+  it("reads a real Strudel Fraction as its number, not its numerator", () => {
+    expect(hapNumber(at(2.5))).toBe(2.5);
+    expect(hapNumber(at(0.75))).toBe(0.75);
+    expect(hapNumber(at(17))).toBe(17);
+  });
+
+  it("reads Fractions nested in a control object, and bare BigInts", () => {
+    expect(hapNumber({ n: at(1.5) })).toBe(1.5);
+    expect(hapNumber(5n)).toBe(5);
+  });
+
+  it("still treats a plain control object's fields as controls", () => {
+    expect(hapNumber({ n: 4, s: "piano" })).toBe(4);
+    expect(hapNumber({ s: "bd" })).toBe(0);
   });
 });

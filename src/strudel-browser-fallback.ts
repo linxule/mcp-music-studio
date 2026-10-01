@@ -1,4 +1,6 @@
 import { SOURCE_URL } from "./source-info.js";
+import { STAGE_RUNTIME_JS } from "./generated/stage-runtime-js.js";
+import { DEFAULT_SHARE_ORIGIN } from "./shared/share-url.js";
 // =============================================================================
 // Strudel browser fallback — standalone HTML with @strudel/repl
 // In browser mode (not iframe sandbox), the full REPL renders correctly.
@@ -227,6 +229,7 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
 </main>
 <script type="application/json" id="init-data">${initData}</script>
 <script src="https://unpkg.com/@strudel/repl@1.3.0"></script>
+<script>${STAGE_RUNTIME_JS}</script>
 <script>
   const INIT = JSON.parse(document.getElementById('init-data').textContent);
 
@@ -417,6 +420,7 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
 
   function rawHapNumber(value) {
     if (typeof value === 'number') return value;
+    if (typeof value === 'bigint') return Number(value);
     if (typeof value === 'string') {
       var trimmed = value.trim();
       if (trimmed !== '' && isFinite(Number(trimmed))) return Number(trimmed);
@@ -424,6 +428,9 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
       return midi === null ? 0 : midi;
     }
     if (value && typeof value === 'object') {
+      // A Strudel Fraction ({s, n, d}, BigInt fields): its n is the numerator.
+      var primitive = typeof value.valueOf === 'function' ? value.valueOf() : value;
+      if (typeof primitive === 'number') return primitive;
       // freq outranks note, as in Strudel's valueToMidi.
       if (typeof value.freq === 'number' && value.freq > 0) return 12 * Math.log2(value.freq / 440) + 69;
       if (value.note !== undefined) return rawHapNumber(value.note);
@@ -572,6 +579,45 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   let playing = false;
   let ready = false;
 
+  // stage:begin
+  // cycle(), onFrame, onEvent, onTap, say() — the same runtime the widget
+  // publishes (src/shared/stage-runtime.ts, bundled into the script above by
+  // scripts/build-stage-runtime.mjs). Registrations belong to the evaluation
+  // that made them; the evaluate wrapper below begins/commits/rolls back.
+  var stageBundle = globalThis.MusicStudioStage.createBrowserStageEnv({
+    getScheduler: function () { var ed = getEditor(); return (ed && ed.repl && ed.repl.scheduler) || null; },
+    isPlaying: function () { var ed = getEditor(); return !!(ed && ed.repl && ed.repl.state && ed.repl.state.started); },
+    tapArea: document.documentElement,
+    reportError: function (api, err) { console.error('[stage] ' + api + ' callback threw:', err); },
+    ttsOrigin: ${JSON.stringify(DEFAULT_SHARE_ORIGIN)},
+  });
+  var stage = globalThis.MusicStudioStage.createStage(stageBundle.env);
+  Object.assign(globalThis, stage.globals);
+  // Raw speechSynthesis (not say(), which is a sample) needs a speak() inside a
+  // gesture on WebKit: unlock on the first one.
+  ['pointerup', 'keydown', 'touchend'].forEach(function (type) {
+    document.addEventListener(type, function () { stageBundle.speech.unlock(); }, true);
+  });
+  function hookStage(ed) {
+    if (ed.__stageHooked) return;
+    ed.__stageHooked = true;
+    var originalEvaluate = ed.evaluate.bind(ed);
+    // An instance property, so Play AND the editor's own shortcut both pass here.
+    ed.evaluate = async function (shouldPlay) {
+      stage.begin();
+      try {
+        await originalEvaluate(shouldPlay);
+      } catch (e) {
+        stage.rollback();
+        throw e;
+      }
+      var st = (ed.repl && ed.repl.state) || {};
+      if (st.evalError || st.schedulerError) stage.rollback();
+      else stage.commit();
+    };
+  }
+  // stage:end
+
   // How long to wait for <strudel-editor> to define itself before saying the
   // CDN never arrived. The old loop polled forever, so a blocked or offline
   // unpkg left the page sitting on "Loading..." with nothing to click.
@@ -693,6 +739,7 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     try {
       ed.stop();
       clearLayers();
+      stageBundle.speech.cancel();
       playing = false;
       playBtn.textContent = 'Play';
       playBtn.classList.remove('active');
@@ -707,6 +754,7 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   retryBtn.addEventListener('click', () => location.reload());
 
   waitForEditor(EDITOR_TIMEOUT_MS).then((ed) => {
+    hookStage(ed);
     ed.setCode(INIT.code);
     applyVizState(INIT.code);
     ready = true;

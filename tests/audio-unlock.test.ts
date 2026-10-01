@@ -191,8 +191,12 @@ describe("strudel widget wiring", () => {
 
   it("resumes from taps, clicks and keys, but not from a touch press that may still scroll", () => {
     const install = body("const stopGestureUnlock = listenForAudioGestures(document, {", "\n});\n");
-    expect(install).toMatch(/press\(kind\) \{\s*gestureLatch\.begin\(isPlaying && audioIsBlockedNow\(\)\);\s*if \(kind !== "touch"\) void ensureAudioRunning\(\);/);
+    expect(install).toMatch(/press\(kind\) \{\s*gestureLatch\.begin\(isPlaying && audioIsBlockedNow\(\)\);\s*if \(kind !== "touch"\) \{\s*void ensureAudioRunning\(\);/);
     expect(install).toMatch(/activate\(\) \{\s*gestureLatch\.extend\(isPlaying && audioIsBlockedNow\(\)\);\s*void ensureAudioRunning\(\);/);
+    // Raw speechSynthesis rides the same gesture (WebKit needs a speak() inside
+    // it) — never on a touch PRESS, which may still turn into a scroll.
+    expect(install.match(/stageSpeech\.unlock\(\)/g)).toHaveLength(2);
+    expect(install).toMatch(/if \(kind !== "touch"\) \{[^}]*stageSpeech\.unlock\(\);/);
   });
 
   it("an evaluation waits briefly for audio before its one report", () => {

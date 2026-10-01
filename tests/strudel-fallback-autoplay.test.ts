@@ -94,11 +94,12 @@ interface Harness {
 }
 
 function bootstrap(html: string): Harness {
-  // The page's own inline script — the last <script> without a src, i.e. not
-  // the JSON island and not the @strudel/repl CDN tag.
+  // The inline scripts without a src (not the JSON island, not the
+  // @strudel/repl CDN tag): the stage runtime bundle, then the page's own.
   const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>([\s\S]*?)<\/script>/g)];
-  expect(scripts).toHaveLength(1);
-  const source = scripts[0][1];
+  expect(scripts).toHaveLength(2);
+  expect(scripts[0][1]).toContain("MusicStudioStage");
+  const sources = scripts.map((m) => m[1]);
 
   const initJson = /<script type="application\/json" id="init-data">([\s\S]*?)<\/script>/
     .exec(html)![1];
@@ -143,6 +144,7 @@ function bootstrap(html: string): Harness {
   const body = el("body");
   (doc as any).getElementById = (id: string) => byId[id] ?? null;
   (doc as any).body = body;
+  (doc as any).documentElement = el("html");
 
   const win = el("window");
   (win as any).innerWidth = 800;
@@ -159,7 +161,7 @@ function bootstrap(html: string): Harness {
   });
   (ctx as any).globalThis = ctx;
 
-  vm.runInContext(source, ctx);
+  for (const source of sources) vm.runInContext(source, ctx);
 
   async function click(target: StubEl): Promise<void> {
     const ev = { type: "click", target };

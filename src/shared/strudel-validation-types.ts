@@ -34,6 +34,8 @@ export interface StrudelValidation {
   visuals?: string[];
   /** URLs passed to samples() — why `unregistered` may be withheld. */
   sampleUrls?: string[];
+  /** onFrame/onEvent callbacks that threw on a test frame (they don't stop playback). */
+  warnings?: string[];
 }
 
 export interface ValidateOptions {

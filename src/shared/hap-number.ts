@@ -35,12 +35,19 @@ export function hapNumber(value: unknown): number {
 
 function rawHapNumber(value: unknown): number {
   if (typeof value === "number") return value;
+  if (typeof value === "bigint") return Number(value);
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (trimmed !== "" && Number.isFinite(Number(trimmed))) return Number(trimmed);
     return noteNameToMidi(trimmed) ?? 0;
   }
   if (value && typeof value === "object") {
+    // A Strudel Fraction (fraction.js 5: `{s, n, d}` with BigInt fields) — what
+    // signal(t => t) and every time-derived signal yield. Its `n` is the
+    // NUMERATOR, not Strudel's `n` control, so read the number before the fields.
+    // Before this, H(signal(t => t)) was 0 forever: a frozen clock, no error.
+    const primitive = (value as { valueOf?: () => unknown }).valueOf?.();
+    if (typeof primitive === "number") return primitive;
     const v = value as { note?: unknown; n?: unknown; freq?: unknown; value?: unknown };
     if (typeof v.freq === "number" && v.freq > 0) return 12 * Math.log2(v.freq / 440) + 69;
     if (v.note !== undefined) return rawHapNumber(v.note);

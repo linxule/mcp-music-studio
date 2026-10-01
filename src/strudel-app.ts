@@ -24,6 +24,9 @@ import { detectViz, drawLayerIds } from "./shared/viz-detect";
 import { hapNumber } from "./shared/hap-number";
 import { AUDIO_ANALYSER, bandLevels, stepBands } from "./shared/audio-bands";
 import { injectTempo } from "./shared/tempo";
+import { createBrowserStageEnv, createStage } from "./shared/stage-runtime";
+import { sourceLineNote } from "./shared/line-map";
+import { DEFAULT_SHARE_ORIGIN } from "./shared/share-url";
 import { applyVisualPreset } from "./shared/visual-presets";
 import {
   STRUDEL_INLINE_CAP,
@@ -77,6 +80,8 @@ const container = document.getElementById("strudel-container")!;
 
 let editorEl: HTMLElement | null = null;
 let currentCode = "";
+/** The code exactly as the tool call sent it — before bpm/visuals added lines. */
+let sentCode = "";
 let isPlaying = false;
 
 /**
@@ -239,7 +244,14 @@ function setStatus(text: string, type: StatusType = "normal") {
 }
 
 function updatePlayState(playing: boolean) {
-  if (!playing) clearDrawLayers();
+  if (!playing) {
+    clearDrawLayers();
+    // Stop means quiet: a sentence from say() does not outlive the music.
+    // (try: stageSpeech is declared further down this module.)
+    try {
+      stageSpeech.cancel();
+    } catch { /* not initialised yet */ }
+  }
   isPlaying = playing;
   audioBlocked = playing && audioIsBlockedNow();
   audibleStatus = null;
@@ -374,14 +386,50 @@ function syncAudioState(): void {
 // phone the finger scrolling the conversation past the widget used to unmute
 // an audio-blocked pattern (src/audio-unlock.ts). A touch press only records
 // what the gesture began over; its activation arrives with the tap's end.
+// =============================================================================
+// The stage runtime — cycle(), onFrame, onEvent, onTap, say()
+// (src/shared/stage-runtime.ts has why each exists). Registrations belong to
+// the evaluation that made them: the evaluate hook begins/commits/rolls back.
+// =============================================================================
+
+let stageErrorReported = false;
+const { env: stageEnv, speech: stageSpeech } = createBrowserStageEnv({
+  getScheduler: () => getEditor()?.repl?.scheduler ?? null,
+  isPlaying: () => isSchedulerStarted(),
+  tapArea: replSection,
+  reportError(api, error) {
+    const msg = (error as Error)?.message ?? String(error);
+    console.error(`[stage] ${api} callback threw:`, error);
+    if (stageErrorReported) return;
+    stageErrorReported = true;
+    reportToModel(
+      `Strudel widget: a ${api} callback threw "${msg}". The callback keeps being called; ` +
+        "the error is reported once per callback. Fix it and re-run.",
+    );
+  },
+  ttsOrigin: DEFAULT_SHARE_ORIGIN,
+});
+const stage = createStage(stageEnv);
+
+/** Put the stage globals on the eval scope. Not Strudel names, so nothing overwrites them. */
+function publishStageGlobals(): void {
+  Object.assign(window as any, stage.globals);
+}
+publishStageGlobals();
+
 const stopGestureUnlock = listenForAudioGestures(document, {
   press(kind) {
     gestureLatch.begin(isPlaying && audioIsBlockedNow());
-    if (kind !== "touch") void ensureAudioRunning();
+    if (kind !== "touch") {
+      void ensureAudioRunning();
+      // Speech needs a speak() inside the gesture itself on WebKit.
+      stageSpeech.unlock();
+    }
   },
   activate() {
     gestureLatch.extend(isPlaying && audioIsBlockedNow());
     void ensureAudioRunning();
+    stageSpeech.unlock();
   },
 });
 
@@ -917,6 +965,7 @@ function installEvalScopeHooks(): void {
   evalScopeHooked = true;
 
   snapshotStrudelGlobals();
+  publishStageGlobals();
 
   defineWrappedGlobal("initHydra", (original) => async (options: Record<string, unknown> = {}) => {
     // `src` and `autoLoop` first so an explicit caller value still wins. Both
@@ -1841,8 +1890,11 @@ function reportEvaluation(
     renderPlayButton();
     const state = currentPlaybackState();
     markReportedPlaying(state, msg);
+    // Positions are in the buffer that ran; say where that is in the code the
+    // model sent, when bpm/visuals added lines above it.
+    const lineNote = sentCode ? sourceLineNote(msg, code, sentCode) : "";
     reportToModel(
-      `Strudel widget: pattern failed to evaluate — ${msg}` +
+      `Strudel widget: pattern failed to evaluate — ${msg}${lineNote}` +
         (state === "playing"
           ? " (the previous pattern is still playing)"
           : state === "audio-blocked"
@@ -1888,8 +1940,42 @@ function reportEvaluation(
         : "loaded, not playing";
   reportToModel(
     `Strudel widget: ${what}` +
-      ` (visuals: ${layers.length ? layers.join(" + ") : "none"}${motionNote})${soundfontNote}${tempoNote}`,
+      ` (visuals: ${layers.length ? layers.join(" + ") : "none"}${motionNote})${soundfontNote}${tempoNote}` +
+      stageCapabilityNote(code),
   );
+}
+
+/**
+ * For pieces that speak or listen: what this frame can actually do, measured
+ * from inside it. The host sets the iframe's sandbox/allow attributes, so this
+ * is the only honest source — the 2026-10-01 DUET field test could not tell
+ * "speech is blocked" from "speech was never attempted".
+ */
+function stageCapabilityNote(code: string): string {
+  const voiced = /\bsay\s*\(/.test(code);
+  const rawSpeech = /speechSynthesis/.test(code);
+  const taps = /\bonTap\s*\(|pointerdown|addEventListener\s*\(\s*['"](?:click|touch|pointer)/.test(code);
+  const parts: string[] = [];
+  if (voiced) {
+    parts.push(
+      "voice: say() lines are rendered by the server and play as samples — if one stays " +
+        "silent, a missing-sound report follows",
+    );
+  }
+  if (rawSpeech) {
+    parts.push(
+      "browser speechSynthesis: does NOT play in the Claude mobile app's webview and can't be " +
+        "put on the beat — use say(text) instead, which returns a pattern",
+    );
+  }
+  if (taps) {
+    parts.push(
+      stageMode
+        ? "taps: stage mode, the whole frame is the stage"
+        : "taps: the code editor covers the stage — taps on code lines go to the editor; the Stage button hides it",
+    );
+  }
+  return parts.length ? ` — ${parts.join("; ")}` : "";
 }
 
 /** Bumped by every evaluation, so a stale one can tell if a newer one began. */
@@ -1988,16 +2074,29 @@ function installEvaluateHook(editor: any): void {
       clearTimeout(missingSoundTimer);
       missingSoundTimer = null;
     }
+    // This evaluation's onFrame/onEvent/onTap go live only if it succeeds.
+    stage.begin();
     try {
       await original(shouldPlay !== false);
     } catch (err) {
+      stage.rollback();
       if (evaluationSuperseded(editor, generation, seq)) return;
       reportEvaluation(code, err as Error);
       return;
     }
-    if (evaluationSuperseded(editor, generation, seq)) return;
-    // A pattern that failed keeps the old one playing — and its layers.
-    if (!readEvalError()) pruneDrawLayers(code);
+    if (evaluationSuperseded(editor, generation, seq)) {
+      stage.rollback();
+      return;
+    }
+    // A pattern that failed keeps the old one playing — and its layers, and
+    // its stage loops.
+    if (!readEvalError()) {
+      pruneDrawLayers(code);
+      stage.commit();
+      stageErrorReported = false;
+    } else {
+      stage.rollback();
+    }
     // Some of the clobbered globals (`time`) are only published onto globalThis
     // by the evaluation itself, so the pre-eval snapshot above cannot see them
     // on a cold widget. This second pass catches them, and no-ops once a
@@ -2462,6 +2561,7 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
     if (superseded()) return;
 
     let finalCode = code;
+    sentCode = code;
     runtimeCps = null;
     if (bpm) {
       const tempo = injectTempo(finalCode, bpm);
@@ -2827,6 +2927,8 @@ app.onteardown = () => {
     teardownAudioAnalyser();
     // A discarded widget must not resume audio on a stray tap.
     stopGestureUnlock();
+    // Its loops, tap listener and speech end with it.
+    stage.stop();
     drawLayers.forEach((layer) => layer.remove());
     drawLayers.clear();
     watchedAudioContext?.removeEventListener("statechange", syncAudioState);

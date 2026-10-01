@@ -17,6 +17,8 @@
       "deleted_classes": ["MusicStudioMCP"]
     }
   ],
+  // Workers AI renders say() lines (GET /tts, src/shared/tts.ts).
+  "ai": { "binding": "AI", "remote": true },
   "kv_namespaces": [
     {
       "binding": "DOCS_CACHE",

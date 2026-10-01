@@ -183,6 +183,9 @@ export const STRUDEL_CSP: { resourceDomains: string[]; connectDomains: string[] 
     // the sound is never registered (silent layer, no error).
     "https://shabda.ndre.gr",
     "https://cdn.freesound.org",
+    // say(): spoken lines rendered by our own Worker (GET /tts) and loaded as
+    // samples. Our origin only — no third-party TTS is reachable from the widget.
+    "https://music-studio.linxule.com",
   ],
 };
 
@@ -511,19 +514,23 @@ export const playLiveInputSchema = z.object({
 });
 
 /**
- * Why the remote transport returns an unchecked receipt.
+ * What the remote transport can vouch for: the code PARSES.
  *
  * Not a bundle-size decision: the @strudel packages fit the Worker fine
- * (+215 KiB gzip, measured). Strudel's evaluate() transpiles a pattern and runs
- * it through `new Function`, and workerd rejects that outright — "EvalError:
- * Code generation from strings disallowed for this context" — with no flag to
- * lift it. So the remote server says what it cannot do, and points at the one
- * that can.
+ * (+215 KiB gzip, measured). Strudel's evaluate() runs a pattern through
+ * `new Function`, and workerd rejects that outright — "EvalError: Code
+ * generation from strings disallowed for this context" — with no flag to lift
+ * it. Transpiling needs no code generation, though, so since 0.7 the Worker
+ * parses the JavaScript and every mini-notation string
+ * (src/shared/strudel-static-check.ts) and reports a syntax error with its
+ * position; it just can't run the result.
  */
 export const PLAY_LIVE_UNVALIDATED_REMOTE =
-  "Not verified: this remote server can't run Strudel to check it — Cloudflare " +
-  "Workers disallow the dynamic code generation its evaluator needs. The local npm " +
-  "server (npx mcp-music-studio) reports parse errors, sounds and event counts.";
+  "Syntax checked (the JavaScript and every mini-notation string parse); not run — " +
+  "Cloudflare Workers disallow the dynamic code generation Strudel's evaluator needs, so " +
+  "sounds and event counts are unverified here (the local npm server, npx mcp-music-studio, " +
+  "reports them). After it plays, the widget reports runtime errors, missing sounds and " +
+  "silence back to you.";
 
 /** Where the pattern actually plays — the one sentence every branch ends on. */
 const PLAY_LIVE_PLAYBACK_TAIL =
@@ -583,6 +590,9 @@ function validationWarnings(v: StrudelValidation): string[] {
       "This pattern produces no events over the cycles queried — it evaluates, " +
         "but nothing will be heard.",
     );
+  }
+  for (const warning of v.warnings ?? []) {
+    warnings.push(`${warning} — the music still plays, but that visual or reaction won't.`);
   }
   if (v.unregistered?.length) {
     warnings.push(

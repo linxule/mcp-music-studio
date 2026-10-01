@@ -71,6 +71,7 @@ async function loadHook() {
   const js = (await transformWithOxc(HOOK_TS, "hook.ts")).code;
   const log = {
     reports: [] as string[],
+    stage: [] as string[],
     stops: 0,
     hydraStruck: 0,
     stateReports: 0,
@@ -115,6 +116,12 @@ async function loadHook() {
     const setHydraActive = (on) => { if (!on) log.hydraStruck++; };
     const renderPlayButton = () => {};
     const scheduleStateReport = () => { log.stateReports++; };
+    let stageErrorReported = false;
+    const stage = {
+      begin: () => { log.stage.push("begin"); },
+      commit: () => { log.stage.push("commit"); },
+      rollback: () => { log.stage.push("rollback"); },
+    };
     ${js}
     globalThis.api = {
       installEvaluateHook,
@@ -161,6 +168,8 @@ describe("an evaluation superseded while in flight", () => {
     await run;
     expect(scheduler.started).toBe(true);
     expect(log.reports).toEqual(['ok:s("bd")']);
+    // Its onFrame/onEvent/onTap registrations went live.
+    expect(log.stage).toEqual(["begin", "commit"]);
     expect(log.stops).toBe(0);
   });
 
@@ -177,6 +186,8 @@ describe("an evaluation superseded while in flight", () => {
     expect(api.isPlaying()).toBe(false);
     expect(log.reports).toEqual([]); // no "playing" for a cancelled call
     expect(log.hydraStruck).toBe(1);
+    // …and its stage loops never went live.
+    expect(log.stage).toEqual(["begin", "rollback"]);
   });
 
   it("a cancel during the audio settle is caught too", async () => {

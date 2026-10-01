@@ -204,18 +204,20 @@ describe("tool results — the click-to-play link", () => {
     expect(textOf(res)).toContain("sounds: RolandTR909:cp bd (all registered)");
   });
 
-  it("the Worker says it could not check, rather than implying it did", async () => {
+  it("the Worker says exactly what it checked — syntax — and not more", async () => {
     const res = await worker.callTool({
       name: "play-live-pattern",
       arguments: { code: 's("bd sd")' },
     });
     expect(res.isError).toBeUndefined();
-    expect(textOf(res)).toContain("Not verified:");
+    expect(textOf(res)).toContain("Syntax checked");
+    expect(textOf(res)).toContain("not run");
     expect(textOf(res)).toContain("dynamic code generation");
+    // "parses OK: …" is the local server's claim, which includes evaluation.
     expect(textOf(res)).not.toContain("parses OK");
   });
 
-  it("only the local server can reject broken Strudel", async () => {
+  it("both transports reject broken Strudel syntax, at the same position", async () => {
     const args = { code: 'stack(\n  s("bd*4"),\n  s("hh*8"]\n)' };
 
     const l = await local.callTool({ name: "play-live-pattern", arguments: args });
@@ -226,10 +228,20 @@ describe("tool results — the click-to-play link", () => {
     // is an editable REPL, which is where the fix happens.
     expect(linkOf(l.content)?.uri).toContain("/play?c=");
 
-    // The Worker cannot know it is broken — but it never claimed otherwise.
+    // Since 0.7 the Worker parses (no evaluation needed) and catches it too.
+    const w = await worker.callTool({ name: "play-live-pattern", arguments: args });
+    expect(w.isError).toBe(true);
+    expect(textOf(w)).toContain("(3:10)");
+  });
+
+  it("only the local server can catch what needs RUNNING the pattern", async () => {
+    // Parses fine; fails only when evaluated (an unknown function).
+    const args = { code: 'notAFunction(s("bd"))' };
+    const l = await local.callTool({ name: "play-live-pattern", arguments: args });
+    expect(l.isError).toBe(true);
     const w = await worker.callTool({ name: "play-live-pattern", arguments: args });
     expect(w.isError).toBeUndefined();
-    expect(textOf(w)).toContain("Not verified:");
+    expect(textOf(w)).toContain("not run");
   });
 
   // T5: the Worker used to return an unconditional "sheet music ready" receipt

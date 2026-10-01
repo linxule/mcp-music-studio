@@ -22,6 +22,8 @@ import ABCJS from "abcjs";
 import { ABC_GUIDE_TOPICS, ABC_GUIDES } from "../../src/abc-guide.js";
 import { STRUDEL_GUIDE_TOPICS, STRUDEL_GUIDES } from "../../src/strudel-guide.js";
 import { VERSION } from "../../src/version.js";
+import { staticCheckStrudel } from "../../src/shared/strudel-static-check.js";
+import { TTS_MODEL, normalizeTts, type TtsRequest } from "../../src/shared/tts.js";
 import { parseClient } from "../../src/shared/parse-client.js";
 import {
   SHEET_RESOURCE_URI,
@@ -108,6 +110,8 @@ type Env = {
   ANALYTICS: AnalyticsEngineDataset;
   DOCS_CACHE: KVNamespace;
   CONTEXT7_API_KEY: string;
+  /** Workers AI — renders say() lines (GET /tts). */
+  AI?: { run(model: string, input: Record<string, unknown>): Promise<unknown> };
 };
 
 // =============================================================================
@@ -460,13 +464,26 @@ async function enforceShareRateLimit(
   env: Env,
   request: Request,
 ): Promise<Response | null> {
+  return enforceRateLimit(env, request, {
+    key: shareRateLimitKey,
+    max: SHARE_RATE_LIMIT_MAX,
+    message: "Too many share links from this address. Try again later.",
+  });
+}
+
+/** The same fixed window, for any route: a bucket name, a budget, a message. */
+async function enforceRateLimit(
+  env: Env,
+  request: Request,
+  limit: { key: (ip: string) => string; max: number; message: string },
+): Promise<Response | null> {
   const kv = env.DOCS_CACHE;
   if (!kv) return null;
 
   // Cloudflare sets CF-Connecting-IP on every edge request; the fallback bucket
   // only matters for local `wrangler dev` and tests.
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
-  const key = shareRateLimitKey(ip);
+  const key = limit.key(ip);
   const now = Math.floor(Date.now() / 1000);
 
   let bucket: ShareRateBucket | null;
@@ -476,10 +493,10 @@ async function enforceShareRateLimit(
     return null; // KV is unwell — don't take the route down with it.
   }
 
-  if (bucket && bucket.n >= SHARE_RATE_LIMIT_MAX) {
+  if (bucket && bucket.n >= limit.max) {
     const retryAfter = Math.max(1, bucket.reset - now);
     return new Response(
-      "Too many share links from this address. Try again later.",
+      limit.message,
       {
         status: 429,
         headers: {
@@ -669,8 +686,12 @@ export function createMusicServer(
     // platform rule with no flag to lift it. So the remote transport returns
     // the honest unchecked receipt and names the local server as the place
     // that does check. See src/shared/strudel-validate.ts.
-    async (args) =>
-      withViewId(
+    async (args) => {
+      // Parse-only: no evaluation in workerd, but a syntax or mini-notation
+      // error comes back with its line:column in the code the model sent.
+      const syntaxError = staticCheckStrudel(args.code);
+      if (syntaxError) return withViewId(buildPlayLiveResult(args, { ok: false, error: syntaxError }));
+      return withViewId(
         attachPlayLink(
           buildPlayLiveResult(args, undefined, PLAY_LIVE_UNVALIDATED_REMOTE),
           // toPlayShareArgs folds the `visuals` preset into the code (and drops
@@ -681,7 +702,8 @@ export function createMusicServer(
             args: toPlayShareArgs(args),
           }, origin),
         ),
-      ),
+      );
+    },
   );
 
   // ===========================================================================
@@ -803,6 +825,115 @@ export function createMusicServer(
 }
 
 // =============================================================================
+// GET /tts — say() lines, rendered once and cached
+// =============================================================================
+//
+// The widget's say(text) registers `/tts?voice=&text=` as a sample, so speech
+// is a sound in the mix: on the beat, recordable, the same on every host
+// (browser speechSynthesis never played in the Claude mobile app). This route
+// is unauthenticated and each MISS costs a Workers AI call, so: lines are
+// capped (TTS_MAX_CHARS), voices are an allowlist of the model's synthetic
+// voices, clips are cached in KV by a digest of voice + text (a repeat is a KV
+// read), and only misses count against a per-address hourly budget.
+
+/** New renders (cache misses) per IP per hour. A DUET's lines are ~10. */
+export const TTS_RATE_LIMIT_MAX = 120;
+/** How long a rendered clip stays cached. */
+export const TTS_TTL_SECONDS = 30 * 24 * 60 * 60;
+/** A line of speech is well under this; anything bigger is not what we asked for. */
+const TTS_MAX_BYTES = 4 * 1024 * 1024;
+
+export function ttsRateLimitKey(ip: string): string {
+  return `ratelimit:tts:${ip}`;
+}
+
+export async function ttsCacheKey(request: TtsRequest): Promise<string> {
+  const bytes = new TextEncoder().encode(`${request.voice}\u0000${request.text}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `tts:v1:${hex}`;
+}
+
+/** Workers AI hands audio back as a stream, raw bytes, or base64 JSON, by model. */
+async function audioBytes(output: unknown): Promise<Uint8Array> {
+  if (output instanceof ReadableStream) return new Uint8Array(await new Response(output).arrayBuffer());
+  if (output instanceof ArrayBuffer) return new Uint8Array(output);
+  if (output instanceof Uint8Array) return output;
+  const audio = (output as { audio?: unknown } | null)?.audio;
+  if (typeof audio === "string") return Uint8Array.from(atob(audio), (c) => c.charCodeAt(0));
+  throw new Error("text-to-speech returned no audio");
+}
+
+const TTS_HEADERS = {
+  "content-type": "audio/mpeg",
+  // The URL names the content (voice + text), so the clip never changes.
+  "cache-control": "public, max-age=31536000, immutable",
+  // superdough fetch()es samples from the widget's sandboxed origin.
+  "access-control-allow-origin": "*",
+  "x-content-type-options": "nosniff",
+  "x-robots-tag": "noindex",
+};
+
+async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
+  }
+  const params = new URL(request.url).searchParams;
+  const parsed = normalizeTts(params.get("text"), params.get("voice") ?? undefined);
+  if ("error" in parsed) {
+    return new Response(parsed.error, {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
+    });
+  }
+  const key = await ttsCacheKey(parsed);
+  try {
+    const cached = await env.DOCS_CACHE?.get(key, "arrayBuffer");
+    if (cached) {
+      track(env, { blobs: ["tts", "hit", parsed.voice], doubles: [parsed.text.length], indexes: ["tts"] });
+      return new Response(request.method === "HEAD" ? null : cached, { headers: TTS_HEADERS });
+    }
+  } catch {
+    /* KV unwell — render instead */
+  }
+  const limited = await enforceRateLimit(env, request, {
+    key: ttsRateLimitKey,
+    max: TTS_RATE_LIMIT_MAX,
+    message: "Too many new spoken lines from this address. Try again later.",
+  });
+  if (limited) {
+    limited.headers.set("access-control-allow-origin", "*");
+    return limited;
+  }
+  if (!env.AI) return new Response("Speech rendering is unavailable.", { status: 503 });
+  let bytes: Uint8Array;
+  try {
+    bytes = await audioBytes(
+      await env.AI.run(TTS_MODEL, { text: parsed.text, speaker: parsed.voice, encoding: "mp3" }),
+    );
+  } catch (err) {
+    return new Response(`Speech rendering failed: ${(err as Error)?.message ?? "unknown error"}`, {
+      status: 502,
+      headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
+    });
+  }
+  if (bytes.byteLength === 0 || bytes.byteLength > TTS_MAX_BYTES) {
+    return new Response("Speech rendering returned an unusable clip.", { status: 502 });
+  }
+  ctx.waitUntil(
+    (async () => {
+      try {
+        await env.DOCS_CACHE?.put(key, bytes, { expirationTtl: TTS_TTL_SECONDS });
+      } catch {
+        /* the next request renders again */
+      }
+    })(),
+  );
+  track(env, { blobs: ["tts", "miss", parsed.voice], doubles: [parsed.text.length], indexes: ["tts"] });
+  return new Response(request.method === "HEAD" ? null : bytes, { headers: TTS_HEADERS });
+}
+
+// =============================================================================
 // Worker fetch handler — stateless createLegacyMcpHandler
 // =============================================================================
 
@@ -918,6 +1049,10 @@ export default {
         }
         return shareError(err);
       }
+    }
+
+    if (url.pathname === "/tts") {
+      return handleTts(request, env, ctx);
     }
 
     if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
