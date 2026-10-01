@@ -60,9 +60,11 @@ Write code → hear it play → edit in a live REPL.
 - **`theme`** — 39 CodeMirror colour schemes; the visuals stage and its readability scrim are derived from the active theme, so light themes stay readable
 - **Stage mode** — hide the code and let the visuals fill the frame (composes with the host's fullscreen)
 - **Honest runtime feedback** — evaluation errors, unknown sound names, and stops the user triggered are reported back to the model as they happen, so it never answers about a silent widget as if the music were still playing
-- **Server-side validation** — the local server evaluates every Strudel pattern headlessly before answering: the tool result reports layers, events per cycle, tempo, and which sound names are registered (or a syntax error with line:column), so terminal clients get real diagnostics too. (The hosted worker can't — Cloudflare forbids dynamic code generation — and says so.)
+- **Beyond music: a stage for audiovisual pieces** — pattern code is real browser JavaScript, and the widget gives it five primitives: `cycle()` (the cycle you're hearing), `onFrame(fn)` (a managed animation loop), `onEvent(pattern, fn)` (fires as each note becomes audible, with its MIDI pitch), `onTap(fn)` (taps on the stage, with `next(16)` — the first 16th the scheduler can still play) and `say(text, { voice })` (a spoken line rendered by the server, returned as a **pattern**, so it lands on the beat, mixes, and records). Draw your own canvases into Hydra, re-render them as ASCII, cut between scenes on bar lines. Each belongs to the evaluation that made it: re-running replaces the old loop instead of stacking another
+- **A gallery of finished pieces** — a short film, a spoken duet you play along with, a Game of Life that composes, a glitch piece about memory: `get-strudel-guide({ topic: "gallery", piece: "first-light" })`. Made in claude.ai by a Claude model with a person
+- **Server-side validation** — the local server evaluates every Strudel pattern headlessly before answering: the tool result reports layers, events per cycle, tempo, and which sound names are registered (or a syntax error with line:column), and runs each `onFrame`/`onEvent` callback once to catch a draw loop that throws. The hosted worker can't run Strudel (Cloudflare forbids dynamic code generation), but it parses the JavaScript and every mini-notation string, so a typo still comes back with its line and column
 - **Record & download** — capture live audio and export as WAV (recordings longer than about two minutes download in the recorder's own compressed format, so the file stays a sensible size)
-- **`get-strudel-guide`** — 9 reference topics (mini-notation, sounds, effects, patterns, genres, tips, visuals, hydra, advanced)
+- **`get-strudel-guide`** — 15 reference topics: mini-notation, sounds, effects, patterns, genres, tips, visuals, hydra, advanced — and for audiovisual work stage, film, interactive, craft, debugging, gallery
 
 ### Shared
 - **`analyze-harmony`** — chord detection, key detection, progressions, chord scales; answers in both ABC chord symbols and Strudel `chord()`/`note()` form
@@ -232,7 +234,7 @@ Without `--stdio` the server listens over Streamable HTTP. That endpoint is **un
 | `play-sheet-music` | ABC notation → visual sheet music + multi-instrument audio | `abcNotation`, `title?`, `instrument?`, `style?`, `tempo?` (40–240), `swing?` (0–75), `drumIntro?` (0–8), `transpose?` (−12–12) |
 | `play-live-pattern` | Strudel code → live-coded patterns with synthesis + effects | `code`, `title?`, `bpm?` (40–300), `autoplay?`, `visuals?`, `theme?` |
 | `get-music-guide` | ABC reference (7 topics: instruments, drums, syntax, genres...) | `topic` |
-| `get-strudel-guide` | Strudel reference (9 topics: sounds, effects, visuals, hydra, genres...) | `topic` |
+| `get-strudel-guide` | Strudel reference (15 topics: sounds, effects, visuals, hydra, genres, stage, film, interactive, craft, gallery...) | `topic`, `piece?` (with `gallery`) |
 | `search-music-docs` | Semantic search over strudel.cc and ABCJS docs | `query`, `library` (`strudel` \| `abcjs`) |
 | `analyze-harmony` | Name a chord, guess the key, get a progression or chord scale — in ABC and Strudel spellings | `task`, `notes?`, `chords?`, `key?`, `romanNumerals?` |
 | `convert-abc-to-strudel` | Turn a scored ABC melody into a Strudel mini-notation pattern | `abcNotation`, `voice?`, `sound?` |
@@ -251,6 +253,33 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `compose-beat` | Generate + play a Strudel pattern in a genre (args: `genre`, `mood?`) |
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
+
+## 0.7.0 — October 1, 2026
+
+From sound toy to audiovisual instrument. A day of making things in claude.ai
+— a short film, a duet with speech, a Game of Life composer — showed that the
+widget already was one, and that its worst bugs were silent. This release
+fixes those and gives the pieces a runtime, a voice and a guide.
+
+- **Stage runtime**: `cycle()`, `onFrame`, `onEvent`, `onTap` (+ `next(16)`)
+  and `say()` in the widget and on share pages. New guide topics `stage`,
+  `film`, `interactive`, `craft`, `debugging`, and a `gallery` of complete pieces.
+- **Voice**: `say(text, { voice })` returns a pattern playing the words,
+  rendered once by the hosted service (Cloudflare Workers AI, 40 synthetic
+  voices, cached) — so it is on the beat and identical on every device.
+  Browser speech never played in the Claude mobile app.
+- **Fixed — frozen clocks**: `H(signal(t => t))` returned 0 forever (a Strudel
+  Fraction it misread), freezing any visual built on it at bar 1.
+- **Fixed — 22 silent sounds in Chrome, Edge and Electron hosts**: kalimba,
+  steinway, kawai, ocarina, the VCSL snares and more. GitHub serves them with a
+  header Chromium rejects; they now load from jsDelivr.
+- **Fixed — the local validator rejected working audiovisual code** ("window is
+  not defined") and the hosted server checked nothing; the hosted server now
+  reports syntax errors with their position, and error line numbers point at
+  the code the model sent even when `bpm` or `visuals` added lines.
+- **Taps that land**: `tap.next(16)` is past what the scheduler has already
+  committed, so a tapped note always sounds.
+- The privacy policy covers spoken lines.
 
 ## 0.6.0 — September 26, 2026
 
