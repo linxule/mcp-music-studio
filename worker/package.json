@@ -8,14 +8,14 @@
     "tail": "wrangler tail"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "abcjs": "~6.7.1",
-    "agents": "^0.23.0",
-    "tonal": "^6.4.3",
+    "agents": "^0.24.0",
+    "tonal": "^6.5.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260918.1",
+    "@cloudflare/workers-types": "5.20260928.1",
     "typescript": "^7.0.2",
     "wrangler": "4.146.0"
   }
