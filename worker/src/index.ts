@@ -29,7 +29,9 @@ import { mintSessionId, SESSION_ID_RE } from "../../src/shared/session.js";
 import { attachSession, httpSessionBackend, registerSessionTools, type SessionBackend } from "../../src/shared/session-tools.js";
 import {
   SHEET_RESOURCE_URI,
+  LEGACY_SHEET_RESOURCE_URI,
   STRUDEL_RESOURCE_URI,
+  LEGACY_STRUDEL_RESOURCE_URI,
   SERVER_INSTRUCTIONS,
   advertiseUiExtension,
   PLAY_TOOL_ANNOTATIONS,
@@ -355,11 +357,13 @@ const SESSION_WAITING_CODE =
 async function renderSessionPage(env: Env, url: URL, id: string): Promise<Response> {
   if (!env.JAM) return new Response("Live sessions are not available here.", { status: 503 });
   const res = await env.JAM.get(env.JAM.idFromName(id)).fetch("https://session/current");
-  if (res.status === 404) {
-    return new Response("This live session has ended (sessions close after 2 hours idle).", {
-      status: 404,
-      headers: { "content-type": "text/plain; charset=utf-8", "x-robots-tag": "noindex" },
-    });
+  if (res.status === 404 || res.status === 410) {
+    return new Response(
+      res.status === 410
+        ? "The listener ended this live session."
+        : "This live session has ended (sessions close after 2 hours idle).",
+      { status: res.status, headers: { "content-type": "text/plain; charset=utf-8", "x-robots-tag": "noindex" } },
+    );
   }
   const current = res.status === 200 ? ((await res.json()) as { code?: string; rev?: number }) : {};
   return renderFullPlayer(
@@ -717,38 +721,42 @@ export function createMusicServer(
   // Ext-Apps UI Resources
   // ===========================================================================
 
-  server.resource(
-    SHEET_RESOURCE_URI,
-    SHEET_RESOURCE_URI,
-    { mimeType: EXT_APPS_MIME, description: "Sheet Music Viewer UI" },
-    async () => ({
-      contents: [
-        {
-          uri: SHEET_RESOURCE_URI,
-          mimeType: EXT_APPS_MIME,
-          text: sheetMusicHtml,
-          _meta: { ui: { csp: { ...SHEET_CSP } } },
-        },
-      ],
-    }),
-  );
+  for (const uri of [SHEET_RESOURCE_URI, LEGACY_SHEET_RESOURCE_URI]) {
+    server.resource(
+      uri,
+      uri,
+      { mimeType: EXT_APPS_MIME, description: "Sheet Music Viewer UI" },
+      async () => ({
+        contents: [
+          {
+            uri,
+            mimeType: EXT_APPS_MIME,
+            text: sheetMusicHtml,
+            _meta: { ui: { csp: { ...SHEET_CSP } } },
+          },
+        ],
+      }),
+    );
+  }
 
-  server.resource(
-    STRUDEL_RESOURCE_URI,
-    STRUDEL_RESOURCE_URI,
-    { mimeType: EXT_APPS_MIME, description: "Strudel Live Pattern REPL" },
-    async () => ({
-      contents: [
-        {
-          uri: STRUDEL_RESOURCE_URI,
-          mimeType: EXT_APPS_MIME,
-          text: strudelHtml,
-          // A preview/lab deployment's widget joins sessions on ITS origin.
-          _meta: { ui: { csp: { ...STRUDEL_CSP, connectDomains: withOrigin(STRUDEL_CSP.connectDomains, origin) } } },
-        },
-      ],
-    }),
-  );
+  for (const uri of [STRUDEL_RESOURCE_URI, LEGACY_STRUDEL_RESOURCE_URI]) {
+    server.resource(
+      uri,
+      uri,
+      { mimeType: EXT_APPS_MIME, description: "Strudel Live Pattern REPL" },
+      async () => ({
+        contents: [
+          {
+            uri,
+            mimeType: EXT_APPS_MIME,
+            text: strudelHtml,
+            // A preview/lab deployment's widget joins sessions on ITS origin.
+            _meta: { ui: { csp: { ...STRUDEL_CSP, connectDomains: withOrigin(STRUDEL_CSP.connectDomains, origin) } } },
+          },
+        ],
+      }),
+    );
+  }
 
   // ===========================================================================
   // Tool: play-sheet-music
@@ -1134,7 +1142,7 @@ const SESSION_CORS: Record<string, string> = {
   "access-control-max-age": "86400",
   "access-control-expose-headers": "x-session-listening",
 };
-const SESSION_OPS = new Set(["events", "next", "state", "update", "current"]);
+const SESSION_OPS = new Set(["events", "next", "state", "update", "current", "end"]);
 const SESSION_EVENTS_MAX_BYTES = 256 * 1024;
 const SESSION_UPDATE_MAX_BYTES = 64 * 1024 * 4 + 1024;
 
@@ -1174,7 +1182,10 @@ export async function handleSessionRoute(request: Request, env: Env): Promise<Re
 
   if (parts.length === 2 && parts[1] === "new") {
     if (request.method !== "POST") return sessionJson({ error: "method not allowed" }, 405);
-    if (!(await limit(env.SESSION_NEW_LIMITER))) return sessionJson({ error: "too many new sessions" }, 429);
+    if (!(await limit(env.SESSION_NEW_LIMITER))) {
+      track(env, { blobs: ["session", "limited", "new"], indexes: ["session"] });
+      return sessionJson({ error: "too many new sessions" }, 429);
+    }
     const id = mintSessionId();
     const stub = env.JAM.get(env.JAM.idFromName(id));
     let seed: string | undefined;
@@ -1188,6 +1199,9 @@ export async function handleSessionRoute(request: Request, env: Env): Promise<Re
       body: seed ? JSON.stringify({ seed }) : undefined,
     });
     if (!res.ok) return sessionJson({ error: "could not open a session" }, 502);
+    // Counts only, never the id (it works like a password). Cost watch: each
+    // open session is a Durable Object awake while its player polls.
+    track(env, { blobs: ["session", "new", seed ? "seeded" : "empty"], indexes: ["session"] });
     return sessionJson({ id });
   }
 
@@ -1198,6 +1212,7 @@ export async function handleSessionRoute(request: Request, env: Env): Promise<Re
   // Every op is metered (Codex review): a widget polls ~3×/min and posts
   // events every ~1.5 s at most, far under the limit.
   if (!(await limit(env.SESSION_EVENTS_LIMITER))) {
+    track(env, { blobs: ["session", "limited", "ops"], indexes: ["session"] });
     return sessionJson({ error: "too many requests" }, 429);
   }
   // Read the body under its cap HERE, before the Durable Object (and before a

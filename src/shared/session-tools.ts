@@ -10,7 +10,7 @@
 
 import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { SESSION_ID_RE, SESSION_MAX_QUANTIZE, type QueuedPattern, type SessionEvent } from "./session.js";
+import { LOADED_STOPPED, SESSION_ID_RE, SESSION_MAX_QUANTIZE, staleWidgetHint, type QueuedPattern, type SessionEvent } from "./session.js";
 import { MAX_SOURCE_CHARS } from "./tool-defs.js";
 
 export interface SessionUpdateOutcome {
@@ -23,6 +23,10 @@ export interface SessionUpdateOutcome {
   estCycle: number | null;
   boundary: number | null;
   cps: number | null;
+  /** The player's widget version (absent before 0.10.1), for the stale-widget hint. */
+  widget?: string | null;
+  /** The bar the PLAYER picked (it says so before waiting for it); null if it had not answered. */
+  scheduled?: { boundary: number } | null;
 }
 
 export interface SessionBackend {
@@ -35,7 +39,8 @@ export interface SessionBackend {
     wait?: { mode: "pass" | "activity"; timeoutMs?: number },
     signal?: AbortSignal,
   ): Promise<string | null>;
-  update(id: string, code: string, quantize: number): Promise<SessionUpdateOutcome | null>;
+  /** null: no such session; "ended": the listener closed it (End session). */
+  update(id: string, code: string, quantize: number): Promise<SessionUpdateOutcome | null | "ended">;
 }
 
 export interface CodeProblem {
@@ -50,7 +55,8 @@ export const GET_SESSION_DESCRIPTION =
   "the human did since your last read — taps (cycle and position), code they edited and ran, and when " +
   "they passed the turn to you. Read it before assuming a piece played, and when the user says it's your turn. " +
   "With wait: 'pass' it LISTENS — holds until the listener presses Pass — so you can play a whole back-to-back " +
-  "set in one turn: update-session, get-session(wait: 'pass'), answer, listen again.";
+  "set in one turn: update-session, get-session(wait: 'pass'), answer, listen again. " +
+  "The listener can also End the session from the player; get-session then says so, and the player stops listening for updates.";
 
 export const UPDATE_SESSION_DESCRIPTION =
   "Swap a new pattern into a live session's player — no new player, the music keeps playing. " +
@@ -113,7 +119,7 @@ export function sessionNote(id: string): string {
     `update-session(session: "${id}", code) swaps in a new pattern on the next bar — no new player — and ` +
     `says whether it ran; get-session(session: "${id}") reads what happened: runtime errors, what is playing, ` +
     "and the human's taps, control moves, code edits and when they hand the turn to you — with wait: \"pass\" it " +
-    "listens until they press Pass. The session closes after 2 hours idle."
+    "listens until they press Pass. The session closes after 2 hours idle, or when the listener presses End session."
   );
 }
 
@@ -135,10 +141,23 @@ const unknownSession = (id: string): CallToolResult => ({
 
 const cyc = (c: number | null): string => (c === null ? "?" : (Math.round(c * 10) / 10).toFixed(1));
 
+const endedSession = (): CallToolResult => ({
+  isError: true,
+  content: [
+    {
+      type: "text",
+      text:
+        "The listener ended this session — the player no longer takes updates (its last pattern keeps playing on its own). " +
+        "Open a new one with play-live-pattern(session: true).",
+    },
+  ],
+});
+
 export function buildUpdateSessionResult(
   id: string,
-  outcome: SessionUpdateOutcome | null,
+  outcome: SessionUpdateOutcome | null | "ended",
 ): CallToolResult {
+  if (outcome === "ended") return endedSession();
   if (!outcome) return unknownSession(id);
   const { pattern, applied, widgetSeenMsAgo, estCycle, boundary, cps } = outcome;
   if (applied) {
@@ -150,7 +169,8 @@ export function buildUpdateSessionResult(
             type: "text",
             text:
               `Rev ${pattern.rev} failed in the player: ${applied.error ?? "unknown error"}. ` +
-              "The previous pattern kept playing. Fix it and call update-session again.",
+              (staleWidgetHint(applied.error, outcome.widget ?? null) ??
+                "The previous pattern kept playing. Fix it and call update-session again."),
           },
         ],
       };
@@ -160,7 +180,9 @@ export function buildUpdateSessionResult(
         {
           type: "text",
           text:
-            `Rev ${pattern.rev} applied — it takes over at cycle ${cyc(applied.cycle)}.` +
+            (applied.cycle === null
+              ? `Rev ${pattern.rev} ${LOADED_STOPPED}.`
+              : `Rev ${pattern.rev} applied — it takes over at cycle ${cyc(applied.cycle)}.`) +
             (applied.report ? ` ${applied.report}` : "") +
             ` get-session(session: "${id}") shows what the human does next.`,
         },
@@ -182,17 +204,28 @@ export function buildUpdateSessionResult(
       ],
     };
   }
-  const eta =
-    boundary !== null && estCycle !== null && cps
-      ? ` (~${Math.max(0, Math.round((boundary - estCycle) / cps))} s from now)`
-      : "";
+  const eta = (at: number | null) =>
+    at !== null && estCycle !== null && cps ? ` (~${Math.max(0, Math.round((at - estCycle) / cps))} s from now)` : "";
+  if (outcome.scheduled) {
+    const at = outcome.scheduled.boundary;
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Rev ${pattern.rev} takes over at cycle ${cyc(at)}${eta(at)} — the bar the player picked. ` +
+            `get-session(session: "${id}") confirms when it plays.`,
+        },
+      ],
+    };
+  }
   return {
     content: [
       {
         type: "text",
         text:
-          `Rev ${pattern.rev} queued for cycle ${cyc(boundary)}${eta}; the player had not confirmed it yet. ` +
-          `Call get-session(session: "${id}") in a moment to see whether it ran.`,
+          `Rev ${pattern.rev} queued — estimated to take over around cycle ${cyc(boundary)}${eta(boundary)}; the player had not answered yet. ` +
+          `Call get-session(session: "${id}") in a moment to see where it landed.`,
       },
     ],
   };
@@ -295,6 +328,7 @@ export function httpSessionBackend(
         body: JSON.stringify({ code, quantize }),
       });
       if (res.status === 404) return null;
+      if (res.status === 410) return "ended";
       if (!res.ok) throw new Error(`session service answered ${res.status}`);
       return (await res.json()) as SessionUpdateOutcome;
     },

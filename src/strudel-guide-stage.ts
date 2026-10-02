@@ -397,6 +397,11 @@ change and build on it. Send the whole pattern, change one or two things, and
 keep their controls (same names) so their hands stay on the instrument. Say one
 line in the chat about what you heard and what you answered with.
 
+The listener can close the set with End session on the player: get-session then
+says the session ended (a wait returns at once), update-session no longer reaches
+the player, and its last pattern keeps playing on its own. To play on, open a new
+session.
+
 ## Ideas that work
 - A simulation composes: Game of Life, a flock, a random walk — make each
   generation a pure function of the bar number, and let a playhead read it.

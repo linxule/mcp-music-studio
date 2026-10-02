@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { sequence, stack } from "@strudel/core";
 import {
+  staleWidgetHint,
   appendEvents,
   coerceEvents,
   describeSession,
@@ -12,6 +13,7 @@ import {
   recordHeartbeat,
   SESSION_ID_RE,
   SESSION_IDLE_TTL_MS,
+  SESSION_ENDED_TTL_MS,
   SESSION_MAX_EDIT_BODIES,
   SESSION_MAX_EVENTS,
   SESSION_MAX_BYTES,
@@ -239,7 +241,9 @@ describe("JamSession (Durable Object)", () => {
     const outcome = await (await update).json();
     expect(outcome.applied).toMatchObject({ rev: 1, ok: true, cycle: 9 });
     expect(outcome.pattern.code).toBe(""); // not echoed back to the model
-    expect(outcome.boundary).toBe(9);
+    // The server's own estimate errs late (swap lead + SERVER_ETA_MARGIN_S):
+    // cycle 8 at cps 0.5 → the bar after 8 + 1.175 = 10.
+    expect(outcome.boundary).toBe(10);
   });
 
   it("does not wait for a player that never joined", async () => {
@@ -417,7 +421,7 @@ describe("session tools", () => {
     });
     expect(bad.isError).toBe(true);
     expect((buildUpdateSessionResult(ID, { ...base, applied: null }).content[0] as any).text).toContain(
-      "queued for cycle 12.0 (~4 s from now)",
+      "queued — estimated to take over around cycle 12.0 (~4 s from now)",
     );
     expect(
       (buildUpdateSessionResult(ID, { ...base, applied: null, widgetSeenMsAgo: null }).content[0] as any).text,
@@ -921,5 +925,212 @@ describe("swapOutcome: a swap only succeeds if it actually took over", () => {
     expect(swapOutcome({ ...base, refused: true, ran: false, error: "x" })).toBe(replaced);
     expect(swapOutcome({ ...base, ran: false, error: "x" }).error).toContain("taken over by a newer run");
     expect(swapOutcome({ ...base, error: "boom", started: false }).error).toBe("boom");
+  });
+});
+
+describe("End session (the listener closes the set)", () => {
+  async function open() {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    return h;
+  }
+  const end = (h: ReturnType<typeof harness>, cycle: unknown = 12.5) =>
+    h.call("end", { method: "POST", body: JSON.stringify({ cycle }) });
+
+  it("wakes a listening get-session at once, which reads that it ended", async () => {
+    const h = await open();
+    const listening = h.call("state?wait=pass");
+    await vi.waitFor(() => expect(h.sleeping()).toBe(1));
+    expect(await (await end(h)).json()).toMatchObject({ ok: true, ended: true });
+    const { text } = await (await listening).json();
+    expect(text).toContain("The listener ended the session.");
+    expect(text).toContain("ENDED this session");
+    expect(text).toContain("(at cycle 12.5)");
+    expect(text).toContain("- cycle 12.5: the listener ended the session.");
+  });
+
+  it("fails an update still waiting for the player's answer", async () => {
+    const h = await open();
+    await h.call("next?after=0&cycle=1&cps=0.5&state=playing&wait=0");
+    const update = h.call("update", { method: "POST", body: JSON.stringify({ code: "s('bd')", quantize: 8 }) });
+    await vi.waitFor(() => expect(h.sleeping()).toBe(1));
+    await end(h);
+    const outcome = await (await update).json();
+    expect(outcome.applied).toMatchObject({ ok: false, error: "the listener ended the session" });
+  });
+
+  it("releases a held poll with 410, then answers polls, events, current and update 410", async () => {
+    const h = await open();
+    const poll = h.call("next?after=0&cycle=1&cps=0.5&state=playing");
+    await vi.waitFor(() => expect(h.sleeping()).toBe(1));
+    await end(h);
+    expect((await poll).status).toBe(410);
+    expect((await h.call("next?after=0")).status).toBe(410);
+    expect((await h.call("events", { method: "POST", body: '{"events":[{"t":"pass"}]}' })).status).toBe(410);
+    expect((await h.call("current")).status).toBe(410);
+    expect((await h.call("update", { method: "POST", body: JSON.stringify({ code: "x" }) })).status).toBe(410);
+    // A read (with or without wait) answers at once with the ended text: no new waiter.
+    const before = h.sleeping();
+    const { text } = await (await h.call("state?wait=pass")).json();
+    expect(text).toContain("ENDED this session");
+    expect(h.sleeping()).toBe(before);
+  });
+
+  it("is idempotent", async () => {
+    const h = await open();
+    await end(h, 3);
+    expect(await (await end(h, 9)).json()).toMatchObject({ ok: true, already: true });
+    const { text } = await (await h.call("state")).json();
+    expect(text).toContain("(at cycle 3.0)");
+    expect(text.match(/the listener ended the session/g)).toHaveLength(1);
+  });
+
+  it("deletes everything about 10 minutes after the end, not 2 hours", async () => {
+    const h = await open();
+    const t0 = 1_000_000;
+    await end(h);
+    expect(h.state.alarm()).toBe(t0 + SESSION_ENDED_TTL_MS);
+    h.setNow(t0 + SESSION_ENDED_TTL_MS - 60_000);
+    await h.obj.alarm(); // too early: re-arms
+    expect(h.state.map.size).toBe(1);
+    h.setNow(t0 + SESSION_ENDED_TTL_MS);
+    await h.obj.alarm();
+    expect(h.state.map.size).toBe(0);
+    expect((await h.call("state")).status).toBe(404);
+  });
+
+  it("update-session says the listener ended it (not 'no such session')", async () => {
+    const result = buildUpdateSessionResult(ID, "ended");
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as any).text).toContain("The listener ended this session");
+    const b = httpSessionBackend(async () => new Response('{"error":"session ended"}', { status: 410 }));
+    expect(await b.update(ID, "x", 1)).toBe("ended");
+  });
+});
+
+describe("SessionClient.end", () => {
+  it("sends what is queued, then the end, then stops polling", async () => {
+    const calls: Array<{ url: string; body?: string }> = [];
+    const statuses: string[] = [];
+    const client = new SessionClient("https://example.test", ID, {
+      fetch: async (url: string, init?: RequestInit) => {
+        calls.push({ url, body: init?.body as string | undefined });
+        if (url.includes("/next?")) {
+          return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("abort"))));
+        }
+        return new Response('{"ok":true}');
+      },
+      setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 5)),
+      clearTimeout: (h) => clearTimeout(h as any),
+      clock: () => ({ cycle: 7, cps: 0.5, state: "playing" }),
+      apply: async () => ({ ok: true, cycle: 0 }),
+      onStatus: (s) => statuses.push(s),
+    });
+    client.start({});
+    await vi.waitFor(() => expect(calls.some((c) => c.url.includes("/next?"))).toBe(true));
+    client.log({ t: "tap", cycle: 6, x: 0.5, y: 0.5 }); // batched, not yet sent
+    expect(await client.end(7.25)).toBe(true);
+    const posts = calls.filter((c) => !c.url.includes("/next?"));
+    expect(posts.at(-2)?.body).toContain('"t":"tap"');
+    expect(posts.at(-1)).toMatchObject({ url: `https://example.test/session/${ID}/end`, body: '{"cycle":7.25}' });
+    expect(statuses.at(-1)).toBe("ended");
+    const count = calls.length;
+    client.log({ t: "tap", cycle: 8, x: 0, y: 0 }, true);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(calls.length).toBe(count); // nothing after the end
+  });
+
+  it("another screen's end (410 on a poll) shows as ended, quietly", async () => {
+    const statuses: string[] = [];
+    const client = new SessionClient("https://example.test", ID, {
+      fetch: async (url: string) => (url.includes("/next?") ? new Response(null, { status: 410 }) : new Response("{}")),
+      setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 5)),
+      clearTimeout: (h) => clearTimeout(h as any),
+      clock: () => ({ cycle: 0, cps: 0.5, state: "playing" }),
+      apply: async () => ({ ok: true, cycle: 0 }),
+      onStatus: (s) => statuses.push(s),
+    });
+    client.start({});
+    await vi.waitFor(() => expect(statuses.at(-1)).toBe("ended"));
+    expect(statuses).not.toContain("retrying");
+  });
+});
+
+describe("field report fixes (0.10.1)", () => {
+  it("update-session reports the bar the PLAYER picked, as soon as it is far away", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    await h.call("next?after=0&cycle=36&cps=0.5&state=playing&wait=0");
+    const update = h.call("update", { method: "POST", body: JSON.stringify({ code: "s('bd')", quantize: 8 }) });
+    await vi.waitFor(() => expect(h.sleeping()).toBe(1));
+    // The player picked 48 (16 s away, beyond the 9 s wait): answer at once with it.
+    await h.call("events", { method: "POST", body: JSON.stringify({ events: [{ t: "scheduled", rev: 1, boundary: 48 }] }) });
+    const outcome = await (await update).json();
+    expect(outcome.applied).toBeNull();
+    expect(outcome.scheduled).toEqual({ boundary: 48 });
+    const text = (buildUpdateSessionResult(ID, outcome).content[0] as any).text;
+    expect(text).toContain("Rev 1 takes over at cycle 48.0");
+    expect(text).toContain("the bar the player picked");
+    const log = (await (await h.call("state")).json()).text;
+    expect(log).toContain("scheduled by the player for cycle 48.0");
+  });
+
+  it("a NEAR scheduled bar keeps waiting for the real 'applied'", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    await h.call("next?after=0&cycle=8&cps=0.5&state=playing&wait=0");
+    const update = h.call("update", { method: "POST", body: JSON.stringify({ code: "s('bd')", quantize: 1 }) });
+    await vi.waitFor(() => expect(h.sleeping()).toBe(1));
+    await h.call("events", { method: "POST", body: JSON.stringify({ events: [{ t: "scheduled", rev: 1, boundary: 10 }] }) });
+    await h.call("events", { method: "POST", body: JSON.stringify({ events: [{ t: "applied", rev: 1, ok: true, cycle: 10 }] }) });
+    const outcome = await (await update).json();
+    expect(outcome.applied).toMatchObject({ ok: true, cycle: 10 });
+  });
+
+  it("a swap answered by a STOPPED player reads 'loaded', never 'cycle ?'", () => {
+    const pattern = { rev: 2, code: "", quantize: 1, at: 0 };
+    const res = buildUpdateSessionResult(ID, {
+      pattern, applied: { seq: 1, at: 0, t: "applied", rev: 2, ok: true, cycle: null }, widgetSeenMsAgo: 1000, estCycle: 3, boundary: 4, cps: 0.5,
+    });
+    const text = (res.content[0] as any).text;
+    expect(text).toContain("Rev 2 is loaded in the player, which is stopped — it starts when Play is pressed");
+    expect(text).not.toContain("?");
+    const data = newSession(ID, 0);
+    queuePattern(data, "x", 1, 0);
+    data.pattern!.rev = 1;
+    appendEvents(data, [{ t: "applied", rev: 1, ok: true, cycle: null }, { t: "pass", cycle: null }, { t: "edit", cycle: null, code: "y", chars: 1 }], 1);
+    const desc = describeSession(data, 2, 0);
+    expect(desc).toContain("is loaded in the player, which is stopped");
+    expect(desc).toContain("while the player was stopped: the human passed the turn to you.");
+    expect(desc).not.toMatch(/cycle \?/);
+  });
+
+  it("names the widget version, warns when it is older than the service, and explains a missing function", () => {
+    const data = newSession(ID, 0);
+    appendEvents(data, [{ t: "joined", host: "claude.ai", widget: "0.10.1" }], 1);
+    recordHeartbeat(data, { cycle: 1, cps: 0.5, state: "playing" }, 2);
+    expect(describeSession(data, 3, 0, "0.10.1")).toContain("(widget 0.10.1, service 0.10.1)");
+    expect(describeSession(data, 3, 0, "0.10.1")).not.toContain("OLDER widget");
+    expect(describeSession(data, 3, 0, "0.11.0")).toContain("The player is an OLDER widget than this service");
+
+    const old = newSession(ID, 0);
+    appendEvents(old, [{ t: "joined", host: "claude.ai" }], 1);
+    appendEvents(old, [{ t: "applied", rev: 1, ok: false, cycle: null, error: "tilt is not defined" }], 2);
+    const text = describeSession(old, 3, 0, "0.10.1");
+    expect(text).toContain("widget older than 0.10.1");
+    expect(text).toContain("tilt() exists since widget 0.9.0, so this player is an OLDER widget");
+    // A current widget with the same error is a real bug, not a stale cache.
+    expect(staleWidgetHint("tilt is not defined", "0.10.1")).toBeNull();
+    expect(staleWidgetHint("foo is not defined", null)).toBeNull();
+    expect(coerceEvents([{ t: "joined", widget: "<script>" }])[0]).toMatchObject({ widget: undefined });
+  });
+
+  it("update-session's failure names the stale widget", () => {
+    const res = buildUpdateSessionResult(ID, {
+      pattern: { rev: 3, code: "", quantize: 1, at: 0 },
+      applied: { seq: 1, at: 0, t: "applied", rev: 3, ok: false, cycle: null, error: "ReferenceError: mic is not defined" },
+      widgetSeenMsAgo: 500, estCycle: 1, boundary: 2, cps: 0.5, widget: "0.8.0",
+    });
+    expect((res.content[0] as any).text).toContain("mic() exists since widget 0.9.0, so this player is an OLDER widget (version 0.8.0)");
   });
 });

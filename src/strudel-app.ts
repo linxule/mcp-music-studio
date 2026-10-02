@@ -79,6 +79,7 @@ const recordBtn = document.getElementById("record-btn") as HTMLButtonElement;
 const downloadBtn = document.getElementById("download-btn") as HTMLButtonElement;
 const sendBtn = document.getElementById("send-btn") as HTMLButtonElement;
 const passBtn = document.getElementById("pass-btn") as HTMLButtonElement;
+const endBtn = document.getElementById("end-btn") as HTMLButtonElement;
 const sessionBadge = document.getElementById("session-badge") as HTMLElement;
 const fullscreenBtn = document.getElementById("fullscreen-btn") as HTMLButtonElement;
 const vizBtn = document.getElementById("viz-btn") as HTMLButtonElement;
@@ -3154,7 +3155,7 @@ function setSessionBadge(status: SessionStatus = sessionStatus): void {
       ? claudeListening
         ? "● Claude is listening — Pass when you're done"
         : "● live"
-      : status === "gone"
+      : status === "gone" || status === "ended"
         ? "○ session ended"
         : status === "parked"
           ? "○ session paused — press Play to rejoin"
@@ -3162,12 +3163,37 @@ function setSessionBadge(status: SessionStatus = sessionStatus): void {
           ? "◌ reconnecting"
           : "◌ joining";
   sessionBadge.title =
-    status === "gone"
+    status === "ended"
+      ? "This live session was ended. The pattern keeps playing here; Claude can no longer change this player."
+      : status === "gone"
       ? "This live session has ended (2 hours idle). The pattern keeps playing here."
       : status === "parked"
         ? "Stopped and untouched for 30 minutes, so the player stopped checking in. Play or edit to rejoin; the session lasts 2 hours idle."
       : "Live session: Claude can change this pattern without opening a new player, and reads what you do.";
-  passBtn.hidden = status === "gone";
+  syncChatButtons();
+}
+
+/**
+ * Say what a press will do. Pass always logs the turn in the session; only
+ * when Claude is NOT listening does it also post a chat message (the only
+ * way to start Claude's next turn) — the label says so ("Pass → chat").
+ * In a live session "Send to chat" is redundant (edits are logged and read
+ * with get-session) and was a second button writing into the chat: hidden.
+ */
+function syncChatButtons(): void {
+  const inSession = !!session && sessionStatus !== "gone" && sessionStatus !== "ended";
+  sendBtn.hidden = !canSendMessage || inSession;
+  passBtn.hidden = !inSession;
+  endBtn.hidden = !inSession;
+  const toChat = !claudeListening && canSendMessage;
+  passBtn.textContent = toChat ? "Pass → chat" : "Pass";
+  const what = claudeListening
+    ? "Claude is listening: hand it the turn. It reads what you did and answers on this player."
+    : canSendMessage
+      ? "Claude isn't listening right now: Pass logs your turn in the session and puts a message in the chat so Claude takes its turn."
+      : "Logs your turn in the session. Tell Claude in the chat that it's their turn.";
+  passBtn.title = what;
+  passBtn.setAttribute("aria-label", what);
 }
 
 function startSession(id: string, origin: string, startRev = 0): void {
@@ -3201,6 +3227,8 @@ function startSession(id: string, origin: string, startRev = 0): void {
     host: host?.name ? `${host.name}${host.version ? ` ${host.version}` : ""}` : undefined,
     platform: ctx?.platform,
     caps: Object.keys(app.getHostCapabilities() ?? {}),
+    // So the model can tell a host-cached older widget from the current one.
+    widget: VERSION,
   });
   // The first report this widget made may have come before the session existed.
   if (lastReportText) session.log({ t: "report", text: lastReportText }, true);
@@ -3241,7 +3269,12 @@ function scheduleSpliceSweep(): void {
 }
 
 function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome> {
-  return quantizedSwap(pattern.code, pattern.quantize, () => (session ? null : "the player closed"));
+  return quantizedSwap(pattern.code, pattern.quantize, () => (session ? null : "the player closed"), {
+    // Tell the service at once which bar THIS player picked: update-session
+    // reports it instead of the server's estimate (a field run said "cycle 40"
+    // for a swap the player put on 48).
+    onQueued: (boundary) => session?.log({ t: "scheduled", rev: pattern.rev, boundary }, true),
+  });
 }
 
 /**
@@ -3359,6 +3392,21 @@ function noteHumanEdit(code: string): void {
   lastLoggedEdit = code;
   session.log({ t: "edit", cycle: stageEnv.audibleCycle(), code, chars: code.length }, true);
 }
+
+// End session: the listener closes it. The pattern keeps playing locally;
+// the service is told (a listening model hears it at once) and this player
+// stops polling and logging.
+endBtn.addEventListener("click", async () => {
+  if (!session) return;
+  endBtn.disabled = true;
+  const ok = await session.end(stageEnv.audibleCycle()).finally(() => (endBtn.disabled = false));
+  setStatus(
+    ok
+      ? "Session ended — the music keeps playing here"
+      : "Session closed on this player (the service could not be reached to confirm)",
+    isSchedulerStarted() ? "playing" : "normal",
+  );
+});
 
 passBtn.addEventListener("click", async () => {
   if (!session) return;
@@ -3678,10 +3726,8 @@ app.connect().then(() => {
   }
 
   // "Send to chat" needs the host to accept ui/message.
-  if (caps?.message) {
-    sendBtn.hidden = false;
-    canSendMessage = true;
-  }
+  if (caps?.message) canSendMessage = true;
+  syncChatButtons();
 
   const ctx = app.getHostContext();
   if (ctx) {

@@ -42,7 +42,12 @@ test("real worker preserves JSON MCP tools and widget resources", { timeout: 60_
     assert.ok(score.content.some(item => item.type === "resource_link"));
     const bad = await rpc("tools/call", { name: "play-sheet-music", arguments: { tempo: 9999 } });
     assert.equal(bad.isError, true);
-    for (const uri of ["ui://sheet-music/mcp-app.html", "ui://strudel/strudel-app.html"]) {
+    // The tools point at per-release URIs; the unversioned ones stay as aliases.
+    const listed = await rpc("tools/list", {});
+    const versioned = listed.tools.map(t => t._meta?.ui?.resourceUri).filter(Boolean);
+    assert.equal(versioned.length, 2);
+    for (const uri of versioned) assert.match(uri, /^ui:\/\/[a-z-]+\/\d+\.\d+\.\d+\//);
+    for (const uri of [...versioned, "ui://sheet-music/mcp-app.html", "ui://strudel/strudel-app.html"]) {
       const { contents } = await rpc("resources/read", { uri });
       assert.equal(contents[0].mimeType, "text/html;profile=mcp-app");
       assert.match(contents[0].text, /<!doctype html>/i);

@@ -38,6 +38,12 @@ export function mintSessionId(
 
 /** How long an idle session lives (no widget poll, no model call). */
 export const SESSION_IDLE_TTL_MS = 2 * 60 * 60 * 1000;
+/**
+ * How long an ENDED session is kept (the listener pressed End session): long
+ * enough for the model's next get-session to read why the player went quiet,
+ * then everything is deleted.
+ */
+export const SESSION_ENDED_TTL_MS = 10 * 60 * 1000;
 /** A widget that has not polled for this long is probably gone. */
 export const SESSION_WIDGET_STALE_MS = 60_000;
 /** Events kept per session (oldest dropped first). */
@@ -75,7 +81,7 @@ export function isHumanEvent(e: { t: string }): boolean {
 export const SESSION_MAX_QUANTIZE = 32;
 
 export type SessionEvent =
-  | { seq: number; at: number; t: "joined"; host?: string; platform?: string; caps?: string[] }
+  | { seq: number; at: number; t: "joined"; host?: string; platform?: string; caps?: string[]; widget?: string }
   | { seq: number; at: number; t: "report"; text: string }
   | { seq: number; at: number; t: "tap"; cycle: number; x: number; y: number }
   | { seq: number; at: number; t: "edit"; cycle: number | null; code: string | null; chars: number }
@@ -92,7 +98,11 @@ export type SessionEvent =
   | { seq: number; at: number; t: "pass"; cycle: number | null }
   | { seq: number; at: number; t: "control"; name: string; kind: string; value: number | [number, number]; cycle: number | null; source?: string }
   | { seq: number; at: number; t: "controls"; list: ControlState[] }
-  | { seq: number; at: number; t: "update"; rev: number; quantize: number };
+  | { seq: number; at: number; t: "update"; rev: number; quantize: number }
+  /** The player picked the bar an update lands on (sent before it waits for it). */
+  | { seq: number; at: number; t: "scheduled"; rev: number; boundary: number }
+  /** The listener closed the session (server-written by the `end` op, never coerced from a widget batch). */
+  | { seq: number; at: number; t: "ended"; cycle: number | null };
 
 /** One control on the player's strip, as the model sees it. */
 export interface ControlState {
@@ -139,6 +149,28 @@ export interface SessionData {
   seed?: string | null;
   /** The widget's answer for the newest rev — kept apart from the log, which is trimmed. */
   lastApplied?: Extract<SessionEvent, { t: "applied" }> | null;
+  /** When the listener ended the session (End session); null/absent while it is open. */
+  endedAt?: number | null;
+  endedCycle?: number | null;
+}
+
+/** When this session's storage is deleted: 2 h after the last activity, or 10 min after it was ended. */
+export function sessionExpiresAt(data: SessionData): number {
+  return typeof data.endedAt === "number" ? data.endedAt + SESSION_ENDED_TTL_MS : data.lastActivity + SESSION_IDLE_TTL_MS;
+}
+
+/**
+ * Close the session (the listener pressed End session). Idempotent: returns
+ * false if it was already ended. The `ended` event goes into the log so the
+ * model reads where the set stopped.
+ */
+export function endSession(data: SessionData, cycle: unknown, now: number): boolean {
+  if (typeof data.endedAt === "number") return false;
+  const at = finite(cycle);
+  appendEvents(data, [{ t: "ended", cycle: at }], now);
+  data.endedAt = now;
+  data.endedCycle = at;
+  return true;
 }
 
 export function newSession(id: string, now: number, seed?: string): SessionData {
@@ -214,8 +246,17 @@ export function coerceEvents(raw: unknown, max = 64): NewEvent[] {
           caps: Array.isArray(e.caps)
             ? e.caps.filter((c): c is string => typeof c === "string").slice(0, 20).map((c) => c.slice(0, 40))
             : undefined,
+          widget: typeof e.widget === "string" && /^\d+\.\d+\.\d+[\w.-]{0,16}$/.test(e.widget) ? e.widget : undefined,
         });
         break;
+      case "scheduled": {
+        const rev = finite(e.rev);
+        const boundary = finite(e.boundary);
+        if (rev !== null && boundary !== null && rev >= 0 && boundary >= 0) {
+          out.push({ t: "scheduled", rev: Math.floor(rev), boundary });
+        }
+        break;
+      }
       case "report": {
         const t = text(e.text);
         if (t) out.push({ t: "report", text: t });
@@ -362,6 +403,10 @@ const ago = (ms: number): string => {
 };
 const cyc = (c: number | null | undefined): string =>
   c === null || c === undefined ? "?" : (Math.round(c * 10) / 10).toFixed(1);
+/** "cycle 12.0", or what a null cycle means: the player was stopped. */
+const atCycle = (c: number | null | undefined): string => (c == null ? "while the player was stopped" : `cycle ${cyc(c)}`);
+/** A swap answered with no cycle: the player is stopped, so it plays from Play. */
+export const LOADED_STOPPED = "is loaded in the player, which is stopped — it starts when Play is pressed";
 
 function describeTaps(taps: Array<Extract<SessionEvent, { t: "tap" }>>): string {
   const n = taps.length;
@@ -380,8 +425,61 @@ function describeTaps(taps: Array<Extract<SessionEvent, { t: "tap" }>>): string 
  * The model-facing state of a session. `since` is the last seq the model has
  * read (events after it are "new"); the caller advances readSeq.
  */
-export function describeSession(data: SessionData, now: number, since = data.readSeq): string {
+/**
+ * Pattern functions the widget gained in a given release. A host that caches
+ * the widget by URI can run an older one than the server documents (claude.ai
+ * served a pre-0.9 widget: "tilt is not defined", 2026-10-02).
+ */
+export const WIDGET_FUNCTION_SINCE: Readonly<Record<string, string>> = {
+  say: "0.7.0", onFrame: "0.7.0", onEvent: "0.7.0", onTap: "0.7.0", cycle: "0.7.0",
+  fader: "0.8.0", pad: "0.8.0", xy: "0.8.0",
+  tilt: "0.9.0", mic: "0.9.0",
+};
+
+/** -1 / 0 / 1 for dotted numeric versions; unknown parts compare as 0. */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(/[.-]/).map((x) => parseInt(x, 10) || 0);
+  const pb = b.split(/[.-]/).map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < 3; i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0) ? -1 : 1;
+  return 0;
+}
+
+/** The player's widget version as it reported it when it joined (absent before 0.10.1). */
+export function widgetVersion(data: SessionData): string | null {
+  for (let i = data.events.length - 1; i >= 0; i--) {
+    const e = data.events[i];
+    if (e.t === "joined") return e.widget ?? null;
+  }
+  return null;
+}
+
+/**
+ * An error naming a function the widget only gained in a later release means
+ * the host is running an older, cached widget. Say so plainly, with the fix.
+ */
+export function staleWidgetHint(error: string | undefined | null, widget: string | null): string | null {
+  const m = error ? /\b([A-Za-z_$][\w$]*) is not defined\b/.exec(error) : null;
+  if (!m) return null;
+  const since = WIDGET_FUNCTION_SINCE[m[1]];
+  if (!since) return null;
+  if (widget && compareVersions(widget, since) >= 0) return null;
+  return (
+    `${m[1]}() exists since widget ${since}, so this player is an OLDER widget (${widget ? `version ${widget}` : "too old to report its version"}) ` +
+    "that its host cached. Open a new player with play-live-pattern (session: true to keep jamming); the host then loads the current widget."
+  );
+}
+
+export function describeSession(data: SessionData, now: number, since = data.readSeq, serviceVersion?: string): string {
   const lines: string[] = [];
+  if (typeof data.endedAt === "number") {
+    const left = Math.max(1, Math.round((data.endedAt + SESSION_ENDED_TTL_MS - now) / 60_000));
+    lines.push(
+      `The listener ENDED this session ${ago(now - data.endedAt)}` +
+        (data.endedCycle != null ? ` (at cycle ${cyc(data.endedCycle)})` : "") +
+        ". The player keeps playing its last pattern on its own, but the session is closed: update-session can no longer " +
+        `reach it, and this log is deleted in about ${left} min. To play on together, open a new one with play-live-pattern(session: true).`,
+    );
+  }
   const joins = data.events.filter((e): e is Extract<SessionEvent, { t: "joined" }> => e.t === "joined");
   const hb = data.heartbeat;
   const join = joins[joins.length - 1];
@@ -405,7 +503,19 @@ export function describeSession(data: SessionData, now: number, since = data.rea
         ? ` — it may be closed, scrolled away or the app backgrounded (last state: ${hb.state})`
         : ` — ${hb.state}${est !== null ? `, around cycle ${cyc(est)}` : ""}${hb.cps ? ` at cps ${Math.round(hb.cps * 1000) / 1000}` : ""}`
       : "";
-    lines.push(`Session ${data.id}: player on ${where}${caps}, joined ${join ? ago(now - join.at) : "?"}, ${heard}${state}.`);
+    const widget = join?.widget ?? null;
+    const build = widget
+      ? ` (widget ${widget}${serviceVersion ? `, service ${serviceVersion}` : ""})`
+      : serviceVersion
+        ? ` (widget older than 0.10.1 — it does not report its version; service ${serviceVersion})`
+        : "";
+    lines.push(`Session ${data.id}: player on ${where}${caps}${build}, joined ${join ? ago(now - join.at) : "?"}, ${heard}${state}.`);
+    if (serviceVersion && (!widget || compareVersions(widget, serviceVersion) < 0)) {
+      lines.push(
+        "The player is an OLDER widget than this service (its host cached it): functions added since, like tilt() or mic(), " +
+          "may be missing there. If that bites, open a new player with play-live-pattern(session: true).",
+      );
+    }
   }
 
   if (data.pattern) {
@@ -413,9 +523,18 @@ export function describeSession(data: SessionData, now: number, since = data.rea
     lines.push(
       applied
         ? applied.ok
-          ? `Your latest update (rev ${applied.rev}) applied at cycle ${cyc(applied.cycle)}.`
+          ? applied.cycle === null
+            ? `Your latest update (rev ${applied.rev}) ${LOADED_STOPPED}.`
+            : `Your latest update (rev ${applied.rev}) applied at cycle ${cyc(applied.cycle)}.`
           : `Your latest update (rev ${applied.rev}) FAILED in the widget: ${applied.error ?? "unknown error"} — the previous pattern kept playing.`
-        : `Your latest update (rev ${data.pattern.rev}) is queued and not applied yet.`,
+        : (() => {
+            const sched = [...data.events]
+              .reverse()
+              .find((e): e is Extract<SessionEvent, { t: "scheduled" }> => e.t === "scheduled" && e.rev === data.pattern!.rev);
+            return sched
+              ? `Your latest update (rev ${data.pattern.rev}) is scheduled by the player for cycle ${cyc(sched.boundary)} and not applied yet.`
+              : `Your latest update (rev ${data.pattern.rev}) is queued and not applied yet.`;
+          })(),
     );
   }
 
@@ -467,12 +586,15 @@ export function describeSession(data: SessionData, now: number, since = data.rea
     if (!moves.length) return;
     const first = moves[0];
     const last = moves[moves.length - 1];
-    const span = first.cycle === last.cycle ? `cycle ${cyc(first.cycle)}` : `cycles ${cyc(first.cycle)}–${cyc(last.cycle)}`;
+    const span =
+      first.cycle === last.cycle || first.cycle === null || last.cycle === null
+        ? atCycle(last.cycle)
+        : `cycles ${cyc(first.cycle)}–${cyc(last.cycle)}`;
     if (first.kind === "pad") {
       const presses = moves.filter((m) => m.value === 1);
       lines.push(
         `- the human pressed pad '${first.name}' ${presses.length} time${presses.length === 1 ? "" : "s"} ` +
-          `(${presses.map((m) => cyc(m.cycle)).join(", ") || span}); now ${last.value === 1 ? "on" : "off"}.`,
+          `(${presses.every((m) => m.cycle !== null) && presses.length ? presses.map((m) => cyc(m.cycle)).join(", ") : span}); now ${last.value === 1 ? "on" : "off"}.`,
       );
     } else {
       const who = first.source === "sensor" ? "the device moved" : "the human moved";
@@ -520,22 +642,40 @@ export function describeSession(data: SessionData, now: number, since = data.rea
       case "applied":
         lines.push(
           e.ok
-            ? `- rev ${e.rev} applied at cycle ${cyc(e.cycle)}${e.report ? `: ${e.report}` : "."}`
+            ? e.cycle === null
+              ? `- rev ${e.rev} ${LOADED_STOPPED}${e.report ? ` (${e.report})` : "."}`
+              : `- rev ${e.rev} applied at cycle ${cyc(e.cycle)}${e.report ? `: ${e.report}` : "."}`
             : `- rev ${e.rev} failed: ${e.error ?? "unknown error"} (the previous pattern kept playing).`,
         );
         break;
       case "edit":
         lines.push(
-          `- cycle ${cyc(e.cycle)}: the human edited the code and ran it (${e.chars} chars)` +
+          `- ${atCycle(e.cycle)}: the human edited the code and ran it (${e.chars} chars)` +
             (e === lastEdit ? " — their version is below." : e.code === null ? " (text no longer kept)." : "."),
         );
         break;
       case "pass":
-        lines.push(`- cycle ${cyc(e.cycle)}: the human passed the turn to you.`);
+        lines.push(`- ${atCycle(e.cycle)}: the human passed the turn to you.`);
+        break;
+      case "scheduled":
+        lines.push(`- the player scheduled rev ${e.rev} for cycle ${cyc(e.boundary)}.`);
+        break;
+      case "ended":
+        lines.push(`- ${atCycle(e.cycle)}: the listener ended the session.`);
         break;
     }
   }
   flushTaps();
+  // An error naming a function this (cached, older) widget lacks: say why.
+  const widget = widgetVersion(data);
+  for (const e of fresh) {
+    const err = e.t === "applied" ? e.error : e.t === "report" ? e.text : null;
+    const hint = staleWidgetHint(err, widget);
+    if (hint) {
+      lines.push(hint);
+      break;
+    }
+  }
   if (lastEdit && lastEdit.t === "edit" && lastEdit.code) {
     lines.push("", "The human's code as they last ran it:", "```js", lastEdit.code, "```");
   }

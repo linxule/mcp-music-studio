@@ -100,6 +100,9 @@ for (let i = 0; i < 60; i++) {
   if (/player on/.test(text) && /playing/.test(text)) break;
 }
 /player on/.test(text) ? ok("the widget joined the session") : fail(`no join: ${text}`);
+/\(widget \d+\.\d+\.\d+, service \d+\.\d+\.\d+\)/.test(text)
+  ? ok(`the session names the player's widget version: ${text.match(/\(widget [^)]*\)/)[0]}`)
+  : fail(`no widget version in: ${text.split("\n")[0]}`);
 /widget report: Strudel widget: playing/.test(text) ? ok("its runtime report reached the session") : fail(`no report: ${text}`);
 const badge = await frame().evaluate(() => document.getElementById("session-badge")?.textContent);
 badge === "● live" ? ok(`badge reads "${badge}"`) : fail(`badge reads "${badge}"`);
@@ -212,13 +215,69 @@ const pending = post(`/session/${id}/update`, { code: `setcps(0.5)\nonTap(() => 
 await sleep(700);
 await frame().evaluate(() => document.getElementById("play-btn")?.click());
 const [, stopped] = await pending;
-stopped.applied?.ok && /stopped the player before the bar/.test(stopped.applied.report ?? "")
-  ? ok("stopping during a quantized wait answers at once")
+// A far bar answers at once with the player's pick (0.10.1); then the stop's
+// answer lands in the log. A near one answers with the stop itself.
+let stopAnswer = stopped.applied ?? null;
+for (let i = 0; i < 10 && !stopAnswer; i++) {
+  await sleep(500);
+  const t = await state(id);
+  if (new RegExp(`rev ${stopped.pattern.rev} is loaded in the player, which is stopped`).test(t)) stopAnswer = { ok: true, report: "stopped the player before the bar" };
+}
+stopAnswer?.ok && /stopped the player before the bar|is loaded in the player, which is stopped/.test(stopAnswer.report ?? "")
+  ? ok(`stopping during a quantized wait answers (${stopped.scheduled ? `scheduled for ${stopped.scheduled.boundary}, then ` : ""}loaded, stopped)`)
   : fail(`stop during wait: ${JSON.stringify(stopped)}`);
 const [, afterStop] = await post(`/session/${id}/update`, { code: `setcps(0.5)\ns("bd*4")`, quantize: 1 });
 afterStop.applied?.ok ? ok(`the next update still lands (${afterStop.applied.report?.slice(0, 50)}…)`) : fail(`after stop: ${JSON.stringify(afterStop)}`);
 
 console.log("\n--- get-session, as the model would read it ---\n" + (await state(id)).slice(0, 1600));
-const real = consoleErrors.filter((e) => !/favicon|nonsense/i.test(e));
+// The bar update-session reports is the bar the PLAYER picked (field report:
+// "queued for cycle 40", applied at 48). Play again, then a far-quantized swap.
+await frame().evaluate(() => document.getElementById("play-btn")?.click());
+await sleep(2500);
+const farT0 = Date.now();
+const [, far] = await post(`/session/${id}/update`, { code: `setcps(0.5)\ns("bd*2, hh*4").gain(0.8)`, quantize: 16 });
+const farMs = Date.now() - farT0;
+const promised = far.applied?.cycle ?? far.scheduled?.boundary ?? null;
+if (promised === null) fail(`far update gave no player-side bar: ${JSON.stringify(far)}`);
+else {
+  ok(`far update answered in ${farMs} ms with the player's bar ${promised} (${far.applied ? "applied" : "scheduled"})`);
+  let landed = far.applied?.cycle ?? null;
+  for (let i = 0; i < 45 && landed === null; i++) {
+    await sleep(1000);
+    const m = /rev (\d+) applied at cycle ([\d.]+)/g;
+    const t = await state(id);
+    for (const hit of t.matchAll(m)) if (Number(hit[1]) === far.pattern.rev) landed = Number(hit[2]);
+  }
+  landed !== null && Math.abs(landed - promised) < 0.01
+    ? ok(`it landed on the bar it promised (cycle ${landed})`)
+    : fail(`promised ${promised}, landed ${landed}`);
+}
+
+// End session: a listening model hears it at once; the player stops polling
+// and logging; the music keeps playing; later updates are refused.
+const endListen = fetch(`${ORIGIN}/session/${id}/state?wait=pass&timeout=30000`).then((r) => r.json());
+await sleep(1500);
+await frame().evaluate(() => document.getElementById("end-btn")?.click());
+const endHeard = await endListen;
+/The listener ended the session\./.test(endHeard.text ?? "") ? ok("a listening model heard the end at once") : fail(`listen after end: ${endHeard.text?.slice(0, 200)}`);
+await sleep(800);
+const endUi = await frame().evaluate(() => ({
+  badge: document.getElementById("session-badge")?.textContent,
+  pass: document.getElementById("pass-btn")?.hidden,
+  end: document.getElementById("end-btn")?.hidden,
+}));
+endUi.badge === "○ session ended" && endUi.pass && endUi.end
+  ? ok(`after End: badge "${endUi.badge}", Pass and End hidden`)
+  : fail(`after End: ${JSON.stringify(endUi)}`);
+const [endedStatus] = await post(`/session/${id}/update`, { code: `s("bd")`, quantize: 1 });
+const eventsStatus = (await fetch(`${ORIGIN}/session/${id}/events`, { method: "POST", body: '{"events":[{"t":"pass"}]}' })).status;
+endedStatus === 410 && eventsStatus === 410 ? ok("update and events after the end answer 410") : fail(`after end: update ${endedStatus}, events ${eventsStatus}`);
+await frame().evaluate(() => (globalThis.__levels.length = 0));
+await sleep(2500);
+const afterEnd = await frame().evaluate(() => globalThis.__levels.reduce((m, [p]) => Math.max(m, p), 0));
+afterEnd > 0.05 ? ok(`the music keeps playing after End (peak ${afterEnd.toFixed(3)})`) : fail(`silent after End (peak ${afterEnd})`);
+/ENDED this session/.test(await state(id)) ? ok("get-session reads that the listener ended it") : fail("get-session after end lacks the ended text");
+
+const real = consoleErrors.filter((e) => !/favicon|nonsense|410/i.test(e));
 real.length ? fail(`console errors: ${real.slice(0, 3).join(" | ")}`) : ok("no console errors");
 await browser.close();
