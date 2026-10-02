@@ -42,6 +42,8 @@ export interface SessionClientEnv {
 /** Batch window for ordinary events (taps); reports and answers go at once. */
 export const FLUSH_DELAY_MS = 1500;
 const BACKOFF_MS = [1000, 2000, 5000, 10_000, 30_000];
+/** Comfortably under the 64 KiB keepalive body cap (UTF-8 can be 3 bytes/char). */
+const KEEPALIVE_MAX_CHARS = 20_000;
 /** How often the player's state is compared with what the server last heard. */
 export const STATE_WATCH_MS = 1000;
 
@@ -118,13 +120,17 @@ export class SessionClient {
     }
     if (!this.queue.length) return;
     const events = this.queue.splice(0, this.queue.length);
+    const body = JSON.stringify({ events });
     try {
       const res = await this.env.fetch(`${this.base}/events`, {
         method: "POST",
         // text/plain keeps it a "simple" request: no CORS preflight.
         headers: { "content-type": "text/plain;charset=UTF-8" },
-        body: JSON.stringify({ events }),
-        keepalive: true,
+        body,
+        // keepalive lets a batch outlive the frame, but the Fetch spec caps
+        // keepalive bodies at 64 KiB and THROWS above it — a large code edit
+        // would be lost (Kimi review). Only small batches ride it.
+        keepalive: body.length < KEEPALIVE_MAX_CHARS,
       });
       if (res.status === 404) this.gone();
       else if (res.ok && !this.stopped) this.env.onStatus?.("live");
@@ -184,14 +190,22 @@ export class SessionClient {
       }
       if (typeof pattern?.rev !== "number" || pattern.rev <= this.rev) continue;
       this.rev = pattern.rev;
-      let outcome: ApplyOutcome;
-      try {
-        outcome = await this.env.apply(pattern);
-      } catch (err) {
-        outcome = { ok: false, cycle: null, error: (err as Error)?.message ?? String(err) };
-      }
-      this.log({ t: "applied", rev: pattern.rev, ...outcome }, true);
+      // Applied OFF the poll loop: a quantized swap can wait many bars for its
+      // boundary, and the loop must keep polling meanwhile — it is the
+      // heartbeat, and a newer update must reach apply() so the older one
+      // can stand down (Kimi review).
+      void this.applyAndAnswer(pattern);
     }
+  }
+
+  private async applyAndAnswer(pattern: QueuedPattern): Promise<void> {
+    let outcome: ApplyOutcome;
+    try {
+      outcome = await this.env.apply(pattern);
+    } catch (err) {
+      outcome = { ok: false, cycle: null, error: (err as Error)?.message ?? String(err) };
+    }
+    this.log({ t: "applied", rev: pattern.rev, ...outcome }, true);
   }
 
   private async backoff(): Promise<void> {

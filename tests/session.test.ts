@@ -489,3 +489,61 @@ describe("SessionClient heartbeat", () => {
     client.stop();
   });
 });
+
+describe("review fixes (live sessions, Kimi)", () => {
+  it("an update replaced before it played is answered, not left 'unconfirmed'", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    await h.call("next?after=0&cycle=1&cps=0.5&state=playing&wait=0");
+    const first = h.call("update", { method: "POST", body: JSON.stringify({ code: "one", quantize: 8 }) });
+    await vi.waitFor(() => expect(h.sleeping()).toBe(1));
+    void h.call("update", { method: "POST", body: JSON.stringify({ code: "two", quantize: 8 }) });
+    const outcome = await (await first).json();
+    expect(outcome.applied).toMatchObject({ rev: 1, ok: false, error: expect.stringContaining("replaced by your next update (rev 2)") });
+  });
+
+  it("the client keeps polling (its heartbeat) while a swap waits for its bar", async () => {
+    let release!: () => void;
+    const urls: string[] = [];
+    let served = false;
+    const client = new SessionClient("https://example.test", ID, {
+      fetch: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/events")) return new Response("{}");
+        urls.push(url);
+        if (!served) {
+          served = true;
+          return new Response(JSON.stringify({ rev: 1, code: "x", quantize: 32, at: 0 }));
+        }
+        return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("abort"))));
+      },
+      setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 5)),
+      clearTimeout: (h) => clearTimeout(h as any),
+      clock: () => ({ cycle: 0, cps: 0.5, state: "playing" }),
+      apply: () => new Promise((resolve) => (release = () => resolve({ ok: true, cycle: 32 }))),
+    });
+    client.start({});
+    // The apply is still waiting, yet the next poll is already out.
+    await vi.waitFor(() => expect(urls.filter((u) => u.includes("after=1"))).toHaveLength(1));
+    release();
+    client.stop();
+  });
+
+  it("only small batches use keepalive (the 64 KiB cap throws)", async () => {
+    const inits: RequestInit[] = [];
+    const client = new SessionClient("https://example.test", ID, {
+      fetch: async (_url: string, init?: RequestInit) => {
+        inits.push(init!);
+        return new Response("{}");
+      },
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (h) => clearTimeout(h as any),
+      clock: () => ({ cycle: 0, cps: 0.5, state: "playing" }),
+      apply: async () => ({ ok: true, cycle: 0 }),
+    });
+    client.log({ t: "pass", cycle: 1 }, true);
+    client.log({ t: "edit", cycle: 1, code: "x".repeat(60_000), chars: 60_000 }, true);
+    await vi.waitFor(() => expect(inits).toHaveLength(2));
+    expect(inits[0].keepalive).toBe(true);
+    expect(inits[1].keepalive).toBe(false);
+  });
+});

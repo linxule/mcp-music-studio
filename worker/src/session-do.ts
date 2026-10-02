@@ -37,6 +37,7 @@ import {
   SESSION_ID_RE,
   SESSION_IDLE_TTL_MS,
   SESSION_MAX_CODE_CHARS,
+  SESSION_SWAP_LEAD_S,
   type QueuedPattern,
   type SessionData,
   type SessionEvent,
@@ -93,8 +94,11 @@ export class JamSession {
     return this.data;
   }
 
+  private persistedAt = 0;
+
   private async save(): Promise<void> {
     if (!this.data) return;
+    this.persistedAt = this.now();
     await this.state.storage.put("data", this.data);
     const due = this.data.lastActivity + SESSION_IDLE_TTL_MS;
     const alarm = await this.state.storage.getAlarm();
@@ -145,12 +149,16 @@ export class JamSession {
         const n = v === null ? NaN : Number(v);
         return Number.isFinite(n) ? n : null;
       };
+      const previous = data.heartbeat;
       recordHeartbeat(
         data,
         { cycle: num("cycle"), cps: num("cps"), state: (url.searchParams.get("state") ?? "unknown").slice(0, 24) },
         now,
       );
-      await this.save();
+      // Every poll is a heartbeat, but not every one needs a storage write:
+      // the object stays in memory while polls arrive. Persist a change of
+      // state, or once a minute.
+      if (!previous || previous.state !== data.heartbeat!.state || now - this.persistedAt > 60_000) await this.save();
       if (data.pattern && data.pattern.rev > after) return json(data.pattern);
       const wait = Math.min(POLL_WAIT_MS, Math.max(0, Number(url.searchParams.get("wait") ?? POLL_WAIT_MS) || 0));
       const pattern = await this.waitFor<QueuedPattern>((resolve) => {
@@ -179,13 +187,30 @@ export class JamSession {
       if (!raw || typeof raw.code !== "string" || !raw.code.trim()) return json({ error: "no code" }, 400);
       const pattern = queuePattern(data, raw.code, Number(raw.quantize ?? 1), now);
       await this.save();
+      // An older update still waiting for its answer never will: the widget
+      // only ever applies the newest. Say so instead of "not confirmed yet".
+      for (const [rev, waiters] of [...this.ackWaiters]) {
+        if (rev >= pattern.rev) continue;
+        this.ackWaiters.delete(rev);
+        const replaced: Applied = {
+          seq: 0,
+          at: now,
+          t: "applied",
+          rev,
+          ok: false,
+          cycle: null,
+          error: `replaced by your next update (rev ${pattern.rev}) before it played`,
+        };
+        waiters.forEach((w) => w(replaced));
+      }
       this.pollWaiters.forEach((w) => w(pattern));
       this.pollWaiters.clear();
 
       const hb = data.heartbeat;
       const widgetSeenMsAgo = hb ? now - hb.at : null;
       const estCycle = estimatedCycle(hb, now);
-      const boundary = estCycle === null ? null : nextBoundary(estCycle, pattern.quantize, 0.25);
+      const boundary =
+        estCycle === null ? null : nextBoundary(estCycle, pattern.quantize, SESSION_SWAP_LEAD_S * (hb?.cps ?? 0.5));
       let applied: Applied | null = null;
       // Only wait for a player that is actually there.
       if (widgetSeenMsAgo !== null && widgetSeenMsAgo <= 60_000) {

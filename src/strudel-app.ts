@@ -29,7 +29,7 @@ import { installSampleUrlFix } from "./shared/sample-url-fix";
 import { sourceLineNote } from "./shared/line-map";
 import { DEFAULT_SHARE_ORIGIN } from "./shared/share-url";
 import { SessionClient, type ApplyOutcome } from "./session-client";
-import { nextBoundary, SESSION_ID_RE, type QueuedPattern } from "./shared/session";
+import { nextBoundary, SESSION_ID_RE, SESSION_SWAP_LEAD_S, type QueuedPattern } from "./shared/session";
 import { spliceAt } from "./shared/splice";
 import { applyVisualPreset } from "./shared/visual-presets";
 import {
@@ -142,7 +142,7 @@ let lastReportText = "";
 let lastProgrammaticCode = "";
 let lastLoggedEdit = "";
 /** Set by a session update just before it evaluates: the cycle its audio takes over. */
-let pendingSplice: number | null = null;
+let pendingSplice: { boundary: number; code: string } | null = null;
 let sessionApplySeq = 0;
 // Last args from renderPattern, so a CDN retry can re-run the same pattern
 let lastRenderArgs: Record<string, unknown> | null = null;
@@ -2137,9 +2137,11 @@ function installEvaluateHook(editor: any): void {
     const holdForVoice = shouldPlay !== false && /\bsay\s*\(/.test(code) && !isSchedulerStarted();
     // A live-session update lands on its bar: the scheduler gets the old
     // pattern until the boundary and this one from it (src/shared/splice.ts).
-    const splice = pendingSplice;
-    pendingSplice = null;
-    const unsplice = splice !== null ? installSplice(editor, splice) : null;
+    // Only the evaluation it was set for: a human run that slips in first
+    // must not be spliced at the session's bar (Kimi review).
+    const splice = pendingSplice?.code === code ? pendingSplice : null;
+    if (splice) pendingSplice = null;
+    const unsplice = splice ? installSplice(editor, splice.boundary) : null;
     try {
       await original(holdForVoice ? false : shouldPlay !== false);
     } catch (err) {
@@ -3008,7 +3010,7 @@ async function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome
   const cps = Number(scheduler?.cps) || 0.5;
   let boundary: number | null = null;
   if (pattern.quantize > 0) {
-    boundary = nextBoundary(stageEnv.audibleCycle() ?? 0, pattern.quantize, (SESSION_EVAL_LEAD_S + 0.25) * cps);
+    boundary = nextBoundary(stageEnv.audibleCycle() ?? 0, pattern.quantize, SESSION_SWAP_LEAD_S * cps);
     setStatus(`Next pattern lands at bar ${Math.round(boundary)}`, "playing");
     for (;;) {
       if (mine !== sessionApplySeq) return { ok: false, cycle: null, error: "replaced by a newer update before it played" };
@@ -3017,7 +3019,7 @@ async function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome
       if (!Number.isFinite(remaining) || remaining <= 0) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(remaining * 1000, 250)));
     }
-    pendingSplice = boundary;
+    pendingSplice = { boundary, code: editor.code ?? pattern.code };
   }
   lastReportText = "";
   await editor.evaluate(true);

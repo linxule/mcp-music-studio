@@ -46,6 +46,12 @@ export const SESSION_MAX_EVENTS = 400;
 export const SESSION_MAX_EDIT_BODIES = 3;
 export const SESSION_MAX_CODE_CHARS = 64 * 1024;
 export const SESSION_MAX_TEXT_CHARS = 2000;
+/**
+ * How far ahead of a boundary a swap must be decided, in seconds: the widget
+ * evaluates 0.6 s before the bar, plus 0.25 s of slack. The server's "queued
+ * for cycle N" uses the same lead, so it names the bar the widget will pick.
+ */
+export const SESSION_SWAP_LEAD_S = 0.85;
 /** Quantize to at most this many cycles ahead. */
 export const SESSION_MAX_QUANTIZE = 32;
 

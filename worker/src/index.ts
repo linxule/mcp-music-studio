@@ -1033,6 +1033,8 @@ const SESSION_CORS: Record<string, string> = {
   "access-control-max-age": "86400",
 };
 const SESSION_OPS = new Set(["events", "next", "state", "update"]);
+const SESSION_EVENTS_MAX_BYTES = 256 * 1024;
+const SESSION_UPDATE_MAX_BYTES = 64 * 1024 * 4 + 1024;
 
 function sessionJson(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -1082,15 +1084,21 @@ export async function handleSessionRoute(request: Request, env: Env): Promise<Re
   if (parts.length !== 3 || !SESSION_ID_RE.test(id ?? "") || !SESSION_OPS.has(op ?? "")) {
     return sessionJson({ error: "not found" }, 404);
   }
-  if (op === "events" && !(await limit(env.SESSION_EVENTS_LIMITER))) {
-    return sessionJson({ error: "too many events" }, 429);
+  if ((op === "events" || op === "update") && !(await limit(env.SESSION_EVENTS_LIMITER))) {
+    return sessionJson({ error: "too many requests" }, 429);
+  }
+  // Read the body under its cap HERE, before the Durable Object (and before a
+  // chunked multi-MB body is buffered whole) — the /share rule (Kimi review).
+  let body: string | undefined;
+  if (request.method === "POST") {
+    try {
+      body = await readBodyWithinLimit(request, op === "update" ? SESSION_UPDATE_MAX_BYTES : SESSION_EVENTS_MAX_BYTES);
+    } catch {
+      return sessionJson({ error: "body too large" }, 413);
+    }
   }
   const stub = env.JAM.get(env.JAM.idFromName(id));
-  const forwarded = await stub.fetch(`https://session/${op}${url.search}`, {
-    method: request.method,
-    headers: { "content-length": request.headers.get("content-length") ?? "" },
-    body: request.method === "POST" ? await request.text() : undefined,
-  });
+  const forwarded = await stub.fetch(`https://session/${op}${url.search}`, { method: request.method, body });
   const headers = new Headers(forwarded.headers);
   for (const [k, v] of Object.entries(SESSION_CORS)) headers.set(k, v);
   return new Response(forwarded.body, { status: forwarded.status, headers });
