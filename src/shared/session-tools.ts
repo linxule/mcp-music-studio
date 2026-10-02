@@ -29,7 +29,7 @@ export interface SessionBackend {
   /** Open a session; returns its id. */
   create(): Promise<string>;
   /** The model-facing description, advancing the read mark; null if unknown. */
-  state(id: string): Promise<string | null>;
+  state(id: string, wait?: { mode: "pass" | "activity"; timeoutMs?: number }): Promise<string | null>;
   update(id: string, code: string, quantize: number): Promise<SessionUpdateOutcome | null>;
 }
 
@@ -43,7 +43,9 @@ export const GET_SESSION_DESCRIPTION =
   "Read a live session opened by play-live-pattern(session: true): whether the player is up and what " +
   "it is playing, its runtime reports (errors, silence, missing sounds, a callback that threw), and what " +
   "the human did since your last read — taps (cycle and position), code they edited and ran, and when " +
-  "they passed the turn to you. Read it before assuming a piece played, and when the user says it's your turn.";
+  "they passed the turn to you. Read it before assuming a piece played, and when the user says it's your turn. " +
+  "With wait: 'pass' it LISTENS — holds until the listener presses Pass — so you can play a whole back-to-back " +
+  "set in one turn: update-session, get-session(wait: 'pass'), answer, listen again.";
 
 export const UPDATE_SESSION_DESCRIPTION =
   "Swap a new pattern into a live session's player — no new player, the music keeps playing. " +
@@ -58,7 +60,17 @@ const sessionField = z
   .regex(SESSION_ID_RE)
   .describe("The session id from play-live-pattern's result (16 lowercase letters/digits).");
 
-export const getSessionInputSchema = z.object({ session: sessionField });
+export const getSessionInputSchema = z.object({
+  session: sessionField,
+  wait: z
+    .enum(["pass", "activity"])
+    .optional()
+    .describe(
+      "Listen instead of just reading: 'pass' holds until the listener presses Pass, 'activity' until they play " +
+        "(a few seconds after their first move). Returns at once if that already happened since your last read, " +
+        "and after ~40 s if not — call again to keep listening. Lets you stay in the booth for a whole set.",
+    ),
+});
 
 export const updateSessionInputSchema = z.object({
   session: sessionField,
@@ -94,6 +106,7 @@ export function sessionNote(id: string): string {
   return (
     `Live session: ${id}. This player stays open as one performance. ` +
     `update-session(session: "${id}", code) swaps in a new pattern on the next bar — no new player — and ` +
+    `get-session(session: "${id}", wait: "pass") listens until the user presses Pass; ` +
     `says whether it ran; get-session(session: "${id}") reads what happened: runtime errors, what is playing, ` +
     "and the human's taps, code edits and when they hand the turn to you. The session closes after 2 hours idle."
   );
@@ -198,8 +211,8 @@ export function registerSessionTools(
       inputSchema: getSessionInputSchema,
       annotations: GET_SESSION_ANNOTATIONS,
     },
-    async (args: { session: string }): Promise<CallToolResult> => {
-      const text = await backend.state(args.session);
+    async (args: { session: string; wait?: "pass" | "activity" }): Promise<CallToolResult> => {
+      const text = await backend.state(args.session, args.wait ? { mode: args.wait } : undefined);
       if (text === null) return unknownSession(args.session);
       return { content: [{ type: "text", text }] };
     },
@@ -254,8 +267,9 @@ export function httpSessionBackend(
       if (typeof body.id !== "string") throw new Error("session service sent no id");
       return body.id;
     },
-    async state(id) {
-      const res = await call(`/session/${id}/state`);
+    async state(id, wait) {
+      const q = wait ? `?wait=${wait.mode}${wait.timeoutMs ? `&timeout=${wait.timeoutMs}` : ""}` : "";
+      const res = await call(`/session/${id}/state${q}`);
       if (res.status === 404) return null;
       if (!res.ok) throw new Error(`session service answered ${res.status}`);
       return ((await res.json()) as { text: string }).text;

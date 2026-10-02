@@ -606,3 +606,65 @@ describe("review fixes (live sessions, Codex)", () => {
     expect(fresh.queryArc(4, 5)[0].value).toBe("new");
   });
 });
+
+describe("listening — get-session(wait)", () => {
+  it("holds until the listener passes, and the Pass is told a model is listening", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    const read = h.call("state?wait=pass");
+    await vi.waitFor(() => expect((h.obj as any).listeners.size).toBe(1));
+    // Taps alone don't end a wait for Pass.
+    await h.call("events", { method: "POST", body: JSON.stringify({ events: [{ t: "tap", cycle: 1, x: 0.5, y: 0.5 }] }) });
+    expect((h.obj as any).listeners.size).toBe(1);
+    const ack = await (await h.call("events", { method: "POST", body: JSON.stringify({ events: [{ t: "pass", cycle: 2 }] }) })).json();
+    expect(ack.listening).toBe(true);
+    const { text } = await (await read).json();
+    expect(text).toContain("The listener passed the turn to you.");
+    expect(text).toContain("the human tapped 1 time");
+    // Nobody listening now.
+    const later = await (await h.call("events", { method: "POST", body: JSON.stringify({ events: [{ t: "pass", cycle: 3 }] }) })).json();
+    expect(later.listening).toBe(false);
+  });
+
+  it("returns at once if they already passed since the last read", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    await h.call("events", { method: "POST", body: JSON.stringify({ events: [{ t: "pass", cycle: 2 }] }) });
+    const { text } = await (await h.call("state?wait=pass")).json();
+    expect(text).toContain("passed the turn to you");
+  });
+
+  it("'activity' waits a few seconds past the first move, then answers", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    const read = h.call("state?wait=activity");
+    await vi.waitFor(() => expect((h.obj as any).listeners.size).toBe(1));
+    await h.call("events", { method: "POST", body: JSON.stringify({ events: [{ t: "control", name: "rain", kind: "fader", value: 0.7, cycle: 3 }] }) });
+    await vi.waitFor(() => expect(h.sleeping()).toBeGreaterThanOrEqual(2)); // listen timeout + settle
+    await h.advance(4_001);
+    const { text } = await (await read).json();
+    expect(text).toContain("The listener is playing:");
+    expect(text).toContain("moved fader 'rain' to 0.7");
+  });
+
+  it("times out honestly", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    const read = h.call("state?wait=pass&timeout=5000");
+    await vi.waitFor(() => expect(h.sleeping()).toBe(1));
+    await h.advance(5_001);
+    const { text } = await (await read).json();
+    expect(text).toContain("Still listening — the listener did nothing that passes the turn for 5 s.");
+  });
+
+  it("a poll hears that the model is listening", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    const poll = h.call("next?after=0&state=playing");
+    await new Promise((r) => setTimeout(r, 0));
+    void h.call("state?wait=pass");
+    const res = await poll;
+    expect(res.status).toBe(204);
+    expect(res.headers.get("x-session-listening")).toBe("1");
+  });
+});

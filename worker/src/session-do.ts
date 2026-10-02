@@ -38,6 +38,11 @@ import {
   SESSION_IDLE_TTL_MS,
   SESSION_MAX_CODE_CHARS,
   SESSION_SWAP_LEAD_S,
+  isHumanEvent,
+  LISTEN_DEFAULT_MS,
+  LISTEN_MAX_MS,
+  LISTEN_SETTLE_MS,
+  type ListenMode,
   type QueuedPattern,
   type SessionData,
   type SessionEvent,
@@ -65,10 +70,14 @@ export const UPDATE_MAX_BYTES = SESSION_MAX_CODE_CHARS * 4 + 1024;
 
 type Applied = Extract<SessionEvent, { t: "applied" }>;
 
-const json = (body: unknown, status = 200): Response =>
+const json = (body: unknown, status = 200, listening?: boolean): Response =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...(listening === undefined ? {} : { "x-session-listening": listening ? "1" : "0" }),
+    },
   });
 
 async function readJson(request: Request, maxBytes: number): Promise<unknown> {
@@ -83,6 +92,19 @@ export class JamSession {
   private data: SessionData | null | undefined = undefined;
   private pollWaiters = new Set<(p: QueuedPattern | null) => void>();
   private ackWaiters = new Map<number, Array<(e: Applied) => void>>();
+  /** get-session(wait) calls holding for the listener. */
+  private listeners = new Set<{ mode: ListenMode; wake: (why: "pass" | "activity") => void }>();
+
+  /** Is the model waiting for the listener right now? (The widget's Pass skips the chat then.) */
+  private get listening(): boolean {
+    return this.listeners.size > 0;
+  }
+
+  /** Release held polls so the widget hears a change in `listening` now, not in 20 s. */
+  private releasePolls(): void {
+    this.pollWaiters.forEach((w) => w(null));
+    this.pollWaiters.clear();
+  }
 
   constructor(
     private readonly state: SessionState,
@@ -134,6 +156,12 @@ export class JamSession {
       }
       const events = (raw as { events?: unknown } | null)?.events;
       const added = appendEvents(data, coerceEvents(events), now);
+      // Asked before waking anyone: was a model there to hear this?
+      const heard = this.listening;
+      for (const listener of [...this.listeners]) {
+        if (added.some((e) => e.t === "pass")) listener.wake("pass");
+        else if (listener.mode === "activity" && added.some(isHumanEvent)) listener.wake("activity");
+      }
       for (const e of added) {
         if (e.t !== "applied") continue;
         const waiters = this.ackWaiters.get(e.rev);
@@ -141,7 +169,8 @@ export class JamSession {
         waiters?.forEach((w) => w(e));
       }
       await this.save();
-      return json({ ok: true, seq: data.seq });
+      // A Pass that a listening model will read needs no chat message.
+      return json({ ok: true, seq: data.seq, listening: heard });
     }
 
     if (op === "next" && request.method === "GET") {
@@ -161,7 +190,7 @@ export class JamSession {
       // the object stays in memory while polls arrive. Persist a change of
       // state, or once a minute.
       if (!previous || previous.state !== data.heartbeat!.state || now - this.persistedAt > 60_000) await this.save();
-      if (data.pattern && data.pattern.rev > after) return json(data.pattern);
+      if (data.pattern && data.pattern.rev > after) return json(data.pattern, 200, this.listening);
       const wait = Math.min(POLL_WAIT_MS, Math.max(0, Number(url.searchParams.get("wait") ?? POLL_WAIT_MS) || 0));
       // Bounded: an id-holder opening many polls can't pile up held requests
       // (Codex review). The oldest is released empty; a real widget re-polls.
@@ -174,10 +203,35 @@ export class JamSession {
         this.pollWaiters.add(resolve);
         return () => this.pollWaiters.delete(resolve);
       }, wait, request.signal);
-      return pattern ? json(pattern) : new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+      return pattern
+        ? json(pattern, 200, this.listening)
+        : new Response(null, { status: 204, headers: { "cache-control": "no-store", "x-session-listening": this.listening ? "1" : "0" } });
     }
 
     if (op === "state" && request.method === "GET") {
+      const mode = url.searchParams.get("wait");
+      if (mode === "pass" || mode === "activity") {
+        const fresh = data.events.filter((e) => e.seq > data.readSeq);
+        const ready = mode === "pass" ? fresh.some((e) => e.t === "pass") : fresh.some(isHumanEvent);
+        if (!ready) {
+          const timeout = Math.min(LISTEN_MAX_MS, Math.max(1000, Number(url.searchParams.get("timeout")) || LISTEN_DEFAULT_MS));
+          const why = await this.listen(mode, timeout, request.signal);
+          const after = (await this.load()) ?? null;
+          if (!after) return json({ error: "unknown session" }, 404);
+          const head =
+            why === null
+              ? `Still listening — the listener did nothing ${mode === "pass" ? "that passes the turn " : ""}for ${Math.round(timeout / 1000)} s. ` +
+                "Call get-session with wait again to keep listening, or update-session to play something.\n"
+              : why === "pass"
+                ? "The listener passed the turn to you.\n"
+                : "The listener is playing:\n";
+          const text = head + describeSession(after, this.now(), after.readSeq);
+          after.readSeq = after.seq;
+          after.lastActivity = this.now();
+          await this.save();
+          return json({ text, seq: after.seq });
+        }
+      }
       const since = data.readSeq;
       const text = describeSession(data, now, since);
       if (url.searchParams.get("peek") !== "1") data.readSeq = data.seq;
@@ -246,6 +300,31 @@ export class JamSession {
     }
 
     return json({ error: "not found" }, 404);
+  }
+
+  /** Hold until the listener passes (or, for "activity", plays a little), or `ms`. */
+  private async listen(mode: ListenMode, ms: number, signal?: AbortSignal): Promise<"pass" | "activity" | null> {
+    let settling = false;
+    const result = await this.waitFor<"pass" | "activity">((resolve) => {
+      const listener = {
+        mode,
+        wake: (why: "pass" | "activity") => {
+          if (why === "pass") return resolve("pass");
+          // Catch the whole phrase, not its first tap.
+          if (!settling) {
+            settling = true;
+            void this.sleep(LISTEN_SETTLE_MS).then(() => resolve("activity"));
+          }
+        },
+      };
+      this.listeners.add(listener);
+      this.releasePolls();
+      return () => {
+        this.listeners.delete(listener);
+        this.releasePolls();
+      };
+    }, ms, signal);
+    return result;
   }
 
   /**

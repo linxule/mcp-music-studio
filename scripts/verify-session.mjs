@@ -167,6 +167,28 @@ text.includes('s("bd*4, hh*8")') && /edited the code and ran it/.test(text) ? ok
 const message = await page.evaluate(() => window.__harness.entries?.filter?.((e) => /ui\/message/.test(JSON.stringify(e))).length ?? null);
 console.log(`  (host received ui/message entries: ${message})`);
 
+// Listening: the model holds get-session(wait: 'pass'); the badge says so; a
+// Pass answers it at once and posts nothing to the chat.
+const messagesBefore = await page.evaluate(() => document.getElementById("log")?.textContent?.split("ui/message").length ?? 0);
+const listen = fetch(`${ORIGIN}/session/${id}/state?wait=pass&timeout=30000`).then((r) => r.json());
+let badgeText = "";
+for (let i = 0; i < 40; i++) {
+  await sleep(250);
+  badgeText = await frame().evaluate(() => document.getElementById("session-badge")?.textContent ?? "");
+  if (/listening/.test(badgeText)) break;
+}
+/Claude is listening/.test(badgeText) ? ok(`badge while the model listens: "${badgeText}"`) : fail(`badge never showed listening: "${badgeText}"`);
+const passedAt = Date.now();
+await frame().evaluate(() => document.getElementById("pass-btn")?.click());
+const heard = await listen;
+const lag = Date.now() - passedAt;
+/passed the turn to you/.test(heard.text) ? ok(`a listening model heard the Pass in ${lag} ms`) : fail(`listen returned: ${heard.text?.slice(0, 200)}`);
+await sleep(500);
+const messagesAfter = await page.evaluate(() => document.getElementById("log")?.textContent?.split("ui/message").length ?? 0);
+messagesAfter === messagesBefore ? ok("no chat message for a Pass the model already heard") : fail("Pass also posted to the chat");
+const passStatus = await frame().evaluate(() => document.getElementById("status")?.textContent);
+/Claude is answering/.test(passStatus ?? "") ? ok(`status: "${passStatus}"`) : fail(`status: "${passStatus}"`);
+
 // A broken update comes back as a failure, and the previous pattern plays on.
 const [, broken] = await post(`/session/${id}/update`, { code: "s(\"bd*4\").gain(0.9).nonsense()", quantize: 1 });
 broken.applied && !broken.applied.ok

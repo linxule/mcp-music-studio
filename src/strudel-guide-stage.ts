@@ -360,6 +360,14 @@ quantize 4 it can arrive halfway through. The listener keeps playing while you
 think (a read and an answer take ~10–30 s), so expect the swap a phrase or two
 after their Pass; say so in your reply.
 
+Stay in the booth: after an update, call get-session with wait: 'pass'. It
+holds until the listener presses Pass (the player shows "Claude is listening"),
+returns what they did, and you answer with update-session — then listen again.
+A whole set can run inside one reply of yours, with no typing on their side.
+wait: 'activity' returns a few seconds after they start playing instead, for
+a partner that reacts mid-phrase. A wait ends after ~40 s with "still
+listening"; call it again, or play something to keep the room alive.
+
 A turn: the listener plays and presses Pass → you read get-session → you answer
 with update-session. Answer what they DID: they held thunder through four bars
 → the next phrase is the storm; they killed the band and leaned the wind hard

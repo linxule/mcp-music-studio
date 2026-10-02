@@ -1031,6 +1031,7 @@ const SESSION_CORS: Record<string, string> = {
   "access-control-allow-methods": "GET, POST, OPTIONS",
   "access-control-allow-headers": "content-type",
   "access-control-max-age": "86400",
+  "access-control-expose-headers": "x-session-listening",
 };
 const SESSION_OPS = new Set(["events", "next", "state", "update"]);
 const SESSION_EVENTS_MAX_BYTES = 256 * 1024;

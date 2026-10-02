@@ -37,6 +37,8 @@ export interface SessionClientEnv {
   onGone?(): void;
   /** Connection state, for a status badge. */
   onStatus?(status: "connecting" | "live" | "retrying" | "gone"): void;
+  /** Whether the model is listening (get-session with wait) right now. */
+  onListening?(listening: boolean): void;
 }
 
 /** Batch window for ordinary events (taps); reports and answers go at once. */
@@ -113,12 +115,24 @@ export class SessionClient {
     }
   }
 
-  async flush(): Promise<void> {
+  /** Send a Pass now; resolves whether a listening model will read it (no chat message needed). */
+  async pass(cycle: number | null): Promise<boolean> {
+    this.log({ t: "pass", cycle });
+    const body = await this.flush();
+    return body?.listening === true;
+  }
+
+  private noteListening(value: unknown): void {
+    if (value === "1" || value === true) this.env.onListening?.(true);
+    else if (value === "0" || value === false) this.env.onListening?.(false);
+  }
+
+  async flush(): Promise<{ listening?: boolean } | null> {
     if (this.flushTimer !== null) {
       this.env.clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
-    if (!this.queue.length) return;
+    if (!this.queue.length) return null;
     const events = this.queue.splice(0, this.queue.length);
     const body = JSON.stringify({ events });
     try {
@@ -132,10 +146,18 @@ export class SessionClient {
         // would be lost (Kimi review). Only small batches ride it.
         keepalive: body.length < KEEPALIVE_MAX_CHARS,
       });
-      if (res.status === 404) this.gone();
-      else if (res.ok && !this.stopped) this.env.onStatus?.("live");
+      if (res.status === 404) {
+        this.gone();
+        return null;
+      }
+      if (!res.ok) return null;
+      if (!this.stopped) this.env.onStatus?.("live");
+      const reply = (await res.json().catch(() => null)) as { listening?: boolean } | null;
+      this.noteListening(reply?.listening);
+      return reply;
     } catch {
       // Dropped: a report or tap is not worth a retry storm.
+      return null;
     }
   }
 
@@ -170,6 +192,7 @@ export class SessionClient {
         continue;
       }
       if (res.status === 404) return this.gone();
+      this.noteListening(res.headers?.get?.("x-session-listening"));
       if (res.status === 204) {
         this.failures = 0;
         this.env.onStatus?.("live");

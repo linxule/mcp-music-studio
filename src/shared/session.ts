@@ -58,6 +58,19 @@ export const SESSION_MAX_BYTES = 1_200_000;
  * for cycle N" uses the same lead, so it names the bar the widget will pick.
  */
 export const SESSION_SWAP_LEAD_S = 0.85;
+/** What get-session(wait) waits for. */
+export type ListenMode = "pass" | "activity";
+/** How long get-session(wait) may hold, in ms — under host tool-call timeouts. */
+export const LISTEN_DEFAULT_MS = 40_000;
+export const LISTEN_MAX_MS = 55_000;
+/** After the first move, "activity" keeps listening this long to catch the phrase. */
+export const LISTEN_SETTLE_MS = 4_000;
+
+/** Did the listener do something (not the player reporting, not you)? */
+export function isHumanEvent(e: { t: string }): boolean {
+  return e.t === "tap" || e.t === "control" || e.t === "edit" || e.t === "pass";
+}
+
 /** Quantize to at most this many cycles ahead. */
 export const SESSION_MAX_QUANTIZE = 32;
 

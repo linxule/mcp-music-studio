@@ -2920,11 +2920,22 @@ function sessionClock() {
   };
 }
 
-function setSessionBadge(status: "connecting" | "live" | "retrying" | "gone"): void {
+let sessionStatus: "connecting" | "live" | "retrying" | "gone" = "connecting";
+let claudeListening = false;
+function setSessionBadge(status: "connecting" | "live" | "retrying" | "gone" = sessionStatus): void {
+  sessionStatus = status;
   sessionBadge.hidden = false;
   sessionBadge.dataset.status = status;
   sessionBadge.textContent =
-    status === "live" ? "● live" : status === "gone" ? "○ session ended" : status === "retrying" ? "◌ reconnecting" : "◌ joining";
+    status === "live"
+      ? claudeListening
+        ? "● Claude is listening — Pass when you're done"
+        : "● live"
+      : status === "gone"
+        ? "○ session ended"
+        : status === "retrying"
+          ? "◌ reconnecting"
+          : "◌ joining";
   sessionBadge.title =
     status === "gone"
       ? "This live session has ended (2 hours idle). The pattern keeps playing here."
@@ -2941,6 +2952,11 @@ function startSession(id: string, origin: string): void {
     clock: sessionClock,
     apply: applySessionPattern,
     onStatus: setSessionBadge,
+    onListening: (listening) => {
+      if (listening === claudeListening) return;
+      claudeListening = listening;
+      setSessionBadge();
+    },
   });
   const ctx = app.getHostContext() as { platform?: string } | undefined;
   const host = (app as unknown as { getHostVersion?: () => { name?: string; version?: string } | undefined })
@@ -3071,7 +3087,14 @@ function noteHumanEdit(code: string): void {
 
 passBtn.addEventListener("click", async () => {
   if (!session) return;
-  session.log({ t: "pass", cycle: stageEnv.audibleCycle() }, true);
+  passBtn.disabled = true;
+  // A model listening with get-session(wait) reads the Pass straight away:
+  // no chat message (one could not land mid-turn anyway).
+  const heard = await session.pass(stageEnv.audibleCycle()).finally(() => (passBtn.disabled = false));
+  if (heard) {
+    setStatus("Passed — Claude is answering", "playing");
+    return;
+  }
   if (!canSendMessage) {
     setStatus("Passed — tell Claude it's their turn", "playing");
     return;
