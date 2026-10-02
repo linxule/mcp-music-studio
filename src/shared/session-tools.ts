@@ -48,7 +48,8 @@ export const GET_SESSION_DESCRIPTION =
 export const UPDATE_SESSION_DESCRIPTION =
   "Swap a new pattern into a live session's player — no new player, the music keeps playing. " +
   "Send the WHOLE pattern, as you would to play-live-pattern. It takes over at the next bar " +
-  "(quantize 1, the default), at the next multiple of n cycles (4 or 8 lands on a phrase), or at once (0). " +
+  "(quantize 1, the default), at the next multiple of n cycles, or at once (0). Patterns run on the session's clock, so " +
+  "set quantize to your phrase length (an 8-bar phrase → 8) and the swap lands on its first bar. " +
   "The code is syntax-checked first; the result says whether the player ran it, and its error if not, " +
   "when the player answers within a few seconds.";
 

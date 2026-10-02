@@ -232,7 +232,9 @@ Without `--stdio` the server listens over Streamable HTTP. That endpoint is **un
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `play-sheet-music` | ABC notation → visual sheet music + multi-instrument audio | `abcNotation`, `title?`, `instrument?`, `style?`, `tempo?` (40–240), `swing?` (0–75), `drumIntro?` (0–8), `transpose?` (−12–12) |
-| `play-live-pattern` | Strudel code → live-coded patterns with synthesis + effects | `code`, `title?`, `bpm?` (40–300), `autoplay?`, `visuals?`, `theme?` |
+| `play-live-pattern` | Strudel code → live-coded patterns with synthesis + effects | `code`, `title?`, `bpm?` (40–300), `autoplay?`, `visuals?`, `theme?`, `session?` |
+| `get-session` | Read a live session: what the player is doing, its errors, and what the listener did (taps, controls, edits, Pass) | `session` |
+| `update-session` | Swap a new pattern into a live session's player on the next bar or phrase — no new player | `session`, `code`, `quantize?` (0–32) |
 | `get-music-guide` | ABC reference (7 topics: instruments, drums, syntax, genres...) | `topic` |
 | `get-strudel-guide` | Strudel reference (15 topics: sounds, effects, visuals, hydra, genres, stage, film, interactive, craft, gallery...) | `topic`, `piece?` (with `gallery`) |
 | `search-music-docs` | Semantic search over strudel.cc and ABCJS docs | `query`, `library` (`strudel` \| `abcjs`) |
@@ -253,6 +255,25 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `compose-beat` | Generate + play a Strudel pattern in a genre (args: `genre`, `mood?`) |
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
+
+## 0.8.0 — October 2, 2026
+
+Play together. A live session keeps one player open that the AI can read and
+change while the music keeps going — the back-to-back the claude.ai field test
+asked for, and the feedback channel it was missing.
+
+- **Live sessions**: `play-live-pattern` with `session: true`. `get-session`
+  returns what the player is doing (errors, silence, what is playing) and what
+  the listener did — taps, control moves, code they edited and ran, and
+  **Pass**, a button that hands the turn back. `update-session` swaps in new
+  code on the next bar or phrase, measured to land on the beat, and says
+  whether it ran. Works in hosts that give the AI no way to read widget context.
+- **Controls**: `fader('rain')`, `pad('drop', { toggle: true })` and
+  `xy('wind')` put a strip of real controls on the player. Each is a pattern
+  (`.gain(fader('rain'))`) with a `.value` for visuals, and keeps its value
+  when the code changes. New gallery piece: **Weather Machine**.
+- The privacy policy covers live sessions (kept until 2 hours idle; the
+  session id works like a share link).
 
 ## 0.7.0 — October 1, 2026
 

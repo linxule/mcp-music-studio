@@ -353,6 +353,13 @@ tools for it:
   (quantize 1), phrase (4 or 8) or at once (0). No new player; the music never
   stops; the result says whether it ran.
 
+Patterns run on the session's clock, not from zero: a phrase that repeats every
+8 bars plays its first bar on cycles 0, 8, 16… So set quantize to your phrase
+length (8 for an 8-bar phrase) and the swap lands on its first bar — with
+quantize 4 it can arrive halfway through. The listener keeps playing while you
+think (a read and an answer take ~10–30 s), so expect the swap a phrase or two
+after their Pass; say so in your reply.
+
 A turn: the listener plays and presses Pass → you read get-session → you answer
 with update-session. Answer what they DID: they held thunder through four bars
 → the next phrase is the storm; they killed the band and leaned the wind hard
