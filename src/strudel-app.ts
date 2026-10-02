@@ -3095,7 +3095,15 @@ app.ontoolresult = (result) => {
   const meta = (result as { _meta?: { session?: { id?: unknown; origin?: unknown } } })._meta?.session;
   if (meta && typeof meta.id === "string" && typeof meta.origin === "string") {
     startSession(meta.id, meta.origin);
+    return;
   }
+  // A host that drops a result's _meta still shows the widget its text: the
+  // session line names the id (the hosted origin is the default).
+  const text = (result.content ?? [])
+    .map((block) => (block.type === "text" ? block.text : ""))
+    .join("\n");
+  const named = /Live session: ([a-z2-7]{16})\./.exec(text);
+  if (named) startSession(named[1], DEFAULT_SHARE_ORIGIN);
 };
 
 app.ontoolinput = (params) => {
