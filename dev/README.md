@@ -94,7 +94,7 @@ this milestone does not add embedded passage-review UI or widen CSP allowlists.
 Implemented locally on `codex/studio-app-tools`, based on `963a840`. GPT-6.1 Sol
 implemented the session/tool layer and verification host; Astra reviewed the
 architecture and diff. Its score-settings replacement finding was fixed and
-re-reviewed. This work has not been committed, deployed, or published.
+re-reviewed. (At the time this was uncommitted; it shipped, rebased onto 0.9, in 0.10.0 on 2 October 2026.)
 
 - `bun run build`: passed, including application and server TypeScript checks.
 - `bun node_modules/typescript/bin/tsc --noEmit -p dev/tsconfig.studio.json`: passed.
@@ -148,7 +148,7 @@ Moving the cursor does not silently change an already captured passage.
 `get-studio-state.sharedReview` exposes that context. Two additional app-provided
 tools, `explain-selection` and `suggest-edit`, accept the current request ID and
 exact passage. They stage a response without changing the draft, adding Undo
-history, or starting sound. There are now seven tools per widget; the standalone
+history, or starting sound. There were then seven tools per widget (since 0.10.0: eight in a live widget with `swap-pattern`, seven in a score widget); the standalone
 WebMCP page still has nine. Apply rechecks the request and current draft, validates
 the assembled source, and uses the same source/settings Undo history as direct
 edits. Source or sound-setting changes make the review stale.

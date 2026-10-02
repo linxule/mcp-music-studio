@@ -7,7 +7,7 @@ const files = new Set(pack.files.map(({ path }) => path));
 for (const path of ["LICENSE", "LICENSES/MIT.txt", "SOURCE.md", "THIRD_PARTY_NOTICES.md",
   "dist/THIRD_PARTY_LICENSES.txt", "src/mcp-app.ts", "src/strudel-app.ts", "src/source-info.ts",
   "src/shared/strudel-validate-child.ts", "server.ts", "main.ts", "mcp-app.html", "strudel-app.html",
-  "privacy.html", "scripts/sync-version.mjs", "scripts/collect-licenses.mjs", "tsconfig.json",
+  "privacy.html", "scripts/sync-version.mjs", "scripts/build-stage-runtime.mjs", "scripts/collect-licenses.mjs", "tsconfig.json",
   "tsconfig.server.json", "vite.config.ts", "bun.lock", "worker/src/index.ts",
   "worker/bun.lock", "worker/wrangler.jsonc", "server.json", "kimi.plugin.json"])
   assert(files.has(path), `Published package is missing ${path}`);

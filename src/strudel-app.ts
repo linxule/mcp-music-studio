@@ -3167,7 +3167,29 @@ function setSessionBadge(status: SessionStatus = sessionStatus): void {
       : status === "parked"
         ? "Stopped and untouched for 30 minutes, so the player stopped checking in. Play or edit to rejoin; the session lasts 2 hours idle."
       : "Live session: Claude can change this pattern without opening a new player, and reads what you do.";
-  passBtn.hidden = status === "gone";
+  syncChatButtons();
+}
+
+/**
+ * Say what a press will do. Pass always logs the turn in the session; only
+ * when Claude is NOT listening does it also post a chat message (the only
+ * way to start Claude's next turn) — the label says so ("Pass → chat").
+ * In a live session "Send to chat" is redundant (edits are logged and read
+ * with get-session) and was a second button writing into the chat: hidden.
+ */
+function syncChatButtons(): void {
+  const inSession = !!session && sessionStatus !== "gone";
+  sendBtn.hidden = !canSendMessage || inSession;
+  passBtn.hidden = !inSession;
+  const toChat = !claudeListening && canSendMessage;
+  passBtn.textContent = toChat ? "Pass → chat" : "Pass";
+  const what = claudeListening
+    ? "Claude is listening: hand it the turn. It reads what you did and answers on this player."
+    : canSendMessage
+      ? "Claude isn't listening right now: Pass logs your turn in the session and puts a message in the chat so Claude takes its turn."
+      : "Logs your turn in the session. Tell Claude in the chat that it's their turn.";
+  passBtn.title = what;
+  passBtn.setAttribute("aria-label", what);
 }
 
 function startSession(id: string, origin: string, startRev = 0): void {
@@ -3678,10 +3700,8 @@ app.connect().then(() => {
   }
 
   // "Send to chat" needs the host to accept ui/message.
-  if (caps?.message) {
-    sendBtn.hidden = false;
-    canSendMessage = true;
-  }
+  if (caps?.message) canSendMessage = true;
+  syncChatButtons();
 
   const ctx = app.getHostContext();
   if (ctx) {

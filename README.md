@@ -1,486 +1,74 @@
 # MCP Music Studio
 
-Two-mode creative music studio for AI: **scored composition** (ABC notation with sheet music) and **live performance** (Strudel live coding with TidalCycles). Interactive UI renders inline in Claude Desktop, claude.ai, and other MCP clients.
+**English** · [简体中文](https://github.com/linxule/mcp-music-studio/blob/main/README.zh-CN.md) · [Français](https://github.com/linxule/mcp-music-studio/blob/main/README.fr.md) · [日本語](https://github.com/linxule/mcp-music-studio/blob/main/README.ja.md)
 
-<a href="https://github.com/linxule/mcp-music-studio/releases/download/v0.5.3/mcp-music-studio-v0.5-live-set-1080p60.mp4"><img src="assets/live-set-stage.gif" alt="A Strudel pattern with its piano roll fed into a Hydra shader, then Stage mode taking the whole frame" width="720"></a>
+[![npm](https://img.shields.io/npm/v/mcp-music-studio)](https://www.npmjs.com/package/mcp-music-studio) [![CI](https://github.com/linxule/mcp-music-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/linxule/mcp-music-studio/actions/workflows/ci.yml) [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](https://github.com/linxule/mcp-music-studio/blob/main/LICENSE)
 
-*One continuous live set through the widget — every section a hot-swapped re-evaluation on the same clock. Full video: [16:9 1080p60](https://github.com/linxule/mcp-music-studio/releases/download/v0.5.3/mcp-music-studio-v0.5-live-set-1080p60.mp4) · [3:4 for phones](https://github.com/linxule/mcp-music-studio/releases/download/v0.5.3/mcp-music-studio-v0.5-live-set-3x4-1080x1440.mp4). Made with `dev/perform.html` and an OBS Browser Source (see `scripts/showcase/`).*
+Make music with an AI assistant, inside the chat. Ask for a song and get sheet music you can play and edit. Ask for a beat and get a live-coding player with visuals. Then edit the piece together, move its controls while it plays, or take turns with the AI.
 
-## Quick Start — No Install Required
+Music Studio is an MCP server. MCP is a standard way to give an AI assistant extra tools; you need a chat app that supports it, such as Claude. In Claude, claude.ai and other apps that support MCP Apps, the player appears in the chat. In Claude Code and other terminal apps, you get a link that opens the player in your browser.
 
-Paste this URL into any MCP client that supports remote servers:
+<a href="https://github.com/linxule/mcp-music-studio/releases/download/v0.5.3/mcp-music-studio-v0.5-live-set-1080p60.mp4"><img src="https://raw.githubusercontent.com/linxule/mcp-music-studio/main/assets/live-set-stage.gif" alt="A Strudel pattern with its piano roll fed into a Hydra shader, then Stage mode taking the whole frame" width="720"></a>
+
+*One live set in the player. Every section is a change made while the music plays. [Watch the full video](https://github.com/linxule/mcp-music-studio/releases/download/v0.5.3/mcp-music-studio-v0.5-live-set-1080p60.mp4).*
+
+## Quick start
+
+Add this URL as a remote MCP server. There is nothing to install.
 
 ```
 https://music-studio.linxule.com/mcp
 ```
 
-**Claude Desktop / claude.ai:**
-Settings → Connectors → Add Connector → paste the URL above → done.
+- **Claude and claude.ai:** open Settings, then Connectors, add a custom connector, and paste the URL.
+- **Claude Code:** run `claude mcp add --transport http music-studio https://music-studio.linxule.com/mcp`
 
-**Claude Code:**
-```bash
-claude mcp add --transport http music-studio https://music-studio.linxule.com/mcp
-```
+Then ask for a song, a beat or a music video. No account is needed. Your browser may hold back sound until you tap Play in the player once.
 
-That's it — ask Claude to play a song or create a beat.
+## What you can make
 
----
-
-## What You Get
-
-### Scored Composition (ABC Notation)
-Write sheet music → see it rendered → hear it played with multi-instrument audio.
-
-- **8 style presets** — rock, jazz, bossa, waltz, march, reggae, folk, classical — one parameter adds drums + bass + chord accompaniment
-- **All 128 General MIDI instruments** — named and fuzzy-matched (`"sax"` → Soprano Sax); the result text says what it actually resolved to when that isn't what you asked for. When the score picks its own instrument (`%%MIDI program`), the Instrument menu shows it, and choosing another really swaps the melody's instrument
-- **Visual sheet music** — notes highlight as they play (on the swung beat when `swing` is set), and the score scrolls to keep the playing line in view. Scroll by hand at any time and the follow steps aside
-- **Streaming render** — sheet music appears as the AI types
-- **Edit in place** — open the ABC source pane in the widget, fix a bar, re-render without another tool call
-- **Real transposition** — `transpose` rewrites the notation *and* the key signature, so the printed score matches what plays
-- **Swing and count-in** — `swing` is the share of the beat given to its first half (50 = straight, 66 = triplet, 75 = max; ≤50 is no swing), `drumIntro` adds up to 8 bars of count-in from the style's drum kit
-- **Selectable sound banks** — FluidR3 (default), MusyngKite (fuller), or a lightweight dry bank, switched live from the toolbar. Changing instrument, sound, style or tempo keeps your Loop and tempo settings and never starts a paused tune
-- **Notes that ring out** — each note fades naturally instead of stopping dead, and a light **Room** echo (on by default, one toolbar toggle) gives the synth a space to play in. WAV downloads and share links sound the same
-- **WAV download** — export audio as WAV files directly from the UI
-- **MIDI download** — export a standard MIDI file straight from the score, no playback needed first. It is the *score*: abcjs applies swing during playback only, so the exported file has none
-- **`get-music-guide`** — 7 reference topics (instruments, drums, ABC syntax, arrangements, genres, styles, MIDI directives)
-
-### Live Performance (Strudel)
-Write code → hear it play → edit in a live REPL.
-
-- **TidalCycles mini-notation** in JavaScript
-- **71 drum machine banks** + **128 GM instruments** + 128 VCSL orchestral/world/percussion samples + built-in synths
-- **Full effects chain** — filters, reverb, delay, FM synthesis
-- **Editable REPL** — users can tweak the code and hear changes instantly
-- **Live visuals** — add `.pianoroll()` / `.punchcard()` / `.scope()` / `.spectrum()` / `.spiral()` / `.pitchwheel()` to animate behind the code (native strudel.cc overlay)
-- **Layered and hand-drawn visuals** — give each visual its own canvas with `ctx: getDrawContext('name')` so several play at once, or draw anything yourself with `.onPaint((ctx, time, haps) => …)`, reacting to the notes and the sound
-- **Inline visuals and sliders** — `._pianoroll()`, `._scope()` and friends draw under their own line of code; `slider(value, min, max)` puts a knob in the code to drag while it plays
-- **Hydra shader backgrounds** — `await initHydra()` + Hydra code for fully custom, music-synced WebGL visuals. `H(pattern)` locks a shader parameter to the sequence — notes arrive as MIDI numbers, so a melody can steer a shader — and `feedStrudel` post-processes the piano roll
-- **Audio-reactive shaders** — `a.fft[0]`, `a0()`, `a.setBins(6)` and the rest of Hydra's audio API work verbatim, driven by **Strudel's own output** rather than the microphone (no permission prompt, no room noise)
-- **`visuals` preset** — one enum value (`pianoroll`, `punchcard`, `scope`, `spectrum`, `hydra-kaleid`, `hydra-pulse`, `hydra-wash`, `hydra-feed`) gives a bare pattern something to paint. Never overrides code that already visualises itself
-- **`theme`** — 39 CodeMirror colour schemes; the visuals stage and its readability scrim are derived from the active theme, so light themes stay readable
-- **Stage mode** — hide the code and let the visuals fill the frame (composes with the host's fullscreen)
-- **Honest runtime feedback** — evaluation errors, unknown sound names, and stops the user triggered are reported back to the model as they happen, so it never answers about a silent widget as if the music were still playing
-- **Beyond music: a stage for audiovisual pieces** — pattern code is real browser JavaScript, and the widget gives it five primitives: `cycle()` (the cycle you're hearing), `onFrame(fn)` (a managed animation loop), `onEvent(pattern, fn)` (fires as each note becomes audible, with its MIDI pitch), `onTap(fn)` (taps on the stage, with `next(16)` — the first 16th the scheduler can still play) and `say(text, { voice })` (a spoken line rendered by the server, returned as a **pattern**, so it lands on the beat, mixes, and records). Draw your own canvases into Hydra, re-render them as ASCII, cut between scenes on bar lines. Each belongs to the evaluation that made it: re-running replaces the old loop instead of stacking another
-- **A gallery of finished pieces** — a short film, a spoken duet you play along with, a Game of Life that composes, a glitch piece about memory: `get-strudel-guide({ topic: "gallery", piece: "first-light" })`. Made in claude.ai by a Claude model with a person
-- **Server-side validation** — the local server evaluates every Strudel pattern headlessly before answering: the tool result reports layers, events per cycle, tempo, and which sound names are registered (or a syntax error with line:column), and runs each `onFrame`/`onEvent` callback once to catch a draw loop that throws. The hosted worker can't run Strudel (Cloudflare forbids dynamic code generation), but it parses the JavaScript and every mini-notation string, so a typo still comes back with its line and column
-- **Live sessions: play together** — `play-live-pattern` with `session: true` keeps one player open; the AI reads what you did with `get-session` (taps, control moves, edits, errors) and answers on the same player with `update-session`, swapped in on the bar. `get-session` with `wait: "pass"` listens until you press **Pass**, so a back-to-back set runs inside one reply. `/s/<id>` opens the session on a second screen
-- **Controls and sensors** — `fader()`, `pad()` and `xy()` put real controls under the code, and `tilt()` / `mic()` follow the device's motion and input loudness (falling back to an xy pad and a fader you play by hand where the page can't use them)
-- **Tools on the player itself** — the widget offers its host tools to read the live code (including your unsaved edits), set it, swap it on the bar (`swap-pattern`), play, stop and undo, guarded by revision so an agent never overwrites an edit it hasn't read. Shared player pages pass them to a browser's built-in assistant through WebMCP
-- **Record & download** — capture live audio and export as WAV (recordings longer than about two minutes download in the recorder's own compressed format, so the file stays a sensible size)
-- **`get-strudel-guide`** — 15 reference topics: mini-notation, sounds, effects, patterns, genres, tips, visuals, hydra, advanced — and for audiovisual work stage, film, interactive, craft, debugging, gallery
-
-### Shared
-- **`analyze-harmony`** — chord detection, key detection, progressions, chord scales; answers in both ABC chord symbols and Strudel `chord()`/`note()` form
-- **`convert-abc-to-strudel`** — take a scored melody into the live REPL: bars become mini-notation groups, durations become `@` weights, chord symbols become a `chord().voicing()` line
-- **`search-music-docs`** — semantic search over strudel.cc and ABCJS documentation
-- **Click-to-play links** — short pieces include a browser link that opens the full player (stage, visuals, controls, recording); the music is encoded in the URL, not encrypted. Playback never stores a composition in the share database. For longer pieces, use the inline widget, a local browser render, or explicitly ask for a stored share
-- **Explicit sharing** — `create-share-link` uploads a score or pattern for 30 days. Anyone with the link can view and play it; creating the same share again refreshes its expiry. Standalone Strudel pages wait for Play or an intentional editor evaluation shortcut, including older autoplay links
-- **Widgets that fit the host** — both widgets size themselves from the host's container (inline, fixed or fullscreen), respect safe-area insets and the host's fonts, and never pan sideways on a phone. If the browser holds audio back until a tap, the widget says "Tap Play to start audio" instead of pretending to play. Scrolling past a widget never starts it, and a tune autoplays once — not again every time the host rebuilds the widget
-
----
-
-## Local Install (Optional)
-
-The remote URL above works without any local setup. If you prefer running locally (offline use, lower latency), install via npm:
-
-### CLI One-Liners
-
-```bash
-# Claude Code
-claude mcp add music-studio -- npx -y mcp-music-studio --stdio
-
-# Codex CLI
-codex mcp add -- npx -y mcp-music-studio --stdio
-
-# Gemini CLI
-gemini mcp add -- npx -y mcp-music-studio --stdio
-
-# OpenCode
-opencode mcp add music-studio -- npx -y mcp-music-studio --stdio
-```
-
-### JSON Config (Claude Desktop, Cursor, Windsurf, etc.)
-
-<details>
-<summary>Claude Desktop — edit config file</summary>
-
-| OS | Path |
-|----|------|
-| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
-| Linux | `~/.config/Claude/claude_desktop_config.json` |
-
-```json
-{
-  "mcpServers": {
-    "music-studio": {
-      "command": "npx",
-      "args": ["-y", "mcp-music-studio", "--stdio"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>VS Code / Trae / PearAI</summary>
-
-Add to `.vscode/mcp.json` — note: uses `"servers"` not `"mcpServers"`:
-
-```json
-{
-  "servers": {
-    "music-studio": {
-      "command": "npx",
-      "args": ["-y", "mcp-music-studio", "--stdio"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>Cursor</summary>
-
-Add to `~/.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "music-studio": {
-      "command": "npx",
-      "args": ["-y", "mcp-music-studio", "--stdio"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>Windsurf</summary>
-
-Add to `~/.codeium/windsurf/mcp_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "music-studio": {
-      "command": "npx",
-      "args": ["-y", "mcp-music-studio", "--stdio"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>Windows</summary>
-
-On Windows, `npx` is a `.cmd` file and requires a shell wrapper:
-
-```json
-{
-  "mcpServers": {
-    "music-studio": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "mcp-music-studio", "--stdio"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>Render modes (for non-ext-apps clients)</summary>
-
-Clients that support ext-apps render the interactive UI inline automatically (`auto` mode). For clients that don't (Cherry Studio, CLI environments), use `--render-mode`:
-
-| Mode | Behavior |
-|------|----------|
-| `auto` (default) | Inline UI for Claude Desktop, VS Code |
-| `browser` | Saves HTML and opens in system browser |
-| `html` | Returns HTML as embedded resource |
-
-```json
-{
-  "mcpServers": {
-    "music-studio": {
-      "command": "npx",
-      "args": ["-y", "mcp-music-studio", "--stdio", "--render-mode", "browser"]
-    }
-  }
-}
-```
-
-Clients without a widget also get a **click-to-play link** in the tool result, served by the hosted worker — no local render mode needed.
-</details>
-
-<details>
-<summary>HTTP mode (<code>--host</code>, <code>--allow-origin</code>)</summary>
-
-Without `--stdio` the server listens over Streamable HTTP. That endpoint is **unauthenticated**, so it binds `127.0.0.1:3001` by default and only accepts browser requests from loopback origins.
-
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `--host ADDR` | `127.0.0.1` | Bind address. A non-loopback value prints a warning and turns off the SDK's DNS-rebinding protection — put a proxy that authenticates in front of it |
-| `--allow-origin ORIGIN` | loopback pages only | Extra CORS origins (comma-separated, repeatable; `*` opts back into a wildcard) |
-| `PORT` (env) | `3001` | Listen port |
-
-</details>
-
----
+- **Sheet music.** Scores in ABC notation, drawn as sheet music and played with any of the 128 General MIDI instruments. Add a style (rock, jazz, bossa and others) for drums, bass and chords. Edit the score in place, transpose it, and download WAV or MIDI. [More about sheet music](https://github.com/linxule/mcp-music-studio/blob/main/docs/sheet-music.md)
+- **Live coding.** Patterns in [Strudel](https://strudel.cc), the JavaScript version of TidalCycles, in an editor you can change while it plays: drum machines, synths, effects, piano rolls and Hydra shader visuals that follow the music. [More about live coding](https://github.com/linxule/mcp-music-studio/blob/main/docs/live-coding.md)
+- **Music videos and stage pieces.** Pattern code can draw, react to every note, respond to taps and speak lines in time with the music. The guide's gallery has a short film, a spoken duet and a Game of Life that composes.
+- **Play together.** A live session keeps one player open. The AI reads what you did and puts its reply on the same player, starting at the next bar. Faders, pads and your phone's motion become controls. [More about playing together](https://github.com/linxule/mcp-music-studio/blob/main/docs/playing-together.md)
+- **Share.** When a score or pattern is small enough to fit in a link, the reply includes a link that opens the full player. For a larger piece, ask for a stored link, which lasts 30 days.
 
 ## Tools
 
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| `play-sheet-music` | ABC notation → visual sheet music + multi-instrument audio | `abcNotation`, `title?`, `instrument?`, `style?`, `tempo?` (40–240), `swing?` (0–75), `drumIntro?` (0–8), `transpose?` (−12–12) |
-| `play-live-pattern` | Strudel code → live-coded patterns with synthesis + effects | `code`, `title?`, `bpm?` (40–300), `autoplay?`, `visuals?`, `theme?`, `session?` |
-| `get-session` | Read a live session: what the player is doing, its errors, and what the listener did (taps, controls, edits, Pass) — or listen until they pass | `session`, `wait?` (`pass` \| `activity`) |
-| `update-session` | Swap a new pattern into a live session's player on the next bar or phrase — no new player | `session`, `code`, `quantize?` (0–32) |
-| `get-music-guide` | ABC reference (7 topics: instruments, drums, syntax, genres...) | `topic` |
-| `get-strudel-guide` | Strudel reference (15 topics: sounds, effects, visuals, hydra, genres, stage, film, interactive, craft, gallery...) | `topic`, `piece?` (with `gallery`) |
-| `search-music-docs` | Semantic search over strudel.cc and ABCJS docs | `query`, `library` (`strudel` \| `abcjs`) |
-| `analyze-harmony` | Name a chord, guess the key, get a progression or chord scale — in ABC and Strudel spellings | `task`, `notes?`, `chords?`, `key?`, `romanNumerals?` |
-| `convert-abc-to-strudel` | Turn a scored ABC melody into a Strudel mini-notation pattern | `abcNotation`, `voice?`, `sound?` |
-| `create-share-link` | Explicitly store a piece and return a 30-day link accessible to anyone holding it | `kind` (`score` or `play`), matching `score` or `pattern` object with the corresponding play tool's arguments |
+| Tool | What it does |
+|------|--------------|
+| `play-sheet-music` | Draw and play a score written in ABC notation |
+| `play-live-pattern` | Open a live-coding player for Strudel code, optionally as a live session |
+| `get-session` | Read what happened in a live session, or wait until the person listening presses Pass |
+| `update-session` | Swap new code into a live session's player on the next bar or phrase |
+| `get-music-guide` | Reference for ABC notation: syntax, instruments, styles, genres |
+| `get-strudel-guide` | Reference for Strudel: sounds, effects, visuals, stage, gallery pieces |
+| `search-music-docs` | Search the Strudel and abcjs documentation |
+| `analyze-harmony` | Name chords, find the key, build progressions |
+| `convert-abc-to-strudel` | Turn a scored melody into a Strudel pattern |
+| `create-share-link` | Store a piece for 30 days and return a link anyone can open |
 
-**`visuals`** — `none`, `pianoroll`, `punchcard`, `scope`, `spectrum`, `hydra-kaleid`, `hydra-pulse`, `hydra-wash`, `hydra-feed`.
-**`theme`** — any of the 39 schemes the Strudel REPL ships (`strudelTheme`, `nord`, `sonicPink`, `teletext`, `gruvboxDark`, `githubLight`, …).
-**`style`** — `rock`, `jazz`, `bossa`, `waltz`, `march`, `reggae`, `folk`, `classical`.
+Parameters, prompts and the players' own tools: [tools and prompts](https://github.com/linxule/mcp-music-studio/blob/main/docs/tools.md).
 
-## Prompts
+## Run it on your computer
 
-Slash-command / menu entry points, in clients that surface MCP prompts:
-
-| Prompt | What it does |
-|--------|--------------|
-| `compose-beat` | Generate + play a Strudel pattern in a genre (args: `genre`, `mood?`) |
-| `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
-| `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
-
-## 0.10.0 — October 2, 2026
-
-Tools on the player itself.
-
-- **The player offers tools to its host.** Every widget now registers MCP Apps
-  tools: read the live code (including the human's unsaved edits), set or
-  swap it, play, stop and undo. Writes need the widget's `instanceId` and the
-  current `revision`, so an agent never overwrites a human edit it hasn't
-  read. No chat host calls widget tools yet; the share page and the local
-  studio below do.
-- **`swap-pattern` changes a playing piece on the bar**: the same quantized
-  swap live sessions use (old pattern until the boundary, new from it,
-  measured). Any newer edit, swap, session update, Play, Stop or Undo cancels
-  a waiting one, and it never plays code someone edited during the wait. A
-  bar more than ~12 s away answers "queued" and the state shows when it took
-  over. Undo restores the previous code, stopped.
-- **Share pages speak WebMCP**: `/play`, `/p/<id>` and `/s/<id>` pass the
-  player's tools to an assistant built into the browser (Chromium's WebMCP;
-  Codex desktop's built-in browser) — ask it to change the music on the page.
-  A shared page still never runs on its own: the assistant can read, stage,
-  stop and undo, but Play and swap appear only after Play is pressed on the page.
-  Every result is marked untrusted: a shared page's code is the link author's.
-- **The local studio** (`bun run studio`, `dev/`): both widgets side by side
-  with shared review — select a passage, ask, and the agent explains or
-  proposes an edit you preview and apply — plus save/open session files.
-
-## 0.9.2 — October 2, 2026
-
-- **An idle player lets go of its session.** A live-session player that has been stopped and untouched for 30 minutes stops checking in, and its badge says "session paused — press Play to rejoin". Play, an edit, a tap or Pass rejoins, and an update Claude queued in the meantime plays then. Before, a forgotten open tab kept its session alive and its server object awake indefinitely.
-- **Speech renders are capped at 500 new lines a day** across everyone (was 4,000). Lines already rendered come from the cache and don't count.
-
-## 0.9.1 — October 2, 2026
-
-- **A Pass that gets no answer says so.** When Claude is listening, Pass hands it the turn without a chat message. If that read never reaches the model (a dropped turn, a host timeout) and nothing comes back on the player within 90 s, the player says so, and the next Pass goes to the chat.
-- Dependency refresh (MCP SDK 1.31, ext-apps 2.0.3, agents 0.24). tonal stays at 6.4.3: 6.5.0's package entry points name files it doesn't ship. Published servers bundle tonal and were never affected.
-
-## 0.9.0 — October 2, 2026
-
-The booth, the stage and the room.
-
-- **Listen**: `get-session` with `wait: "pass"` holds until the listener
-  presses **Pass**, then returns what they did — so a whole back-to-back set
-  runs inside one reply: answer, listen, answer. The player shows "Claude is
-  listening", and Pass skips the chat when the AI already heard it
-  (measured: 60 ms from press to the AI's read in production).
-- **Share links open the full player**: the real widget — stage, Hydra, code,
-  controls, recording with a real download — hosted by a page of our own,
-  where the microphone and motion sensors can be allowed. `/s/<id>` opens a
-  live session on another screen. The old page stays at `?classic=1`.
-  Shared pages never start on their own: an old link with `autoplay=1`
-  now waits for Play too.
-- **Sensors as controls**: `tilt()` and `mic()` follow the device's motion and
-  input loudness where the page allows it (permission on the first tap; the
-  mic only when a piece asks, analysed locally, never recorded or sent), and
-  turn into an xy pad and a fader you play by hand where it doesn't — so a
-  piece works in the chat and on a phone alike.
-- **Two Decks**: a gallery piece for back-to-back sets — your deck, Claude's
-  deck, a crossfader, filters, bass kills and an echo throw.
-- **Fixed — worklet sounds were silent until a click**: supersaw, pulse,
-  crush, coarse and the DJ filter only loaded on the first mouse press after
-  the player loaded, and a `.djf()` silenced everything on its bus. They now
-  load before the first note.
-- **A master limiter**: with those effects sounding, a glitch piece peaked at
-  2.4× full scale (hard clipping); a limiter now keeps every piece near 1.
-
-## 0.8.0 — October 2, 2026
-
-Play together. A live session keeps one player open that the AI can read and
-change while the music keeps going — the back-to-back the claude.ai field test
-asked for, and the feedback channel it was missing.
-
-- **Live sessions**: `play-live-pattern` with `session: true`. `get-session`
-  returns what the player is doing (errors, silence, what is playing) and what
-  the listener did — taps, control moves, code they edited and ran, and
-  **Pass**, a button that hands the turn back. `update-session` swaps in new
-  code on the next bar or phrase, measured to land on the beat, and says
-  whether it ran. Works in hosts that give the AI no way to read widget context.
-- **Controls**: `fader('rain')`, `pad('drop', { toggle: true })` and
-  `xy('wind')` put a strip of real controls on the player. Each is a pattern
-  (`.gain(fader('rain'))`) with a `.value` for visuals, and keeps its value
-  when the code changes. New gallery piece: **Weather Machine**.
-- The privacy policy covers live sessions (kept until 2 hours idle; the
-  session id works like a share link).
-
-## 0.7.0 — October 1, 2026
-
-From sound toy to audiovisual instrument. A day of making things in claude.ai
-— a short film, a duet with speech, a Game of Life composer — showed that the
-widget already was one, and that its worst bugs were silent. This release
-fixes those and gives the pieces a runtime, a voice and a guide.
-
-- **Stage runtime**: `cycle()`, `onFrame`, `onEvent`, `onTap` (+ `next(16)`)
-  and `say()` in the widget and on share pages. New guide topics `stage`,
-  `film`, `interactive`, `craft`, `debugging`, and a `gallery` of complete pieces.
-- **Voice**: `say(text, { voice })` returns a pattern playing the words,
-  rendered once by the hosted service (Cloudflare Workers AI, 40 synthetic
-  voices, cached) — so it is on the beat and identical on every device.
-  Browser speech never played in the Claude mobile app.
-- **Fixed — frozen clocks**: `H(signal(t => t))` returned 0 forever (a Strudel
-  Fraction it misread), freezing any visual built on it at bar 1.
-- **Fixed — 22 silent sounds in Chrome, Edge and Electron hosts**: kalimba,
-  steinway, kawai, ocarina, the VCSL snares and more. GitHub serves them with a
-  header Chromium rejects; they now load from jsDelivr.
-- **Fixed — the local validator rejected working audiovisual code** ("window is
-  not defined") and the hosted server checked nothing; the hosted server now
-  reports syntax errors with their position, and error line numbers point at
-  the code the model sent even when `bpm` or `visuals` added lines.
-- **Taps that land**: `tap.next(16)` is past what the scheduler has already
-  committed, so a tapped note always sounds.
-- The privacy policy covers spoken lines.
-
-## 0.6.0 — September 26, 2026
-
-The canonical endpoint is now `https://music-studio.linxule.com/mcp`. Existing
-`mcp-music-studio.linxule.workers.dev` connections and shared links continue to work.
-
-Playback no longer stores compositions automatically. Use the new
-`create-share-link` tool when you explicitly want to upload a composition for a
-30-day link. The hosted privacy policy explains storage, retention, and external
-providers. Standalone Strudel pages start only after an intentional Play action.
-
-This release corrects ABC pitch/drum guidance and harmony error reporting, adds
-real browser audio and export checks to CI and publishing, and updates development
-dependencies. The combined application is now AGPL-3.0-or-later, with the original
-MIT notices preserved and editable source/build inputs included in the npm package.
-Earlier releases retain their original notices. See [SOURCE.md](SOURCE.md).
-
-## 0.5.14 — September 25, 2026
-
-The local server's pattern check rejected every Strudel pattern written with
-`$:` blocks — Strudel's everyday way to run several patterns — as "failed to
-evaluate" while the widget played it fine. It now follows the REPL: blocks play
-stacked, `_$:` mutes, `S$:` solos, and the result counts the blocks as layers.
-A pattern ending in a Hydra line no longer hangs the check. The release film,
-*Rest*, was made with the studio itself — the score drawn by abcjs, the song a
-single Strudel file with its arrangement in the code — and the tools that shot
-it are in [`scripts/showcase/film/`](scripts/showcase/film/).
-[0.5.14](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.14)
-
-## 0.5.13 — September 25, 2026
-
-The sheet widget's **Room** button showed as a blank blue box while on: its
-label was drawn in the same blue as its pressed background (0.5.10–0.5.12).
-It now reads like the Edit toggle, white on blue.
-[0.5.13](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.13)
-
-## 0.5.12 — September 25, 2026
-
-Tested on a phone, then opened up. Scrolling a conversation no longer starts
-music, and a tune autoplays once per tool call instead of on every rebuild;
-Strudel code wraps. Sheet music rings out — a softer note release and a light
-Room echo, in the widget, WAV downloads and share links. Strudel visuals gain
-layers, hand-drawn `onPaint` art, inline visuals and sliders, and pitch-driven
-Hydra shaders, and share links now match the widget. Details:
-[0.5.9](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.9) ·
-[0.5.10](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.10) ·
-[0.5.11](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.11) ·
-[0.5.12](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.12).
-
-## 0.5.6 — September 14, 2026
-
-Dependency and compatibility maintenance: audited dependency locks, ext-apps v2
-widgets, the SDK v1-compatible worker adapter, and validated worker startup.
-The seven tools, music features and UI controls retain their existing behavior.
-Builds now synchronize the MCP Registry metadata with the package version, and
-publishing waits for the npm package to propagate before registry registration.
-
-## Development
-
-Use Bun 1.4.2 and Node 24 for development and CI. Dependency updates use the Bun
-ecosystem so both package manifests and lockfiles stay consistent. The server
-retains SDK v1 and the worker uses Agents' legacy MCP handler; widgets use
-ext-apps v2. CI checks both locks for vulnerabilities and exercises the real
-worker HTTP transport as well as the local/worker parity suite. The worker entry
-module exports only its fetch handler; test helpers stay in the implementation
-module because workerd rejects constants as runtime entry points.
+The hosted URL needs no setup. To run the server locally instead, use npm:
 
 ```bash
-bun install
-bun run dev      # watch + serve (hot reload)
-bun run build    # production build (widgets must be built before the tests)
-bun run test     # run tests
-bunx playwright install chromium  # one-time browser install
-bun run test:audio   # real browser audio, visuals, WAV and MIDI exports
-bun run test:package # check source and license contents of the npm package
+claude mcp add music-studio -- npx -y mcp-music-studio --stdio
 ```
 
-`dev/` is a local ext-apps host harness for driving the widgets outside a real client, and `bun run studio` opens the local studio: both widgets side by side with shared review and WebMCP tools — see [`dev/README.md`](dev/README.md).
+Setup for Claude Desktop, Codex, Gemini CLI, VS Code, Cursor, Windsurf and others, plus render modes and HTTP mode: [install and client setup](https://github.com/linxule/mcp-music-studio/blob/main/docs/install.md).
 
-The browser audio gate starts that harness automatically and tests the built widgets
-using Chromium and the real MCP Apps bridge. It measures rendered audio samples,
-checks silence after stopping, and inspects exported WAV/MIDI bytes. It needs
-network access to the pinned Strudel runtime and ABC soundfont provider. CI and
-tag publishing both run it; failed runs retain traces and screenshots. The harness
-does not enforce a client's CSP or reproduce every client's sandbox and audio policy.
+## More
 
-## Privacy policy
+- [Changelog](https://github.com/linxule/mcp-music-studio/blob/main/CHANGELOG.md)
+- [Development](https://github.com/linxule/mcp-music-studio/blob/main/docs/development.md)
+- [Privacy policy](https://music-studio.linxule.com/privacy). Playback does not save your piece in the share database. A live session keeps a log until two hours after its last activity, and spoken lines are cached for 30 days. Links that fit the music in the URL carry it in the link itself. Do not put private information in scores, code, titles or spoken lines. `create-share-link` stores a piece only when you ask.
+- [Report an issue](https://github.com/linxule/mcp-music-studio/issues)
 
-Read the [hosted privacy policy](https://music-studio.linxule.com/privacy)
-([source](privacy.html)) for composition sharing, analytics, browser storage,
-Context7 search, external sample/script providers, retention, and contact details.
-Playback and persistent sharing are separate operations. Short browser links
-contain the composition itself; do not include sensitive information in them.
+## Credits and license
 
-For example, explicitly creating a stored pattern link uses:
+Forked from the [Sheet Music Server](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/sheet-music-server) example in [MCP ext-apps](https://github.com/modelcontextprotocol/ext-apps) by Anthropic (MIT). Live coding uses [Strudel](https://codeberg.org/uzu/strudel), notation uses [abcjs](https://github.com/paulrosen/abcjs), and shader visuals use [hydra-synth](https://hydra.ojack.xyz).
 
-```json
-{
-  "kind": "play",
-  "pattern": { "code": "s(\"bd sd\")", "title": "My beat" }
-}
-```
-
-Call `create-share-link` only when the user asks to share or store the piece.
-It also uploads to the hosted service when called through the local server.
-
-## Attribution
-
-Forked from the [Sheet Music Server](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/sheet-music-server) example from [MCP ext-apps](https://github.com/modelcontextprotocol/ext-apps) by Anthropic, licensed under MIT.
-
-Live coding is powered by [Strudel](https://strudel.cc) — canonical repo at [codeberg.org/uzu/strudel](https://codeberg.org/uzu/strudel) (the project moved off GitHub, so the GitHub mirror can be stale). Notation and playback use [abcjs](https://github.com/paulrosen/abcjs); shader backgrounds use [hydra-synth](https://hydra.ojack.xyz).
-
-## License
-
-The combined application is licensed under **AGPL-3.0-or-later**. The original MIT notices and grants are preserved in [LICENSES/MIT.txt](LICENSES/MIT.txt). This change does not revoke the licenses of earlier releases. See [SOURCE.md](SOURCE.md) for corresponding source and build instructions, and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency and audio-asset licensing. Music you create is not automatically licensed under the application’s software license.
+Licensed under AGPL-3.0-or-later. The original MIT notices are in [LICENSES/MIT.txt](https://github.com/linxule/mcp-music-studio/blob/main/LICENSES/MIT.txt). See [SOURCE.md](https://github.com/linxule/mcp-music-studio/blob/main/SOURCE.md) for the corresponding source and [THIRD_PARTY_NOTICES.md](https://github.com/linxule/mcp-music-studio/blob/main/THIRD_PARTY_NOTICES.md) for dependency and audio licensing. Music you make is not automatically licensed under the software license.

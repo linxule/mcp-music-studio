@@ -1,0 +1,170 @@
+# Changelog
+
+Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
+
+## 0.10.0 — October 2, 2026
+
+Tools on the player itself.
+
+- **The player offers tools to its host.** Every widget now registers MCP Apps
+  tools: read the live code (including the human's unsaved edits), set or
+  swap it, play, stop and undo. Writes need the widget's `instanceId` and the
+  current `revision`, so an agent never overwrites a human edit it hasn't
+  read. No chat host calls widget tools yet; the share page and the local
+  studio below do.
+- **`swap-pattern` changes a playing piece on the bar**: the same quantized
+  swap live sessions use (old pattern until the boundary, new from it,
+  measured). Any newer edit, swap, session update, Play, Stop or Undo cancels
+  a waiting one, and it never plays code someone edited during the wait. A
+  bar more than ~12 s away answers "queued" and the state shows when it took
+  over. Undo restores the previous code, stopped.
+- **Share pages speak WebMCP**: `/play`, `/p/<id>` and `/s/<id>` pass the
+  player's tools to an assistant built into the browser (Chromium's WebMCP;
+  Codex desktop's built-in browser) — ask it to change the music on the page.
+  A shared page still never runs on its own: the assistant can read, stage,
+  stop and undo, but Play and swap appear only after Play is pressed on the page.
+  Every result is marked untrusted: a shared page's code is the link author's.
+- **The local studio** (`bun run studio`, `dev/`): both widgets side by side
+  with shared review — select a passage, ask, and the agent explains or
+  proposes an edit you preview and apply — plus save/open session files.
+
+## 0.9.2 — October 2, 2026
+
+- **An idle player lets go of its session.** A live-session player that has been stopped and untouched for 30 minutes stops checking in, and its badge says "session paused — press Play to rejoin". Play, an edit, a tap or Pass rejoins, and an update Claude queued in the meantime plays then. Before, a forgotten open tab kept its session alive and its server object awake indefinitely.
+- **Speech renders are capped at 500 new lines a day** across everyone (was 4,000). Lines already rendered come from the cache and don't count.
+
+## 0.9.1 — October 2, 2026
+
+- **A Pass that gets no answer says so.** When Claude is listening, Pass hands it the turn without a chat message. If that read never reaches the model (a dropped turn, a host timeout) and nothing comes back on the player within 90 s, the player says so, and the next Pass goes to the chat.
+- Dependency refresh (MCP SDK 1.31, ext-apps 2.0.3, agents 0.24). tonal stays at 6.4.3: 6.5.0's package entry points name files it doesn't ship. Published servers bundle tonal and were never affected.
+
+## 0.9.0 — October 2, 2026
+
+The booth, the stage and the room.
+
+- **Listen**: `get-session` with `wait: "pass"` holds until the listener
+  presses **Pass**, then returns what they did — so a whole back-to-back set
+  runs inside one reply: answer, listen, answer. The player shows "Claude is
+  listening", and Pass skips the chat when the AI already heard it
+  (measured: 60 ms from press to the AI's read in production).
+- **Share links open the full player**: the real widget — stage, Hydra, code,
+  controls, recording with a real download — hosted by a page of our own,
+  where the microphone and motion sensors can be allowed. `/s/<id>` opens a
+  live session on another screen. The old page stays at `?classic=1`.
+  Shared pages never start on their own: an old link with `autoplay=1`
+  now waits for Play too.
+- **Sensors as controls**: `tilt()` and `mic()` follow the device's motion and
+  input loudness where the page allows it (permission on the first tap; the
+  mic only when a piece asks, analysed locally, never recorded or sent), and
+  turn into an xy pad and a fader you play by hand where it doesn't — so a
+  piece works in the chat and on a phone alike.
+- **Two Decks**: a gallery piece for back-to-back sets — your deck, Claude's
+  deck, a crossfader, filters, bass kills and an echo throw.
+- **Fixed — worklet sounds were silent until a click**: supersaw, pulse,
+  crush, coarse and the DJ filter only loaded on the first mouse press after
+  the player loaded, and a `.djf()` silenced everything on its bus. They now
+  load before the first note.
+- **A master limiter**: with those effects sounding, a glitch piece peaked at
+  2.4× full scale (hard clipping); a limiter now keeps every piece near 1.
+
+## 0.8.0 — October 2, 2026
+
+Play together. A live session keeps one player open that the AI can read and
+change while the music keeps going — the back-to-back the claude.ai field test
+asked for, and the feedback channel it was missing.
+
+- **Live sessions**: `play-live-pattern` with `session: true`. `get-session`
+  returns what the player is doing (errors, silence, what is playing) and what
+  the listener did — taps, control moves, code they edited and ran, and
+  **Pass**, a button that hands the turn back. `update-session` swaps in new
+  code on the next bar or phrase, measured to land on the beat, and says
+  whether it ran. Works in hosts that give the AI no way to read widget context.
+- **Controls**: `fader('rain')`, `pad('drop', { toggle: true })` and
+  `xy('wind')` put a strip of real controls on the player. Each is a pattern
+  (`.gain(fader('rain'))`) with a `.value` for visuals, and keeps its value
+  when the code changes. New gallery piece: **Weather Machine**.
+- The privacy policy covers live sessions (kept until 2 hours idle; the
+  session id works like a share link).
+
+## 0.7.0 — October 1, 2026
+
+From sound toy to audiovisual instrument. A day of making things in claude.ai
+— a short film, a duet with speech, a Game of Life composer — showed that the
+widget already was one, and that its worst bugs were silent. This release
+fixes those and gives the pieces a runtime, a voice and a guide.
+
+- **Stage runtime**: `cycle()`, `onFrame`, `onEvent`, `onTap` (+ `next(16)`)
+  and `say()` in the widget and on share pages. New guide topics `stage`,
+  `film`, `interactive`, `craft`, `debugging`, and a `gallery` of complete pieces.
+- **Voice**: `say(text, { voice })` returns a pattern playing the words,
+  rendered once by the hosted service (Cloudflare Workers AI, 40 synthetic
+  voices, cached) — so it is on the beat and identical on every device.
+  Browser speech never played in the Claude mobile app.
+- **Fixed — frozen clocks**: `H(signal(t => t))` returned 0 forever (a Strudel
+  Fraction it misread), freezing any visual built on it at bar 1.
+- **Fixed — 22 silent sounds in Chrome, Edge and Electron hosts**: kalimba,
+  steinway, kawai, ocarina, the VCSL snares and more. GitHub serves them with a
+  header Chromium rejects; they now load from jsDelivr.
+- **Fixed — the local validator rejected working audiovisual code** ("window is
+  not defined") and the hosted server checked nothing; the hosted server now
+  reports syntax errors with their position, and error line numbers point at
+  the code the model sent even when `bpm` or `visuals` added lines.
+- **Taps that land**: `tap.next(16)` is past what the scheduler has already
+  committed, so a tapped note always sounds.
+- The privacy policy covers spoken lines.
+
+## 0.6.0 — September 26, 2026
+
+The canonical endpoint is now `https://music-studio.linxule.com/mcp`. Existing
+`mcp-music-studio.linxule.workers.dev` connections and shared links continue to work.
+
+Playback no longer stores compositions automatically. Use the new
+`create-share-link` tool when you explicitly want to upload a composition for a
+30-day link. The hosted privacy policy explains storage, retention, and external
+providers. Standalone Strudel pages start only after an intentional Play action.
+
+This release corrects ABC pitch/drum guidance and harmony error reporting, adds
+real browser audio and export checks to CI and publishing, and updates development
+dependencies. The combined application is now AGPL-3.0-or-later, with the original
+MIT notices preserved and editable source/build inputs included in the npm package.
+Earlier releases retain their original notices. See [SOURCE.md](SOURCE.md).
+
+## 0.5.14 — September 25, 2026
+
+The local server's pattern check rejected every Strudel pattern written with
+`$:` blocks — Strudel's everyday way to run several patterns — as "failed to
+evaluate" while the widget played it fine. It now follows the REPL: blocks play
+stacked, `_$:` mutes, `S$:` solos, and the result counts the blocks as layers.
+A pattern ending in a Hydra line no longer hangs the check. The release film,
+*Rest*, was made with the studio itself — the score drawn by abcjs, the song a
+single Strudel file with its arrangement in the code — and the tools that shot
+it are in [`scripts/showcase/film/`](scripts/showcase/film/).
+[0.5.14](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.14)
+
+## 0.5.13 — September 25, 2026
+
+The sheet widget's **Room** button showed as a blank blue box while on: its
+label was drawn in the same blue as its pressed background (0.5.10–0.5.12).
+It now reads like the Edit toggle, white on blue.
+[0.5.13](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.13)
+
+## 0.5.12 — September 25, 2026
+
+Tested on a phone, then opened up. Scrolling a conversation no longer starts
+music, and a tune autoplays once per tool call instead of on every rebuild;
+Strudel code wraps. Sheet music rings out — a softer note release and a light
+Room echo, in the widget, WAV downloads and share links. Strudel visuals gain
+layers, hand-drawn `onPaint` art, inline visuals and sliders, and pitch-driven
+Hydra shaders, and share links now match the widget. Details:
+[0.5.9](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.9) ·
+[0.5.10](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.10) ·
+[0.5.11](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.11) ·
+[0.5.12](https://github.com/linxule/mcp-music-studio/releases/tag/v0.5.12).
+
+## 0.5.6 — September 14, 2026
+
+Dependency and compatibility maintenance: audited dependency locks, ext-apps v2
+widgets, the SDK v1-compatible worker adapter, and validated worker startup.
+The seven tools, music features and UI controls retain their existing behavior.
+Builds now synchronize the MCP Registry metadata with the package version, and
+publishing waits for the npm package to propagate before registry registration.

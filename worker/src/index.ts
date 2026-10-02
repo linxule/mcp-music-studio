@@ -1174,7 +1174,10 @@ export async function handleSessionRoute(request: Request, env: Env): Promise<Re
 
   if (parts.length === 2 && parts[1] === "new") {
     if (request.method !== "POST") return sessionJson({ error: "method not allowed" }, 405);
-    if (!(await limit(env.SESSION_NEW_LIMITER))) return sessionJson({ error: "too many new sessions" }, 429);
+    if (!(await limit(env.SESSION_NEW_LIMITER))) {
+      track(env, { blobs: ["session", "limited", "new"], indexes: ["session"] });
+      return sessionJson({ error: "too many new sessions" }, 429);
+    }
     const id = mintSessionId();
     const stub = env.JAM.get(env.JAM.idFromName(id));
     let seed: string | undefined;
@@ -1188,6 +1191,9 @@ export async function handleSessionRoute(request: Request, env: Env): Promise<Re
       body: seed ? JSON.stringify({ seed }) : undefined,
     });
     if (!res.ok) return sessionJson({ error: "could not open a session" }, 502);
+    // Counts only, never the id (it works like a password). Cost watch: each
+    // open session is a Durable Object awake while its player polls.
+    track(env, { blobs: ["session", "new", seed ? "seeded" : "empty"], indexes: ["session"] });
     return sessionJson({ id });
   }
 
@@ -1198,6 +1204,7 @@ export async function handleSessionRoute(request: Request, env: Env): Promise<Re
   // Every op is metered (Codex review): a widget polls ~3×/min and posts
   // events every ~1.5 s at most, far under the limit.
   if (!(await limit(env.SESSION_EVENTS_LIMITER))) {
+    track(env, { blobs: ["session", "limited", "ops"], indexes: ["session"] });
     return sessionJson({ error: "too many requests" }, 429);
   }
   // Read the body under its cap HERE, before the Durable Object (and before a

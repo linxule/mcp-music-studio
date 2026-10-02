@@ -45,6 +45,7 @@
     "tsconfig*.json",
     "vite.config.ts",
     "scripts/sync-version.mjs",
+    "scripts/build-stage-runtime.mjs",
     "scripts/collect-licenses.mjs",
     "server.json",
     "kimi.plugin.json",
