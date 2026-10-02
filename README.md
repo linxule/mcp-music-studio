@@ -63,6 +63,9 @@ Write code → hear it play → edit in a live REPL.
 - **Beyond music: a stage for audiovisual pieces** — pattern code is real browser JavaScript, and the widget gives it five primitives: `cycle()` (the cycle you're hearing), `onFrame(fn)` (a managed animation loop), `onEvent(pattern, fn)` (fires as each note becomes audible, with its MIDI pitch), `onTap(fn)` (taps on the stage, with `next(16)` — the first 16th the scheduler can still play) and `say(text, { voice })` (a spoken line rendered by the server, returned as a **pattern**, so it lands on the beat, mixes, and records). Draw your own canvases into Hydra, re-render them as ASCII, cut between scenes on bar lines. Each belongs to the evaluation that made it: re-running replaces the old loop instead of stacking another
 - **A gallery of finished pieces** — a short film, a spoken duet you play along with, a Game of Life that composes, a glitch piece about memory: `get-strudel-guide({ topic: "gallery", piece: "first-light" })`. Made in claude.ai by a Claude model with a person
 - **Server-side validation** — the local server evaluates every Strudel pattern headlessly before answering: the tool result reports layers, events per cycle, tempo, and which sound names are registered (or a syntax error with line:column), and runs each `onFrame`/`onEvent` callback once to catch a draw loop that throws. The hosted worker can't run Strudel (Cloudflare forbids dynamic code generation), but it parses the JavaScript and every mini-notation string, so a typo still comes back with its line and column
+- **Live sessions: play together** — `play-live-pattern` with `session: true` keeps one player open; the AI reads what you did with `get-session` (taps, control moves, edits, errors) and answers on the same player with `update-session`, swapped in on the bar. `get-session` with `wait: "pass"` listens until you press **Pass**, so a back-to-back set runs inside one reply. `/s/<id>` opens the session on a second screen
+- **Controls and sensors** — `fader()`, `pad()` and `xy()` put real controls under the code, and `tilt()` / `mic()` follow the device's motion and input loudness (falling back to an xy pad and a fader you play by hand where the page can't use them)
+- **Tools on the player itself** — the widget offers its host tools to read the live code (including your unsaved edits), set it, swap it on the bar (`swap-pattern`), play, stop and undo, guarded by revision so an agent never overwrites an edit it hasn't read. Shared player pages pass them to a browser's built-in assistant through WebMCP
 - **Record & download** — capture live audio and export as WAV (recordings longer than about two minutes download in the recorder's own compressed format, so the file stays a sensible size)
 - **`get-strudel-guide`** — 15 reference topics: mini-notation, sounds, effects, patterns, genres, tips, visuals, hydra, advanced — and for audiovisual work stage, film, interactive, craft, debugging, gallery
 
@@ -70,7 +73,7 @@ Write code → hear it play → edit in a live REPL.
 - **`analyze-harmony`** — chord detection, key detection, progressions, chord scales; answers in both ABC chord symbols and Strudel `chord()`/`note()` form
 - **`convert-abc-to-strudel`** — take a scored melody into the live REPL: bars become mini-notation groups, durations become `@` weights, chord symbols become a `chord().voicing()` line
 - **`search-music-docs`** — semantic search over strudel.cc and ABCJS documentation
-- **Click-to-play links** — short pieces include a self-contained browser link; the music is encoded in the URL, not encrypted. Playback never stores a composition in the share database. For longer pieces, use the inline widget, a local browser render, or explicitly ask for a stored share
+- **Click-to-play links** — short pieces include a browser link that opens the full player (stage, visuals, controls, recording); the music is encoded in the URL, not encrypted. Playback never stores a composition in the share database. For longer pieces, use the inline widget, a local browser render, or explicitly ask for a stored share
 - **Explicit sharing** — `create-share-link` uploads a score or pattern for 30 days. Anyone with the link can view and play it; creating the same share again refreshes its expiry. Standalone Strudel pages wait for Play or an intentional editor evaluation shortcut, including older autoplay links
 - **Widgets that fit the host** — both widgets size themselves from the host's container (inline, fixed or fullscreen), respect safe-area insets and the host's fonts, and never pan sideways on a phone. If the browser holds audio back until a tap, the widget says "Tap Play to start audio" instead of pretending to play. Scrolling past a widget never starts it, and a tune autoplays once — not again every time the host rebuilds the widget
 
@@ -443,7 +446,7 @@ bun run test:audio   # real browser audio, visuals, WAV and MIDI exports
 bun run test:package # check source and license contents of the npm package
 ```
 
-`dev/` is a local ext-apps host harness for driving the widgets outside a real client — see [`dev/README.md`](dev/README.md).
+`dev/` is a local ext-apps host harness for driving the widgets outside a real client, and `bun run studio` opens the local studio: both widgets side by side with shared review and WebMCP tools — see [`dev/README.md`](dev/README.md).
 
 The browser audio gate starts that harness automatically and tests the built widgets
 using Chromium and the real MCP Apps bridge. It measures rendered audio samples,
