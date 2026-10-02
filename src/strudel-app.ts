@@ -30,7 +30,7 @@ import { sourceLineNote } from "./shared/line-map";
 import { DEFAULT_SHARE_ORIGIN } from "./shared/share-url";
 import { SessionClient, type ApplyOutcome } from "./session-client";
 import { nextBoundary, SESSION_ID_RE, SESSION_SWAP_LEAD_S, type QueuedPattern } from "./shared/session";
-import { spliceAt } from "./shared/splice";
+import { isSpliced, settle, spliceAt } from "./shared/splice";
 import { applyVisualPreset } from "./shared/visual-presets";
 import {
   STRUDEL_INLINE_CAP,
@@ -2141,17 +2141,22 @@ function installEvaluateHook(editor: any): void {
     // must not be spliced at the session's bar (Kimi review).
     const splice = pendingSplice?.code === code ? pendingSplice : null;
     if (splice) pendingSplice = null;
-    const unsplice = splice ? installSplice(editor, splice.boundary) : null;
+    const previousPattern = splice ? editor.repl?.scheduler?.pattern : null;
     try {
       await original(holdForVoice ? false : shouldPlay !== false);
     } catch (err) {
-      unsplice?.();
       stage.rollback(stageToken);
       if (evaluationSuperseded(editor, generation, seq)) return;
       reportEvaluation(code, err as Error);
       return;
     }
-    unsplice?.();
+    // Splice AFTER the evaluation, onto the pattern it installed: nothing is
+    // patched while it runs, so a stalled evaluation can't hand its splice to
+    // another one (Codex review). Only microtasks separate setPattern from
+    // here, so no scheduler tick has queried the new pattern yet.
+    if (splice && !readEvalError() && !evaluationSuperseded(editor, generation, seq)) {
+      applySplice(editor, previousPattern, splice.boundary);
+    }
     if (evaluationSuperseded(editor, generation, seq)) {
       stage.rollback(stageToken);
       return;
@@ -2951,43 +2956,36 @@ function startSession(id: string, origin: string): void {
   logControlSurface();
 }
 
-/**
- * Hand the scheduler the old pattern until `boundary` and the new one from it,
- * for the one setPattern() call this evaluation makes. Returns an undo for an
- * evaluation that never got that far.
- */
-function installSplice(editor: any, boundary: number): () => void {
+/** Give the scheduler the old pattern until `boundary` and the one just installed from it. */
+function applySplice(editor: any, previous: any, boundary: number): void {
   const scheduler = editor?.repl?.scheduler;
-  const previous = scheduler?.pattern;
+  const next = scheduler?.pattern;
   const stack = (window as any).stack;
-  if (!scheduler || !previous || typeof stack !== "function") return () => undefined;
-  const hadOwn = Object.prototype.hasOwnProperty.call(scheduler, "setPattern");
-  const original = scheduler.setPattern;
-  let restored = false;
-  const restore = () => {
-    if (restored) return;
-    restored = true;
-    if (hadOwn) scheduler.setPattern = original;
-    else delete scheduler.setPattern;
-  };
-  scheduler.setPattern = function (this: unknown, next: any, autostart?: boolean) {
-    restore();
-    let spliced = next;
-    try {
-      spliced = spliceAt(previous, next, boundary, stack);
-    } catch { /* an unspliceable pattern just swaps at once */ }
-    const result = original.call(this, spliced, autostart);
-    if (spliced !== next) {
-      // Past the boundary the old half only costs queries: drop it.
-      const cps = Number(scheduler.cps) || 0.5;
-      const wait = ((boundary - Number(scheduler.now?.() ?? boundary)) / cps + 2) * 1000;
-      setTimeout(() => {
-        if (scheduler.pattern === spliced) scheduler.pattern = next;
-      }, Math.max(0, wait));
-    }
-    return result;
-  };
-  return restore;
+  if (!scheduler || !previous || !next || next === previous || typeof stack !== "function") return;
+  try {
+    scheduler.pattern = spliceAt(previous, next, boundary, stack, stageEnv.audibleCycle() ?? -Infinity);
+  } catch {
+    return; // an unspliceable pattern just swaps at once
+  }
+  scheduleSpliceSweep();
+}
+
+/**
+ * Drop spliced halves that are over, by the AUDIO clock — not a wall-clock
+ * guess, which a suspended context or a tempo change makes wrong (Codex review).
+ */
+let spliceSweep: ReturnType<typeof setTimeout> | null = null;
+function scheduleSpliceSweep(): void {
+  if (spliceSweep !== null) return;
+  spliceSweep = setTimeout(() => {
+    spliceSweep = null;
+    const scheduler = getEditor()?.repl?.scheduler;
+    if (!scheduler?.pattern || !isSpliced(scheduler.pattern)) return;
+    // Half a cycle of margin: the scheduler queries a little ahead of what is heard.
+    const heard = stageEnv.audibleCycle();
+    if (heard !== null) scheduler.pattern = settle(scheduler.pattern, heard - 0.5);
+    if (isSpliced(scheduler.pattern)) scheduleSpliceSweep();
+  }, 1000);
 }
 
 async function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome> {
@@ -3012,17 +3010,34 @@ async function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome
   if (pattern.quantize > 0) {
     boundary = nextBoundary(stageEnv.audibleCycle() ?? 0, pattern.quantize, SESSION_SWAP_LEAD_S * cps);
     setStatus(`Next pattern lands at bar ${Math.round(boundary)}`, "playing");
+    const giveUpAt = Date.now() + ((boundary - (stageEnv.audibleCycle() ?? 0)) / cps) * 1000 + 5000;
     for (;;) {
       if (mine !== sessionApplySeq) return { ok: false, cycle: null, error: "replaced by a newer update before it played" };
+      if (!session) return { ok: false, cycle: null, error: "the player closed" };
+      // Stopped while waiting: the boundary will never come (Codex review).
+      if (!isSchedulerStarted()) {
+        return {
+          ok: true,
+          cycle: null,
+          report: "Loaded into the editor, but the user stopped the player before the bar — it plays when they press Play.",
+        };
+      }
       const scheduled = Number(scheduler.now?.());
       const remaining = (boundary - SESSION_EVAL_LEAD_S * cps - scheduled) / cps;
-      if (!Number.isFinite(remaining) || remaining <= 0) break;
+      if (!Number.isFinite(remaining) || remaining <= 0 || Date.now() > giveUpAt) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(remaining * 1000, 250)));
     }
     pendingSplice = { boundary, code: editor.code ?? pattern.code };
   }
   lastReportText = "";
+  const ranBefore = evaluationSeq;
   await editor.evaluate(true);
+  // A splice its evaluation never consumed must not land on a later one.
+  pendingSplice = null;
+  // Cancelled in the queue (a new tool call took the player): it never ran.
+  if (evaluationSeq === ranBefore) {
+    return { ok: false, cycle: null, error: "the player was taken over by a newer run before this one started" };
+  }
   const err = readEvalError();
   if (err) {
     const msg = err.message || String(err);

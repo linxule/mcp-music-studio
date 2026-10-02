@@ -57,6 +57,8 @@ export interface SessionState {
 }
 
 export const POLL_WAIT_MS = 20_000;
+/** Polls a session holds open at once; an older one is answered 204 to make room. */
+export const MAX_POLL_WAITERS = 4;
 export const ACK_WAIT_MS = 9_000;
 export const EVENTS_MAX_BYTES = 256 * 1024;
 export const UPDATE_MAX_BYTES = SESSION_MAX_CODE_CHARS * 4 + 1024;
@@ -79,7 +81,7 @@ async function readJson(request: Request, maxBytes: number): Promise<unknown> {
 
 export class JamSession {
   private data: SessionData | null | undefined = undefined;
-  private pollWaiters = new Set<(p: QueuedPattern) => void>();
+  private pollWaiters = new Set<(p: QueuedPattern | null) => void>();
   private ackWaiters = new Map<number, Array<(e: Applied) => void>>();
 
   constructor(
@@ -161,10 +163,17 @@ export class JamSession {
       if (!previous || previous.state !== data.heartbeat!.state || now - this.persistedAt > 60_000) await this.save();
       if (data.pattern && data.pattern.rev > after) return json(data.pattern);
       const wait = Math.min(POLL_WAIT_MS, Math.max(0, Number(url.searchParams.get("wait") ?? POLL_WAIT_MS) || 0));
-      const pattern = await this.waitFor<QueuedPattern>((resolve) => {
+      // Bounded: an id-holder opening many polls can't pile up held requests
+      // (Codex review). The oldest is released empty; a real widget re-polls.
+      while (this.pollWaiters.size >= MAX_POLL_WAITERS) {
+        const oldest = this.pollWaiters.values().next().value!;
+        this.pollWaiters.delete(oldest);
+        oldest(null);
+      }
+      const pattern = await this.waitFor<QueuedPattern | null>((resolve) => {
         this.pollWaiters.add(resolve);
         return () => this.pollWaiters.delete(resolve);
-      }, wait);
+      }, wait, request.signal);
       return pattern ? json(pattern) : new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
     }
 
@@ -223,7 +232,7 @@ export class JamSession {
             if (rest.length) this.ackWaiters.set(pattern.rev, rest);
             else this.ackWaiters.delete(pattern.rev);
           };
-        }, ACK_WAIT_MS);
+        }, ACK_WAIT_MS, request.signal);
       }
       const outcome: SessionUpdateOutcome = {
         pattern: { ...pattern, code: "" },
@@ -239,15 +248,27 @@ export class JamSession {
     return json({ error: "not found" }, 404);
   }
 
-  /** Resolve with what `subscribe` delivers, or null after `ms`. */
-  private async waitFor<T>(subscribe: (resolve: (v: T) => void) => () => void, ms: number): Promise<T | null> {
-    if (ms <= 0) return null;
+  /**
+   * Resolve with what `subscribe` delivers, or null after `ms` — or at once
+   * when the caller goes away (an aborted poll must not hold its waiter until
+   * the deadline; Codex review).
+   */
+  private async waitFor<T>(
+    subscribe: (resolve: (v: T) => void) => () => void,
+    ms: number,
+    signal?: AbortSignal,
+  ): Promise<T | null> {
+    if (ms <= 0 || signal?.aborted) return null;
     let unsubscribe = () => {};
-    const delivered = new Promise<T>((resolve) => {
+    let onAbort = () => {};
+    const delivered = new Promise<T | null>((resolve) => {
       unsubscribe = subscribe(resolve);
+      onAbort = () => resolve(null);
+      signal?.addEventListener("abort", onAbort);
     });
     const result = await Promise.race([delivered, this.sleep(ms).then(() => null)]);
     unsubscribe();
+    signal?.removeEventListener("abort", onAbort);
     return result;
   }
 

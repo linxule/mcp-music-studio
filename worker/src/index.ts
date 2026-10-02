@@ -1084,7 +1084,9 @@ export async function handleSessionRoute(request: Request, env: Env): Promise<Re
   if (parts.length !== 3 || !SESSION_ID_RE.test(id ?? "") || !SESSION_OPS.has(op ?? "")) {
     return sessionJson({ error: "not found" }, 404);
   }
-  if ((op === "events" || op === "update") && !(await limit(env.SESSION_EVENTS_LIMITER))) {
+  // Every op is metered (Codex review): a widget polls ~3×/min and posts
+  // events every ~1.5 s at most, far under the limit.
+  if (!(await limit(env.SESSION_EVENTS_LIMITER))) {
     return sessionJson({ error: "too many requests" }, 429);
   }
   // Read the body under its cap HERE, before the Durable Object (and before a
@@ -1098,7 +1100,7 @@ export async function handleSessionRoute(request: Request, env: Env): Promise<Re
     }
   }
   const stub = env.JAM.get(env.JAM.idFromName(id));
-  const forwarded = await stub.fetch(`https://session/${op}${url.search}`, { method: request.method, body });
+  const forwarded = await stub.fetch(`https://session/${op}${url.search}`, { method: request.method, body, signal: request.signal });
   const headers = new Headers(forwarded.headers);
   for (const [k, v] of Object.entries(SESSION_CORS)) headers.set(k, v);
   return new Response(forwarded.body, { status: forwarded.status, headers });

@@ -14,10 +14,12 @@ import {
   SESSION_IDLE_TTL_MS,
   SESSION_MAX_EDIT_BODIES,
   SESSION_MAX_EVENTS,
+  SESSION_MAX_BYTES,
+  sessionBytes,
   type SessionData,
 } from "../src/shared/session";
-import { spliceAt, hapStart } from "../src/shared/splice";
-import { JamSession, type SessionStorage } from "../worker/src/session-do";
+import { spliceAt, hapStart, settle, isSpliced } from "../src/shared/splice";
+import { JamSession, MAX_POLL_WAITERS, type SessionStorage } from "../worker/src/session-do";
 import { SessionClient } from "../src/session-client";
 import {
   attachSession,
@@ -545,5 +547,62 @@ describe("review fixes (live sessions, Kimi)", () => {
     await vi.waitFor(() => expect(inits).toHaveLength(2));
     expect(inits[0].keepalive).toBe(true);
     expect(inits[1].keepalive).toBe(false);
+  });
+});
+
+
+describe("review fixes (live sessions, Codex)", () => {
+  it("a worst-case log stays under one storage value (it reached 5.2 MB)", () => {
+    const d = newSession(ID, 0);
+    for (let i = 0; i < SESSION_MAX_EVENTS; i++) appendEvents(d, coerceEvents([{ t: "report", text: "\u0001".repeat(5000) }]), i);
+    for (let i = 0; i < 4; i++) appendEvents(d, coerceEvents([{ t: "edit", code: "\u0001".repeat(70_000) }]), i);
+    queuePattern(d, "\u0001".repeat(70_000), 1, 1);
+    expect(sessionBytes(d)).toBeLessThanOrEqual(SESSION_MAX_BYTES);
+    expect(d.events.length).toBeGreaterThan(0);
+  });
+
+  it("an applied update stays applied after the log trims it away", () => {
+    const d = newSession(ID, 0);
+    const p = queuePattern(d, "x", 1, 0);
+    appendEvents(d, [{ t: "applied", rev: p.rev, ok: true, cycle: 4 }], 1);
+    for (let i = 0; i < SESSION_MAX_EVENTS; i++) appendEvents(d, [{ t: "tap", cycle: i, x: 0, y: 0 }], 2);
+    expect(d.events.some((e) => e.t === "applied")).toBe(false);
+    expect(describeSession(d, 3)).toContain(`latest update (rev ${p.rev}) applied at cycle 4.0`);
+  });
+
+  it("holds at most a few polls open, releasing the oldest", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    const released: number[] = [];
+    for (let i = 0; i < MAX_POLL_WAITERS + 2; i++) {
+      void h.call("next?after=0&state=playing").then((r) => released.push(r.status));
+    }
+    await vi.waitFor(() => expect(released).toEqual([204, 204]));
+    expect((h.obj as any).pollWaiters.size).toBe(MAX_POLL_WAITERS);
+  });
+
+  it("an aborted poll lets go of its waiter at once", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    const abort = new AbortController();
+    const poll = h.obj.fetch(new Request("https://session/next?after=0&state=playing", { signal: abort.signal }));
+    await new Promise((r) => setTimeout(r, 0));
+    abort.abort();
+    expect((await poll).status).toBe(204);
+    expect((h.obj as any).pollWaiters.size).toBe(0);
+  });
+
+  it("splices settle once their boundary is past, so swaps never chain", () => {
+    let p: any = sequence("a");
+    for (let i = 0; i < 12; i++) p = spliceAt(p, sequence(`b${i}`), i + 1, stack, i + 0.5);
+    // Each splice settled the previous one: one level of history, not twelve.
+    const settled = settle(p, 100);
+    expect(isSpliced(settled)).toBe(false);
+    expect(settled.queryArc(20, 21)[0].value).toBe("b11");
+    // Before its boundary, a splice still plays the old half.
+    const fresh = spliceAt(sequence("old"), sequence("new"), 4, stack, 1);
+    expect(settle(fresh, 3)).toBe(fresh);
+    expect(fresh.queryArc(3, 4)[0].value).toBe("old");
+    expect(fresh.queryArc(4, 5)[0].value).toBe("new");
   });
 });

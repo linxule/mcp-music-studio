@@ -47,6 +47,12 @@ export const SESSION_MAX_EDIT_BODIES = 3;
 export const SESSION_MAX_CODE_CHARS = 64 * 1024;
 export const SESSION_MAX_TEXT_CHARS = 2000;
 /**
+ * The whole session is one Durable Object value, and a value is capped at
+ * 2 MB (Codex review: a worst-case log serialized to 5.2 MB). Keep the JSON
+ * under this, dropping the oldest events (then edit bodies) to make room.
+ */
+export const SESSION_MAX_BYTES = 1_200_000;
+/**
  * How far ahead of a boundary a swap must be decided, in seconds: the widget
  * evaluates 0.6 s before the bar, plus 0.25 s of slack. The server's "queued
  * for cycle N" uses the same lead, so it names the bar the widget will pick.
@@ -113,6 +119,8 @@ export interface SessionData {
   rev: number;
   pattern: QueuedPattern | null;
   heartbeat: Heartbeat | null;
+  /** The widget's answer for the newest rev — kept apart from the log, which is trimmed. */
+  lastApplied?: Extract<SessionEvent, { t: "applied" }> | null;
 }
 
 export function newSession(id: string, now: number): SessionData {
@@ -126,7 +134,22 @@ export function newSession(id: string, now: number): SessionData {
     rev: 0,
     pattern: null,
     heartbeat: null,
+    lastApplied: null,
   };
+}
+
+const encoder = new TextEncoder();
+export const sessionBytes = (data: SessionData): number => encoder.encode(JSON.stringify(data)).length;
+
+/** Trim the oldest events, then edit bodies, until the session fits one storage value. */
+export function enforceSessionBudget(data: SessionData, max = SESSION_MAX_BYTES): void {
+  let size = sessionBytes(data);
+  while (size > max && data.events.length) {
+    // Drop in chunks: re-measuring after every single event is quadratic.
+    const drop = Math.max(1, Math.ceil(data.events.length * Math.min(0.5, (size - max) / size + 0.05)));
+    data.events.splice(0, drop);
+    size = sessionBytes(data);
+  }
 }
 
 const finite = (v: unknown): number | null =>
@@ -257,7 +280,11 @@ export function appendEvents(
     if (e.t !== "edit" || e.code === null) continue;
     if (++bodies > SESSION_MAX_EDIT_BODIES) e.code = null;
   }
+  for (const e of added) {
+    if (e.t === "applied" && (!data.lastApplied || e.rev >= data.lastApplied.rev)) data.lastApplied = e;
+  }
   if (added.length) data.lastActivity = now;
+  enforceSessionBudget(data);
   return added;
 }
 
@@ -353,9 +380,7 @@ export function describeSession(data: SessionData, now: number, since = data.rea
   }
 
   if (data.pattern) {
-    const applied = [...data.events]
-      .reverse()
-      .find((e): e is Extract<SessionEvent, { t: "applied" }> => e.t === "applied" && e.rev === data.pattern!.rev);
+    const applied = data.lastApplied?.rev === data.pattern.rev ? data.lastApplied : null;
     lines.push(
       applied
         ? applied.ok

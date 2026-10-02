@@ -173,6 +173,29 @@ broken.applied && !broken.applied.ok
   ? ok(`a pattern that throws in the player comes back failed: ${broken.applied.error.slice(0, 60)}`)
   : fail(`broken update: ${JSON.stringify(broken)}`);
 
+// Back-to-back swaps: each lands, and the scheduler never carries a chain.
+for (const n of [2, 3, 4]) {
+  const [, o] = await post(`/session/${id}/update`, { code: `setcps(0.5)\nonTap(() => {})\ns("bd*${n}").gain(0.9)`, quantize: 1 });
+  if (!o.applied?.ok) fail(`swap ${n}: ${JSON.stringify(o)}`);
+}
+await sleep(4500);
+const spliced = await frame().evaluate(() => {
+  const p = document.querySelector("strudel-editor")?.editor?.repl?.scheduler?.pattern;
+  return p ? p.queryArc(Math.ceil(cycle()) + 1, Math.ceil(cycle()) + 2).length : -1;
+});
+spliced === 4 ? ok("three swaps in a row: the newest plays alone (4 events/cycle)") : fail(`after three swaps: ${spliced} events/cycle`);
+
+// Stopped while a swap waits for its bar: it answers, and the next one still works.
+const pending = post(`/session/${id}/update`, { code: `setcps(0.5)\nonTap(() => {})\ns("hh*8").gain(0.5)`, quantize: 8 });
+await sleep(700);
+await frame().evaluate(() => document.getElementById("play-btn")?.click());
+const [, stopped] = await pending;
+stopped.applied?.ok && /stopped the player before the bar/.test(stopped.applied.report ?? "")
+  ? ok("stopping during a quantized wait answers at once")
+  : fail(`stop during wait: ${JSON.stringify(stopped)}`);
+const [, afterStop] = await post(`/session/${id}/update`, { code: `setcps(0.5)\ns("bd*4")`, quantize: 1 });
+afterStop.applied?.ok ? ok(`the next update still lands (${afterStop.applied.report?.slice(0, 50)}…)`) : fail(`after stop: ${JSON.stringify(afterStop)}`);
+
 console.log("\n--- get-session, as the model would read it ---\n" + (await state(id)).slice(0, 1600));
 const real = consoleErrors.filter((e) => !/favicon|nonsense/i.test(e));
 real.length ? fail(`console errors: ${real.slice(0, 3).join(" | ")}`) : ok("no console errors");
