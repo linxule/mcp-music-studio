@@ -256,6 +256,11 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
 
+## 0.9.1 — October 2, 2026
+
+- **A Pass that gets no answer says so.** When Claude is listening, Pass hands it the turn without a chat message. If that read never reaches the model (a dropped turn, a host timeout) and nothing comes back on the player within 90 s, the player says so, and the next Pass goes to the chat.
+- Dependency refresh (MCP SDK 1.31, ext-apps 2.0.3, agents 0.24). tonal stays at 6.4.3: 6.5.0's package entry points name files it doesn't ship. Published servers bundle tonal and were never affected.
+
 ## 0.9.0 — October 2, 2026
 
 The booth, the stage and the room.

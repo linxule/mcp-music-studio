@@ -497,9 +497,11 @@ describe("a heard Pass that gets no answer", () => {
     let timers: Array<{ fn: () => void; ms: number }> = [];
     const unanswered = vi.fn();
     let served = false;
+    let polls = 0;
     const client = new SessionClient("https://example.test", ID, {
       fetch: async (url: string, init?: RequestInit) => {
         if (url.endsWith("/events")) return new Response('{"ok":true,"listening":true}');
+        polls++;
         const header = listeningHeaders.shift();
         if (header !== undefined) return new Response(null, { status: 204, headers: { "x-session-listening": header } });
         if (pattern && !served) {
@@ -525,7 +527,9 @@ describe("a heard Pass that gets no answer", () => {
       timers = [];
       for (const t of due) t.fn();
     };
-    return { client, unanswered, fire };
+    /** Every scripted header has been read and the next poll is hanging. */
+    const drained = (n: number) => vi.waitFor(() => expect(polls).toBeGreaterThan(n));
+    return { client, unanswered, fire, drained };
   }
 
   it("says so after PASS_ANSWER_MS when nothing came back", async () => {
@@ -550,7 +554,7 @@ describe("a heard Pass that gets no answer", () => {
     const stale = passHarness(["1"]);
     expect(await stale.client.pass(3)).toBe(true);
     stale.client.start({});
-    await new Promise((r) => setTimeout(r, 30));
+    await stale.drained(1);
     stale.fire();
     expect(stale.unanswered).toHaveBeenCalledTimes(1);
     stale.client.stop();
@@ -558,7 +562,7 @@ describe("a heard Pass that gets no answer", () => {
     const again = passHarness(["0", "1"]);
     expect(await again.client.pass(3)).toBe(true);
     again.client.start({});
-    await new Promise((r) => setTimeout(r, 30));
+    await again.drained(2);
     again.fire();
     expect(again.unanswered).not.toHaveBeenCalled();
     again.client.stop();
