@@ -256,6 +256,32 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
 
+## 0.10.0 — October 2, 2026
+
+Tools on the player itself.
+
+- **The player offers tools to its host.** Every widget now registers MCP Apps
+  tools: read the live code (including the human's unsaved edits), set or
+  swap it, play, stop and undo. Writes need the widget's `instanceId` and the
+  current `revision`, so an agent never overwrites a human edit it hasn't
+  read. No chat host calls widget tools yet; the share page and the local
+  studio below do.
+- **`swap-pattern` changes a playing piece on the bar**: the same quantized
+  swap live sessions use (old pattern until the boundary, new from it,
+  measured). Any newer edit, swap, session update, Play, Stop or Undo cancels
+  a waiting one, and it never plays code someone edited during the wait. A
+  bar more than ~12 s away answers "queued" and the state shows when it took
+  over. Undo restores the previous code, stopped.
+- **Share pages speak WebMCP**: `/play`, `/p/<id>` and `/s/<id>` pass the
+  player's tools to an assistant built into the browser (Chromium's WebMCP;
+  Codex desktop's built-in browser) — ask it to change the music on the page.
+  A shared page still never runs on its own: the assistant can read, stage,
+  stop and undo, but Play and swap appear only after you press Play there.
+  Every result is marked untrusted: a shared page's code is the link author's.
+- **The local studio** (`bun run studio`, `dev/`): both widgets side by side
+  with shared review — select a passage, ask, and the agent explains or
+  proposes an edit you preview and apply — plus save/open session files.
+
 ## 0.9.2 — October 2, 2026
 
 - **An idle player lets go of its session.** A live-session player that has been stopped and untouched for 30 minutes stops checking in, and its badge says "session paused — press Play to rejoin". Play, an edit, a tap or Pass rejoins, and an update Claude queued in the meantime plays then. Before, a forgotten open tab kept its session alive and its server object awake indefinitely.
