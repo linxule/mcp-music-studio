@@ -1,3 +1,4 @@
+import { liveStudioSchemas } from "./studio-live-schemas";
 import { bindSourceLink } from "./source-link.js";
 import { createStudioSession, installStudioBridge, type StudioSwapHooks } from "./studio-session";
 import { registerStudioAppTools } from "./studio-app-tools";
@@ -3656,7 +3657,7 @@ const studioSession = createStudioSession({
     scheduleStateReport();
     setStatus("Stopped");
   },
-}, { mode: "live" });
+}, { mode: "live", schemas: liveStudioSchemas });
 registerStudioAppTools(app, studioSession);
 installStudioBridge(studioSession);
 installStudioReviewPanel(app, studioSession);

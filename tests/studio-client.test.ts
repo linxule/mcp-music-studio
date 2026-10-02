@@ -1,3 +1,4 @@
+import { scoreStudioSchemas } from "../src/studio-schemas";
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '@modelcontextprotocol/ext-apps';
 import { AppBridge } from '@modelcontextprotocol/ext-apps/app-bridge';
@@ -24,7 +25,7 @@ async function mount() {
     },
     play: async () => { throw new Error('This workflow must not start playback'); },
     stop: () => {},
-  }, { mode: 'score' });
+  }, { mode: 'score', schemas: scoreStudioSchemas });
   const app = new App({ name: 'Score fixture', version: '1' }, {}, { autoResize: false });
   registerStudioAppTools(app, session);
   const bridge = new AppBridge(null, { name: 'Studio fixture', version: '1' }, {});

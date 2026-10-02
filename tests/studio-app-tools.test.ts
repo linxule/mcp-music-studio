@@ -1,3 +1,4 @@
+import { studioSchemasFor } from "../src/studio-schemas";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@modelcontextprotocol/ext-apps";
 import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
@@ -25,7 +26,7 @@ async function mounted(mode: StudioMode = "live") {
   });
   const play = vi.fn(async () => { state.playback = "playing"; });
   const stop = vi.fn(() => { state.playback = "stopped"; });
-  const session = createStudioSession({ read: () => structuredClone(state), apply, play, stop }, { mode });
+  const session = createStudioSession({ read: () => structuredClone(state), apply, play, stop }, { mode, schemas: studioSchemasFor(mode) });
   const app = new App({ name: "Test widget", version: "1" }, { tools: { listChanged: true } }, { autoResize: false });
   // Registration precedes the real SDK initialization handshake.
   registerStudioAppTools(app, session);

@@ -1,3 +1,4 @@
+import { liveStudioSchemas } from "../src/studio-schemas";
 import { describe, expect, it, vi } from "vitest";
 import { createStudioSession, type StudioSnapshot } from "../src/studio-session";
 import type { SharedReview } from "../src/studio-review";
@@ -10,7 +11,7 @@ function studio(source = 's("bd hh")') {
     onCommit?.();
   });
   const play = vi.fn(async () => {});
-  const session = createStudioSession({ read: () => structuredClone(state), apply, play, stop: () => { state.playback = "stopped"; } }, { mode: "live" });
+  const session = createStudioSession({ read: () => structuredClone(state), apply, play, stop: () => { state.playback = "stopped"; } }, { mode: "live", schemas: liveStudioSchemas });
   async function begin(question = "Make the drums gentler") {
     const current = await session({ action: "get" });
     const from = String(current.args.code).indexOf("bd");

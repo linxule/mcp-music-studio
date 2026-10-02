@@ -1,19 +1,19 @@
 import { z } from "zod";
-import { playLiveInputSchema, playSheetInputSchema } from "./shared/tool-defs";
 import { checkPassage, passageSchema, proposedArgs, samePassage, type Passage, type SharedReview } from "./studio-review";
 
 /** Each mounted widget owns one live document, revision, and undo history. */
 export type StudioMode = "live" | "score";
-export const studioScoreSettingsSchema = z.object({
-  soundFont: z.enum(["default", "musyngkite", "dry"]).optional(),
-  room: z.boolean().optional(), instrumentOverride: z.boolean().optional(),
-  warp: z.number().min(1).max(1000).optional(), loop: z.boolean().optional(),
-}).strict();
-export const studioLiveSettingsSchema = z.object({}).strict();
-export const studioPatternArgsSchema = playLiveInputSchema.omit({ autoplay: true }).strict();
-export const studioScoreArgsSchema = playSheetInputSchema.extend({
-  abcNotation: playSheetInputSchema.shape.abcNotation.removeDefault(),
-}).strict();
+
+/**
+ * A mode's source arguments and settings. Injected (src/studio-live-schemas.ts,
+ * src/studio-score-schemas.ts) rather than imported here, so each widget
+ * bundles only its own mode's schema — the sheet widget never carries the
+ * Strudel one, nor the Strudel widget the ABC defaults.
+ */
+export interface StudioSchemas {
+  args: z.ZodObject<z.ZodRawShape>;
+  settings: z.ZodObject<z.ZodRawShape>;
+}
 const commandSchema = z.object({
   action: z.enum(["get", "set", "swap", "play", "stop", "undo", "review-start", "review-stage", "review-clear", "review-apply"]),
   instanceId: z.string().min(1).optional(),
@@ -120,13 +120,17 @@ export interface StudioSession {
   (command: StudioCommand): Promise<StudioState>;
   readonly instanceId: string;
   readonly mode: StudioMode;
+  readonly schemas: StudioSchemas;
   onDispose(cleanup: () => void): void;
   onReviewChange(listener: (review: SharedReview | null) => void): () => void;
   dispose(): void;
 }
 
-export function createStudioSession(adapter: StudioAdapter, options: { mode: StudioMode; swapAnswerMs?: number }): StudioSession {
-  const { mode } = options;
+export function createStudioSession(
+  adapter: StudioAdapter,
+  options: { mode: StudioMode; schemas: StudioSchemas; swapAnswerMs?: number },
+): StudioSession {
+  const { mode, schemas } = options;
   const swapAnswerMs = options.swapAnswerMs ?? STUDIO_SWAP_ANSWER_MS;
   const instanceId = crypto.randomUUID();
   let disposed = false;
@@ -236,7 +240,7 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
       if (mode !== "live" || !adapter.swap) throw new Error("swap-pattern is only available in a live (Strudel) widget.");
       const code = command.args?.code;
       if (typeof code !== "string" || !code.trim()) throw new Error("swap needs non-empty code.");
-      studioPatternArgsSchema.shape.code.parse(code);
+      (schemas.args.shape.code as z.ZodType | undefined)?.parse(code);
       const quantize = command.quantize ?? STUDIO_SWAP_DEFAULT_QUANTIZE;
       const intent = ++playbackIntent;
       const swapId = ++swapCount;
@@ -286,7 +290,7 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
       if (command.action === "review-apply") {
         const current = read();
         const review = requireReview(command.requestId, current);
-        const args: Record<string, unknown> = (mode === "live" ? studioPatternArgsSchema : studioScoreArgsSchema).parse(proposedArgs(review, current));
+        const args: Record<string, unknown> = schemas.args.parse(proposedArgs(review, current));
         const draftSignature = signature;
         let committed = false;
         const isCancelled = () => disposed || sharedReview?.requestId !== review.requestId
@@ -312,9 +316,9 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
         }
       } else if (command.action === "set") {
         if (!command.args) throw new Error("Missing music arguments.");
-        const args = (mode === "live" ? studioPatternArgsSchema : studioScoreArgsSchema).parse(command.args);
+        const args = schemas.args.parse(command.args);
         const parsedSettings = command.settings === undefined ? undefined
-          : (mode === "live" ? studioLiveSettingsSchema : studioScoreSettingsSchema).parse(command.settings);
+          : schemas.settings.parse(command.settings);
         const settings = parsedSettings === undefined ? before.settings
           : command.replace ? mode === "score" ? {
             soundFont: "default", room: true, instrumentOverride: false, warp: 100, loop: false,
@@ -354,7 +358,7 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
     return after;
   };
   return Object.assign(dispatch, {
-    instanceId, mode,
+    instanceId, mode, schemas,
     onDispose(cleanup: () => void) {
       if (disposed) cleanup();
       else cleanups.add(cleanup);

@@ -1,3 +1,4 @@
+import { liveStudioSchemas } from "../src/studio-schemas";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@modelcontextprotocol/ext-apps";
 import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
@@ -373,7 +374,7 @@ describe("relaying the real studio app tools over App/AppBridge", () => {
       apply: async (args) => { snapshot.args = args; snapshot.playback = "stopped"; },
       play,
       stop: () => { snapshot.playback = "stopped"; },
-    }, { mode: "live" });
+    }, { mode: "live", schemas: liveStudioSchemas });
     const app = new App({ name: "Test widget", version: "1" }, { tools: { listChanged: true } }, { autoResize: false });
     registerStudioAppTools(app, session);
     const bridge = new AppBridge(null, { name: "Test host", version: "1" }, {});

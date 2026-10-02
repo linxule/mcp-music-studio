@@ -1,3 +1,4 @@
+import { scoreStudioSchemas } from "./studio-score-schemas";
 import { bindSourceLink } from "./source-link.js";
 import { createStudioSession, installStudioBridge } from "./studio-session";
 import { registerStudioAppTools } from "./studio-app-tools";
@@ -2241,7 +2242,7 @@ const studioSession = createStudioSession({
     stopPlayback();
     setStatus("Stopped");
   },
-}, { mode: "score" });
+}, { mode: "score", schemas: scoreStudioSchemas });
 registerStudioAppTools(app, studioSession);
 installStudioBridge(studioSession);
 installStudioReviewPanel(app, studioSession);

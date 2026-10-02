@@ -1,3 +1,4 @@
+import { studioSchemasFor } from "../src/studio-schemas";
 import { describe, expect, it, vi } from "vitest";
 import { createStudioSession, type StudioCommand, type StudioMode, type StudioSnapshot } from "../src/studio-session";
 
@@ -6,7 +7,7 @@ function studio(code = 's("bd")', mode: StudioMode = "live") {
   const apply = vi.fn(async (args: Record<string, unknown>, settings?: Record<string, unknown>) => { state.args = args; state.settings = settings; state.playback = "stopped"; });
   const play = vi.fn(async (_isCancelled: () => boolean) => { state.playback = "playing"; });
   const stop = vi.fn(() => { state.playback = "stopped"; });
-  const session = createStudioSession({ read: () => structuredClone(state), apply, play, stop }, { mode });
+  const session = createStudioSession({ read: () => structuredClone(state), apply, play, stop }, { mode, schemas: studioSchemasFor(mode) });
   const dispatch = (command: StudioCommand) => session({ instanceId: session.instanceId, ...command });
   return { state, apply, play, stop, dispatch, session };
 }

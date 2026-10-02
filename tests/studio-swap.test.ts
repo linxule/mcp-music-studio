@@ -1,3 +1,4 @@
+import { liveStudioSchemas, scoreStudioSchemas } from "../src/studio-schemas";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@modelcontextprotocol/ext-apps";
 import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
@@ -39,7 +40,7 @@ async function liveWidget(playback = "playing", swapAnswerMs = 10_000) {
   });
   const session = createStudioSession(
     { read: () => structuredClone(state), apply, play: vi.fn(async () => void (state.playback = "playing")), stop, swap },
-    { mode: "live", swapAnswerMs },
+    { mode: "live", schemas: liveStudioSchemas, swapAnswerMs },
   );
   const app = new App({ name: "Test widget", version: "1" }, { tools: { listChanged: true } }, { autoResize: false });
   registerStudioAppTools(app, session);
@@ -302,7 +303,7 @@ describe("swap-pattern (bar-quantized swap through the studio controller)", () =
         play: async () => {},
         stop: () => {},
       },
-      { mode: "score" },
+      { mode: "score", schemas: scoreStudioSchemas },
     );
     const app = new App({ name: "Score", version: "1" }, { tools: { listChanged: true } }, { autoResize: false });
     registerStudioAppTools(app, session);

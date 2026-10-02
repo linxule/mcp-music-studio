@@ -2,8 +2,7 @@ import type { App } from "@modelcontextprotocol/ext-apps";
 import { z } from "zod";
 import { reviewResponseSchema } from "./studio-review";
 import {
-  STUDIO_SWAP_ANSWER_MS, STUDIO_SWAP_DEFAULT_QUANTIZE, studioLiveSettingsSchema, studioPatternArgsSchema, studioScoreArgsSchema,
-  studioScoreSettingsSchema, type StudioCommand, type StudioSession,
+  STUDIO_SWAP_ANSWER_MS, STUDIO_SWAP_DEFAULT_QUANTIZE, type StudioCommand, type StudioSession,
 } from "./studio-session";
 
 const identity = {
@@ -13,8 +12,19 @@ const identity = {
 const revision = z.number().int().nonnegative().describe("The revision returned by the most recent get-studio-state.");
 const replace = z.boolean().optional().describe("Replace all source arguments, clearing omitted metadata. Provided score settings replace completely: omitted fields reset to soundFont=default, room=true, instrumentOverride=false, warp=100, loop=false. Omitted settings are always retained. Default false retains omitted metadata and merges provided settings.");
 
+/** What a set-pattern / set-score call carries once its (injected) schema has parsed it. */
+type SetInput = {
+  instanceId: string;
+  mode?: "live" | "score";
+  expectedRevision: number;
+  settings?: Record<string, unknown>;
+  replace?: boolean;
+} & Record<string, unknown>;
+
 /** Register before App.connect: hosts can discover tools as soon as initialized. */
 export function registerStudioAppTools(app: App, session: StudioSession): void {
+  const setFrom = ({ instanceId, mode, expectedRevision, settings, replace, ...args }: SetInput) =>
+    execute({ action: "set", instanceId, mode, expectedRevision, settings, replace, args });
   async function execute(command: StudioCommand) {
     try {
       const state = await session(command);
@@ -37,26 +47,27 @@ export function registerStudioAppTools(app: App, session: StudioSession): void {
   if (session.mode === "live") {
     app.registerTool("set-pattern", {
       description: "Replace this widget's Strudel source, stopped. Supply its current instanceId and expectedRevision. Settings not supplied are retained. Staging does not evaluate code or start audio; use play-current-music explicitly. Strudel executes JavaScript when played.",
-      inputSchema: studioPatternArgsSchema.extend({ ...identity, expectedRevision: revision, settings: studioLiveSettingsSchema.optional(), replace }).strict(),
+      inputSchema: session.schemas.args.extend({ ...identity, expectedRevision: revision, settings: session.schemas.settings.optional(), replace }).strict(),
       annotations,
-    }, ({ instanceId, mode, expectedRevision, settings, replace, ...args }) => execute({ action: "set", instanceId, mode, expectedRevision, settings, replace, args }));
+    }, (input) => setFrom(input as SetInput));
     app.registerTool("swap-pattern", {
       description: `Change the music WHILE IT PLAYS: the current pattern keeps playing until the next boundary of \`quantize\` cycles (default ${STUDIO_SWAP_DEFAULT_QUANTIZE}), and the new code plays from that boundary, in time. Patterns run on the player's clock, so set quantize to the phrase length (an 8-bar phrase → 8). 0 swaps at once. Answers once the new code has taken over (swap.cycle) or failed (error; the previous pattern keeps playing). If the bar is more than ~${Math.round(STUDIO_SWAP_ANSWER_MS / 1000)} s away it answers swap.queued {boundary, etaSeconds} and keeps going: read get-studio-state (pendingSwap while it waits, then lastSwap) to confirm. Any edit, undo, play, stop or newer swap before the bar replaces it; so does editing the code in the player. Only for a PLAYING widget — when stopped it changes nothing and says so; use set-pattern and play-current-music instead. Supply instanceId and expectedRevision. undo-studio-edit restores the previous source, stopped. Strudel executes JavaScript.`,
       inputSchema: z.object({
         ...identity,
         expectedRevision: revision,
-        code: studioPatternArgsSchema.shape.code,
+        code: (session.schemas.args.shape.code as z.ZodString | undefined) ?? z.string(),
         quantize: z.number().int().min(0).max(32).optional()
           .describe(`Cycles per phrase to land on (0–32, default ${STUDIO_SWAP_DEFAULT_QUANTIZE}). Use the phrase length of the music.`),
       }).strict(),
       annotations: { ...annotations, openWorldHint: true },
-    }, ({ instanceId, mode, expectedRevision, code, quantize }) => execute({ action: "swap", instanceId, mode, expectedRevision, quantize, args: { code } }));
+    }, ({ instanceId, mode, expectedRevision, code, quantize }) =>
+      execute({ action: "swap", instanceId, mode, expectedRevision, quantize, args: { code: code as string } }));
   } else {
     app.registerTool("set-score", {
       description: "Replace this widget's ABC score, stopped. Supply its current instanceId and expectedRevision. Settings not supplied are retained; returned state includes rendering errors. Blank drafts are allowed. Use play-current-music explicitly to start audio.",
-      inputSchema: studioScoreArgsSchema.extend({ ...identity, expectedRevision: revision, settings: studioScoreSettingsSchema.optional(), replace }).strict(),
+      inputSchema: session.schemas.args.extend({ ...identity, expectedRevision: revision, settings: session.schemas.settings.optional(), replace }).strict(),
       annotations,
-    }, ({ instanceId, mode, expectedRevision, settings, replace, ...args }) => execute({ action: "set", instanceId, mode, expectedRevision, settings, replace, args }));
+    }, (input) => setFrom(input as SetInput));
   }
   app.registerTool("play-current-music", {
     description: "Evaluate/play this widget's current live buffer. Supply its instanceId and current revision. Inspect returned playback and errors; blocked audio may require the user to click Play inside this widget.",

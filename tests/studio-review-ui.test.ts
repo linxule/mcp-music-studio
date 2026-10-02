@@ -1,3 +1,4 @@
+import { studioSchemasFor } from "../src/studio-schemas";
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStudioSession, type StudioCommand, type StudioState, type StudioSnapshot } from '../src/studio-session';
 import { installReview } from '../dev/studio-review';
@@ -34,7 +35,7 @@ async function fixture(mode: 'live' | 'score' = 'score') {
     draft.args = args; draft.settings = settings; onCommit?.();
   });
   const play = vi.fn(async () => { throw new Error('No automatic playback'); });
-  const session = createStudioSession({ read: () => structuredClone(draft), apply, play, stop: () => {} }, { mode });
+  const session = createStudioSession({ read: () => structuredClone(draft), apply, play, stop: () => {} }, { mode, schemas: studioSchemasFor(mode) });
   let panel!: ReturnType<typeof installReview>;
   const request = vi.fn(async (_mode: 'live' | 'score', command: StudioCommand): Promise<StudioState> => {
     const next = await session({ ...command, instanceId: command.instanceId ?? session.instanceId });

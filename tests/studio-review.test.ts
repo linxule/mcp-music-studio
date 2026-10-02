@@ -1,3 +1,4 @@
+import { scoreStudioSchemas } from "../src/studio-schemas";
 import { describe, expect, it } from 'vitest';
 import { checkPassage, proposedArgs, type Review } from '../src/studio-review';
 import { createStudioSession, type StudioSnapshot } from '../src/studio-session';
@@ -37,7 +38,7 @@ describe('reviewing music passages', () => {
   });
   it('keeps selection changes out of revisions and applies with a recoverable draft', async () => {
     const current: StudioSnapshot = { ...state, selection: { from: 0, to: 0, text: '' } };
-    const dispatch = createStudioSession({ read: () => structuredClone(current), apply: async (args, settings) => { current.args = args; current.settings = settings; }, play: async () => {}, stop: () => {} }, { mode: 'score' });
+    const dispatch = createStudioSession({ read: () => structuredClone(current), apply: async (args, settings) => { current.args = args; current.settings = settings; }, play: async () => {}, stop: () => {} }, { mode: 'score', schemas: scoreStudioSchemas });
     current.selection = { from, to: from + 12, text: review.passage.text };
     const selected = await dispatch({ action: 'get' });
     expect(selected.revision).toBe(0);

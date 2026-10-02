@@ -11,9 +11,14 @@
 // =============================================================================
 
 import { z } from "zod";
+// The play schemas and the source bound live in small modules the widgets can
+// import without pulling this file (its top-level zod calls defeat tree-shaking,
+// so importing tool-defs dragged every guide and the gallery into both widgets).
+import { MAX_SOURCE_CHARS } from "./input-bounds.js";
+import { playLiveInputSchema } from "./play-live-schema.js";
+import { playSheetInputSchema } from "./play-sheet-schema.js";
+export { MAX_SOURCE_CHARS, playLiveInputSchema, playSheetInputSchema };
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { STYLE_NAMES } from "../music-logic.js";
-import { DEFAULT_ABC_NOTATION } from "../abc-guide.js";
 import { analyzeHarmonyResult, HARMONY_TASKS } from "./harmony.js";
 import {
   convertAbcToStrudel,
@@ -21,7 +26,6 @@ import {
   type AbcToStrudelArgs,
   type ParseOnlyFn,
 } from "./abc-to-strudel.js";
-import { EDITOR_THEMES, VISUAL_PRESETS } from "./visual-presets.js";
 import { STRUDEL_GUIDE_TOPICS, STRUDEL_GUIDES } from "../strudel-guide.js";
 import { GALLERY_IDS, STRUDEL_GALLERY } from "../strudel-gallery.js";
 // Type-only: the validator itself (and the ~200 KiB of Strudel behind it) is
@@ -361,85 +365,9 @@ export function attachPlayLink(
 // explicit share path) written to KV. These caps bound work per request.
 // -----------------------------------------------------------------------------
 
-/** Max length of a score or pattern, in characters. */
-export const MAX_SOURCE_CHARS = 64 * 1024;
-
 /** Max entries in a note/chord list for analyze-harmony. */
 export const MAX_HARMONY_ITEMS = 64;
 
-export const playSheetInputSchema = z.object({
-  abcNotation: z
-    .string()
-    .max(MAX_SOURCE_CHARS)
-    .default(DEFAULT_ABC_NOTATION)
-    .describe(
-      'ABC notation string. Include chord symbols ("C", "Am7") above notes for auto-accompaniment with style presets.',
-    ),
-  title: z
-    .string()
-    .optional()
-    .describe(
-      "Piece title (overrides T: in ABC). Shown in the widget header and used as " +
-        "the filename stem for the WAV/MIDI downloads.",
-    ),
-  instrument: z
-    .string()
-    .optional()
-    .describe(
-      "Default instrument for the main voice — any of the 128 General MIDI names " +
-        "(e.g. 'Flute', 'Cello', 'Banjo', 'Alto Sax'). Matching is fuzzy and picks the " +
-        "lowest GM program among the hits, so 'sax' gives Soprano Sax; the result text " +
-        "names what you actually got whenever it isn't what you asked for. " +
-        "Use get-music-guide with topic 'instruments' for the full list, or %%MIDI program N " +
-        "in the ABC to set a program per voice.",
-    ),
-  style: z
-    .enum(STYLE_NAMES)
-    .optional()
-    .describe(
-      "Accompaniment style. Adds drums, bass, and chord patterns automatically. " +
-        'Your ABC needs chord symbols ("C", "Am") for accompaniment to work. ' +
-        "Options: rock, jazz, bossa, waltz, march, reggae, folk, classical.",
-    ),
-  tempo: z
-    .number()
-    .min(40)
-    .max(240)
-    .optional()
-    .describe("Tempo in BPM (40-240). Overrides Q: in ABC notation."),
-  swing: z
-    .number()
-    .min(0)
-    .max(75)
-    .optional()
-    .describe(
-      "Swing as the share of the beat given to its first half. " +
-        "50 = straight, 60 \u2248 3:2, 66 = triplet swing, 75 = maximum " +
-        "(dotted eighth + sixteenth). Anything at or below 50 is treated as no swing. " +
-        "Only takes effect in an x/4 or x/8 meter.",
-    ),
-  drumIntro: z
-    .number()
-    .int()
-    .min(0)
-    .max(8)
-    .optional()
-    .describe(
-      "Bars of count-in before the melody starts (0-8). " +
-        "Needs a style preset \u2014 the count-in is played by that style's drum kit, " +
-        "so without a style you get silent bars instead.",
-    ),
-  transpose: z
-    .number()
-    .int()
-    .min(-12)
-    .max(12)
-    .optional()
-    .describe(
-      "Transpose by semitones (-12 to 12). Positive=higher, negative=lower. " +
-        "Rewrites the notation and the key signature, so the printed score matches what plays.",
-    ),
-});
 
 // -----------------------------------------------------------------------------
 // play-live-pattern
@@ -475,64 +403,6 @@ export const PLAY_LIVE_EXT_APPS_SUFFIX =
 export const PLAY_LIVE_FALLBACK_SUFFIX =
   "\n\nThe Strudel REPL is delivered as HTML or opened in the browser.";
 
-export const playLiveInputSchema = z.object({
-  code: z
-    .string()
-    .max(MAX_SOURCE_CHARS)
-    .describe(
-      "Strudel pattern code. Uses TidalCycles mini-notation in JavaScript. " +
-        "Use stack() to layer drums, bass, and melody. " +
-        "Set tempo with setcps(bpm/60/4) or use the bpm parameter. " +
-        "The REPL plays the LAST expression: setup lines (await initHydra(), all(), setcps()) go BEFORE the pattern. " +
-        "Double quotes are mini-notation — use single quotes for plain strings and URLs. " +
-        "One draw method per pattern; pass a.fft values as functions (() => a.fft[0]).",
-    ),
-  title: z
-    .string()
-    .optional()
-    .describe("Pattern title displayed in the widget header (e.g. 'Midnight Rain')."),
-  bpm: z
-    .number()
-    .min(40)
-    .max(300)
-    .optional()
-    .describe("Tempo in BPM (40-300). Converts to setcps() automatically."),
-  autoplay: z
-    .boolean()
-    .optional()
-    .describe(
-      "Start playing immediately (default: true). May require user click due to browser autoplay policy.",
-    ),
-  visuals: z
-    .enum(VISUAL_PRESETS)
-    .optional()
-    .describe(
-      "Ready-made visual, for when the code has none of its own. " +
-        "pianoroll/punchcard/scope/spectrum draw onto the 2D canvas behind the code; " +
-        "hydra-kaleid (rotating kaleidoscope), hydra-pulse (shape driven by a rhythm), " +
-        "hydra-wash (slow ambient noise) and hydra-feed (the piano roll mirrored and trailed) " +
-        "are WebGL shader backgrounds. A preset fills the MISSING layer: a hydra preset is skipped only if the code already calls initHydra(), " +
-        "a 2D preset only if the code already has a draw method — so hydra-wash layers happily under your own .pianoroll(). " +
-        "Hydra presets are dropped for viewers who prefer reduced motion. " +
-        "Writing your own visual is still the better result (draw methods: topic 'visuals'; shaders: topic 'hydra').",
-    ),
-  session: z
-    .boolean()
-    .optional()
-    .describe(
-      "Open a LIVE SESSION: this player stays open as one performance. update-session swaps in new code on the next bar " +
-        "without a new player and says whether it ran; get-session reads the player's runtime reports and what the user did " +
-        "(taps, code edits, handing you the turn). Use it to iterate on a long piece, to check that a piece really played, or " +
-        "to jam back-to-back. Its log (reports, taps, edits, your updates) is kept on the server until 2 hours idle.",
-    ),
-  theme: z
-    .enum(EDITOR_THEMES)
-    .optional()
-    .describe(
-      "Editor colour theme; the visuals stage and its readability scrim are derived from it, so it also decides whether a shader sits on a dark or light ground — " +
-        "prefer a dark one when the visual is the point (e.g. 'nord', 'sonicPink', 'tokyoNight'). Not carried into share links or the browser fallback.",
-    ),
-});
 
 /**
  * What the remote transport can vouch for: the code PARSES.

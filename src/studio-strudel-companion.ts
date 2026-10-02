@@ -1,7 +1,23 @@
 /** Human-facing marginalia for the local studio. Uses the pinned REPL's own
- * registry and the shared Strudel syntax parser. Never evaluates a draft. */
-// @ts-expect-error upstream package has no TypeScript declarations
-import { transpiler } from "@strudel/transpiler";
+ * registry and Strudel's syntax parser (fetched in studio mode only). Never evaluates a draft. */
+/**
+ * Strudel's transpiler, for the draft syntax check — fetched at runtime, in
+ * studio mode only. Bundled, it put acorn + escodegen + @strudel/core/mini
+ * into EVERY Strudel widget (~500 KB) for a check only the local studio runs.
+ * Pinned to the version the guide tests run against; jsDelivr's +esm bundles
+ * its dependencies, and the domain is already in the widget's CSP.
+ */
+export const STUDIO_TRANSPILER_URL = "https://cdn.jsdelivr.net/npm/@strudel/transpiler@1.2.6/+esm";
+type Transpile = (code: string, options: { emitWidgets: boolean }) => unknown;
+let transpilerLoad: Promise<Transpile> | undefined;
+function loadTranspiler(): Promise<Transpile> {
+  transpilerLoad ??= import(/* @vite-ignore */ STUDIO_TRANSPILER_URL).then((mod: { transpiler?: unknown }) => {
+    if (typeof mod.transpiler !== "function") throw new Error("no transpiler export");
+    return mod.transpiler as Transpile;
+  });
+  transpilerLoad.catch(() => { transpilerLoad = undefined; }); // retry on the next edit
+  return transpilerLoad;
+}
 export interface RegisteredSound {
   data?: { type?: string; samples?: unknown[] | Record<string, unknown> };
   onTrigger(time: number, value: Record<string, unknown>, ended: () => void): Promise<PreviewVoice> | PreviewVoice;
@@ -265,9 +281,18 @@ export function installStrudelCompanion(options: CompanionOptions) {
     previousCode = code; clearTimeout(syntaxTimer);
     document.dispatchEvent(new Event('music-studio-draft-changed'));
     syntax.textContent = 'Checking syntax…'; syntax.classList.remove('error');
-    syntaxTimer = setTimeout(() => {
+    syntaxTimer = setTimeout(async () => {
       if (code.length > 40000) { syntax.textContent = 'Large draft — use Play to evaluate.'; return; }
       if (!code.trim()) { syntax.textContent = 'Start with a sound or a small lesson.'; return; }
+      let transpiler: Transpile;
+      try {
+        transpiler = await loadTranspiler();
+      } catch {
+        if (code === previousCode) syntax.textContent = 'Syntax checker unavailable — use Play to evaluate.';
+        return;
+      }
+      // A newer draft arrived while the checker loaded: its own timer reports.
+      if (code !== previousCode) return;
       try {
         transpiler(code, { emitWidgets: false });
         syntax.textContent = 'Syntax looks good.'; syntax.classList.remove('error');
