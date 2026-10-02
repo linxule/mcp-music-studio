@@ -979,8 +979,13 @@ export function clientBucket(ip: string): string {
   return `${groups.slice(0, 4).map((g) => g.toLowerCase().replace(/^0+(?=.)/, "")).join(":")}::/64`;
 }
 
-/** New renders across everyone per UTC day — a tripwire, not accounting (KV is approximate). */
-export const TTS_DAILY_MAX = 4000;
+/**
+ * New renders across everyone per UTC day — a tripwire, not accounting (KV is
+ * approximate). Aura-2 costs $0.030 per 1k characters past Workers AI's free
+ * 10k neurons/day (~3.7k chars): 500 lines of ≤240 chars bound a bad day at
+ * ~$3.60. Cached lines are free and don't count.
+ */
+export const TTS_DAILY_MAX = 500;
 
 export async function ttsCacheKey(request: TtsRequest): Promise<string> {
   const bytes = new TextEncoder().encode(`${request.voice}\u0000${request.text}`);

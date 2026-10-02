@@ -28,7 +28,7 @@ import { createBrowserStageEnv, createStage } from "./shared/stage-runtime";
 import { installSampleUrlFix } from "./shared/sample-url-fix";
 import { sourceLineNote } from "./shared/line-map";
 import { DEFAULT_SHARE_ORIGIN } from "./shared/share-url";
-import { SessionClient, type ApplyOutcome } from "./session-client";
+import { SessionClient, type ApplyOutcome, type SessionStatus } from "./session-client";
 import { nextBoundary, SESSION_ID_RE, SESSION_SWAP_LEAD_S, type QueuedPattern } from "./shared/session";
 import { isSpliced, settle, spliceAt } from "./shared/splice";
 import { applyVisualPreset } from "./shared/visual-presets";
@@ -3042,9 +3042,9 @@ function sessionClock() {
   };
 }
 
-let sessionStatus: "connecting" | "live" | "retrying" | "gone" = "connecting";
+let sessionStatus: SessionStatus = "connecting";
 let claudeListening = false;
-function setSessionBadge(status: "connecting" | "live" | "retrying" | "gone" = sessionStatus): void {
+function setSessionBadge(status: SessionStatus = sessionStatus): void {
   sessionStatus = status;
   sessionBadge.hidden = false;
   sessionBadge.dataset.status = status;
@@ -3055,12 +3055,16 @@ function setSessionBadge(status: "connecting" | "live" | "retrying" | "gone" = s
         : "● live"
       : status === "gone"
         ? "○ session ended"
+        : status === "parked"
+          ? "○ session paused — press Play to rejoin"
         : status === "retrying"
           ? "◌ reconnecting"
           : "◌ joining";
   sessionBadge.title =
     status === "gone"
       ? "This live session has ended (2 hours idle). The pattern keeps playing here."
+      : status === "parked"
+        ? "Stopped and untouched for 30 minutes, so the player stopped checking in. Play or edit to rejoin; the session lasts 2 hours idle."
       : "Live session: Claude can change this pattern without opening a new player, and reads what you do.";
   passBtn.hidden = status === "gone";
 }

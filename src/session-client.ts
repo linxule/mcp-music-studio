@@ -12,7 +12,7 @@
 // tests/session-client.test.ts drives it with a fake fetch and fake timers.
 // =============================================================================
 
-import type { NewEvent, QueuedPattern } from "./shared/session.js";
+import { isHumanEvent, type NewEvent, type QueuedPattern } from "./shared/session.js";
 
 export interface PlayerClock {
   cycle: number | null;
@@ -27,16 +27,20 @@ export interface ApplyOutcome {
   report?: string;
 }
 
+export type SessionStatus = "connecting" | "live" | "retrying" | "parked" | "gone";
+
 export interface SessionClientEnv {
   fetch(url: string, init?: RequestInit): Promise<Response>;
   setTimeout(fn: () => void, ms: number): unknown;
   clearTimeout(handle: unknown): void;
+  /** Wall clock (ms); Date.now when absent. */
+  now?(): number;
   clock(): PlayerClock;
   apply(pattern: QueuedPattern): Promise<ApplyOutcome>;
   /** The session is gone (expired or never existed). */
   onGone?(): void;
   /** Connection state, for a status badge. */
-  onStatus?(status: "connecting" | "live" | "retrying" | "gone"): void;
+  onStatus?(status: SessionStatus): void;
   /** Whether the model is listening (get-session with wait) right now. */
   onListening?(listening: boolean): void;
   /**
@@ -56,6 +60,13 @@ const KEEPALIVE_MAX_CHARS = 20_000;
 export const STATE_WATCH_MS = 1000;
 /** How long a heard Pass may go without any answer on the player. */
 export const PASS_ANSWER_MS = 90_000;
+/**
+ * A player that has not played and has not been touched for this long stops
+ * polling. Every held poll keeps the session's Durable Object awake (billed
+ * wall-clock), and the heartbeat kept a forgotten tab's session alive forever.
+ * Play, or any edit/tap/control/Pass, rejoins.
+ */
+export const IDLE_PARK_MS = 30 * 60_000;
 
 export class SessionClient {
   private queue: NewEvent[] = [];
@@ -68,6 +79,11 @@ export class SessionClient {
   private sentState: string | null = null;
   /** A heard Pass awaiting an answer: the rev it was sent at, and what listening did since. */
   private passWatch: { timer: unknown; rev: number; quiet: boolean; relistened: boolean } | null = null;
+  /** Last time the player was playing or the human did something. */
+  private lastLively: number;
+  private parked = false;
+  /** Bumped per poll loop, so a loop left over from before a park exits. */
+  private loopGen = 0;
 
   constructor(
     readonly origin: string,
@@ -77,6 +93,16 @@ export class SessionClient {
     startRev = 0,
   ) {
     this.rev = Math.max(0, Math.floor(startRev) || 0);
+    this.lastLively = this.now();
+  }
+
+  private now(): number {
+    return this.env.now?.() ?? Date.now();
+  }
+
+  /** Whether the client stopped polling because the player sat idle. */
+  get isParked(): boolean {
+    return this.parked;
   }
 
   private get base(): string {
@@ -85,7 +111,7 @@ export class SessionClient {
 
   start(join: Omit<Extract<NewEvent, { t: "joined" }>, "t">): void {
     this.log({ t: "joined", ...join }, true);
-    void this.loop();
+    void this.loop(++this.loopGen);
     this.watchState();
   }
 
@@ -98,7 +124,15 @@ export class SessionClient {
     if (this.stopped) return;
     this.env.setTimeout(() => {
       if (this.stopped) return;
-      if (this.sentState !== null && this.env.clock().state !== this.sentState) this.nudge();
+      const state = this.env.clock().state;
+      if (state === "playing") this.lastLively = this.now();
+      if (this.parked) {
+        if (state === "playing") this.unpark();
+      } else if (this.now() - this.lastLively >= IDLE_PARK_MS) {
+        this.park();
+      } else if (this.sentState !== null && state !== this.sentState) {
+        this.nudge();
+      }
       this.watchState();
     }, STATE_WATCH_MS);
   }
@@ -119,6 +153,10 @@ export class SessionClient {
 
   log(event: NewEvent, now = false): void {
     if (this.stopped && event.t !== "pass") return;
+    if (isHumanEvent(event)) {
+      this.lastLively = this.now();
+      if (this.parked) this.unpark();
+    }
     this.queue.push(event);
     if (now) {
       void this.flush();
@@ -198,7 +236,7 @@ export class SessionClient {
         return null;
       }
       if (!res.ok) return null;
-      if (!this.stopped) this.env.onStatus?.("live");
+      if (!this.stopped && !this.parked) this.env.onStatus?.("live");
       const reply = (await res.json().catch(() => null)) as { listening?: boolean } | null;
       this.noteListening(reply?.listening);
       return reply;
@@ -206,6 +244,29 @@ export class SessionClient {
       // Dropped: a report or tap is not worth a retry storm.
       return null;
     }
+  }
+
+  private park(): void {
+    if (this.parked || this.stopped) return;
+    this.parked = true;
+    this.log(
+      {
+        t: "report",
+        text:
+          `Player idle for ${Math.round(IDLE_PARK_MS / 60_000)} min (stopped, untouched): it stopped polling. ` +
+          "It rejoins when the human presses Play or edits; an update-session queued now plays then.",
+      },
+      true,
+    );
+    this.poll?.abort();
+    this.env.onStatus?.("parked");
+  }
+
+  private unpark(): void {
+    if (!this.parked || this.stopped) return;
+    this.parked = false;
+    this.lastLively = this.now();
+    void this.loop(++this.loopGen);
   }
 
   private gone(): void {
@@ -220,9 +281,9 @@ export class SessionClient {
     return new Promise((resolve) => this.env.setTimeout(resolve, ms));
   }
 
-  private async loop(): Promise<void> {
+  private async loop(gen: number): Promise<void> {
     this.env.onStatus?.("connecting");
-    while (!this.stopped) {
+    while (!this.stopped && !this.parked && gen === this.loopGen) {
       const clock = this.env.clock();
       const q = new URLSearchParams({ after: String(this.rev), state: clock.state });
       if (clock.cycle !== null) q.set("cycle", String(Math.round(clock.cycle * 1000) / 1000));
@@ -238,6 +299,9 @@ export class SessionClient {
         await this.backoff();
         continue;
       }
+      // Parked (or replaced) while the reply was on its way: a queued pattern
+      // stays on the server and arrives on rejoin.
+      if (this.parked || gen !== this.loopGen) return;
       if (res.status === 404) return this.gone();
       this.noteListening(res.headers?.get?.("x-session-listening"));
       if (res.status === 204) {

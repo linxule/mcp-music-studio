@@ -20,7 +20,7 @@ import {
 } from "../src/shared/session";
 import { spliceAt, hapStart, settle, isSpliced } from "../src/shared/splice";
 import { JamSession, MAX_LISTENERS, MAX_POLL_WAITERS, type SessionStorage } from "../worker/src/session-do";
-import { PASS_ANSWER_MS, SessionClient } from "../src/session-client";
+import { IDLE_PARK_MS, PASS_ANSWER_MS, SessionClient } from "../src/session-client";
 import {
   attachSession,
   buildUpdateSessionResult,
@@ -566,6 +566,97 @@ describe("a heard Pass that gets no answer", () => {
     again.fire();
     expect(again.unanswered).not.toHaveBeenCalled();
     again.client.stop();
+  });
+});
+
+describe("an idle player stops polling (cost)", () => {
+  function idleHarness(initial: string) {
+    let now = 0;
+    let state = initial;
+    const polls: string[] = [];
+    let open = 0;
+    const events: string[] = [];
+    const statuses: string[] = [];
+    const client = new SessionClient("https://example.test", ID, {
+      fetch: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/events")) {
+          events.push(String(init?.body));
+          return new Response("{}");
+        }
+        polls.push(url);
+        open++;
+        return new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener("abort", () => {
+            open--;
+            reject(new Error("abort"));
+          }),
+        );
+      },
+      setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 5)),
+      clearTimeout: (h) => clearTimeout(h as any),
+      now: () => now,
+      clock: () => ({ cycle: 0, cps: 0.5, state }),
+      apply: async () => ({ ok: true, cycle: 0 }),
+      onStatus: (s) => statuses.push(s),
+    });
+    return {
+      client,
+      polls,
+      events,
+      statuses,
+      open: () => open,
+      advance: (ms: number) => (now += ms),
+      setState: (s: string) => (state = s),
+    };
+  }
+
+  it("parks after IDLE_PARK_MS stopped and untouched, tells the log, and holds no poll", async () => {
+    const h = idleHarness("stopped");
+    h.client.start({});
+    await vi.waitFor(() => expect(h.open()).toBe(1));
+    h.advance(IDLE_PARK_MS - 1000);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.client.isParked).toBe(false);
+    h.advance(1000);
+    await vi.waitFor(() => expect(h.client.isParked).toBe(true));
+    await vi.waitFor(() => expect(h.open()).toBe(0));
+    expect(h.statuses.at(-1)).toBe("parked");
+    expect(h.events.some((b) => b.includes("stopped polling"))).toBe(true);
+    const count = h.polls.length;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(h.polls.length).toBe(count);
+    h.client.stop();
+  });
+
+  it("Play rejoins with exactly one poll loop", async () => {
+    const h = idleHarness("stopped");
+    h.client.start({});
+    h.advance(IDLE_PARK_MS);
+    await vi.waitFor(() => expect(h.client.isParked).toBe(true));
+    h.setState("playing");
+    await vi.waitFor(() => expect(h.client.isParked).toBe(false));
+    await vi.waitFor(() => expect(h.polls.at(-1)).toContain("state=playing"));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(h.open()).toBe(1);
+    h.client.stop();
+  });
+
+  it("a human event rejoins; a playing player never parks", async () => {
+    const h = idleHarness("stopped");
+    h.client.start({});
+    h.advance(IDLE_PARK_MS);
+    await vi.waitFor(() => expect(h.client.isParked).toBe(true));
+    h.client.log({ t: "edit", cycle: null, code: "s('bd')", chars: 7 });
+    expect(h.client.isParked).toBe(false);
+    h.client.stop();
+
+    const playing = idleHarness("playing");
+    playing.client.start({});
+    await vi.waitFor(() => expect(playing.open()).toBe(1));
+    playing.advance(IDLE_PARK_MS * 3);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(playing.client.isParked).toBe(false);
+    playing.client.stop();
   });
 });
 

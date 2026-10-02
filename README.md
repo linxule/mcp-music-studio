@@ -256,6 +256,11 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
 
+## 0.9.2 — October 2, 2026
+
+- **An idle player lets go of its session.** A live-session player that has been stopped and untouched for 30 minutes stops checking in, and its badge says "session paused — press Play to rejoin". Play, an edit, a tap or Pass rejoins, and an update Claude queued in the meantime plays then. Before, a forgotten open tab kept its session alive and its server object awake indefinitely.
+- **Speech renders are capped at 500 new lines a day** across everyone (was 4,000). Lines already rendered come from the cache and don't count.
+
 ## 0.9.1 — October 2, 2026
 
 - **A Pass that gets no answer says so.** When Claude is listening, Pass hands it the turn without a chat message. If that read never reaches the model (a dropped turn, a host timeout) and nothing comes back on the player within 90 s, the player says so, and the next Pass goes to the chat.
