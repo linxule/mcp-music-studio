@@ -302,7 +302,12 @@ export function appendEvents(
     if (++bodies > SESSION_MAX_EDIT_BODIES) e.code = null;
   }
   for (const e of added) {
-    if (e.t === "applied" && (!data.lastApplied || e.rev >= data.lastApplied.rev)) data.lastApplied = e;
+    if (e.t !== "applied") continue;
+    const prev = data.lastApplied;
+    // A stopped second screen's "loaded" never overwrites a playing player's
+    // answer for the same rev.
+    const weaker = prev && prev.rev === e.rev && prev.ok && prev.cycle !== null && e.cycle === null;
+    if (!prev || (e.rev >= prev.rev && !weaker)) data.lastApplied = e;
   }
   if (added.length) data.lastActivity = now;
   enforceSessionBudget(data);

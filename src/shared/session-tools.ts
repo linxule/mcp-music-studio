@@ -302,7 +302,9 @@ export async function attachSession(
   let meta: Record<string, unknown> = {};
   try {
     const id = await backend.create();
-    line = sessionNote(id);
+    // A second screen: the same session in the full player, where tilt and
+    // the microphone are allowed (a chat's widget frame blocks them).
+    line = `${sessionNote(id)} The same session opens in a browser too (another device, sensors, fullscreen): ${origin}/s/${id}`;
     meta = { session: { id, origin } };
   } catch {
     line = SESSION_UNAVAILABLE_NOTE;

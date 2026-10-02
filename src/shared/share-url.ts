@@ -481,7 +481,14 @@ export function buildPlayerCsp(
     resourceDomains?: string[];
     connectDomains?: string[];
   },
-  { dataScripts = false }: { dataScripts?: boolean } = {},
+  {
+    dataScripts = false,
+    frameAncestors = "'none'",
+  }: {
+    dataScripts?: boolean;
+    /** Who may frame the page: 'none' for share pages, 'self' for the widget the share page hosts. */
+    frameAncestors?: string;
+  } = {},
 ): string {
   const resource = domains.resourceDomains ?? [];
   const connect = domains.connectDomains ?? [];
@@ -497,7 +504,7 @@ export function buildPlayerCsp(
     join("connect-src 'self' data: blob:", resource, connect),
     join("media-src 'self' data: blob:", resource, connect),
     "worker-src 'self' blob:",
-    "frame-ancestors 'none'",
+    `frame-ancestors ${frameAncestors}`,
     "base-uri 'none'",
     "form-action 'none'",
   ].join("; ");

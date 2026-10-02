@@ -104,6 +104,9 @@ import { CREATE_SHARE_ANNOTATIONS, CREATE_SHARE_DESCRIPTION, createShareInputSch
 // Bundled ext-apps HTML (wrangler imports as text via rules config)
 import sheetMusicHtml from "../../dist/mcp-app.html";
 import strudelHtml from "../../dist/strudel-app.html";
+import shareHostHtml from "../../dist/share-host.html";
+import { safeJsonForScript } from "../../src/shared/safe-json.js";
+import { injectTempo } from "../../src/shared/tempo.js";
 import privacyHtml from "../../privacy.html";
 
 // =============================================================================
@@ -269,10 +272,101 @@ const SHEET_PAGE_CSP = buildPlayerCsp({
   connectDomains: SHEET_CSP.connectDomains,
 });
 
-function renderSharePayload(payload: SharePayload): Response {
+function renderSharePayload(payload: SharePayload, url?: URL): Response {
+  if (payload.kind === "play" && url && url.searchParams.get("classic") !== "1") {
+    return renderFullPlayer(payload.args, url);
+  }
   return payload.kind === "play"
     ? playerResponse(generateStrudelPlayerHtml(payload.args), STRUDEL_PAGE_CSP)
     : playerResponse(generatePlayerHtml(payload.args), SHEET_PAGE_CSP);
+}
+
+// -----------------------------------------------------------------------------
+// The full player: the real widget, hosted by a page of our own
+// (src/share-host.ts). The standalone page stays behind ?classic=1 — and is
+// still what the local --render-mode browser path writes to disk.
+// -----------------------------------------------------------------------------
+
+/** The share page only frames our widget and talks to nothing itself. */
+const SHARE_HOST_CSP = [
+  "default-src 'none'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "frame-src 'self'",
+  "frame-ancestors 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join("; ");
+
+/** The widget's own CSP, as a host derives it from _meta.ui.csp — framed only by our page. */
+function widgetPageCsp(origin: string): string {
+  return buildPlayerCsp(
+    { resourceDomains: STRUDEL_CSP.resourceDomains, connectDomains: withOrigin(STRUDEL_CSP.connectDomains, origin) },
+    { dataScripts: true, frameAncestors: "'self'" },
+  );
+}
+
+export interface FullPlayerInit {
+  code: string;
+  title?: string;
+  bpm?: number;
+  session?: { id: string; origin: string };
+  widget: string;
+  classic?: string;
+}
+
+export function fullPlayerHtml(init: FullPlayerInit): string {
+  return shareHostHtml.replace("__SHARE_INIT__", () => safeJsonForScript(init));
+}
+
+function renderFullPlayer(
+  args: { code: string; title?: string; bpm?: number },
+  url: URL,
+  session?: { id: string; origin: string },
+): Response {
+  const classic = new URL(url);
+  classic.searchParams.set("classic", "1");
+  // The same tempo policy the standalone page and the widget run
+  // (src/shared/tempo.ts), applied once here so the code the page shows is
+  // the code that plays. Only "unchanged-ambiguous" (the pattern owns its
+  // setcps) leaves the bpm for the widget to apply at runtime.
+  const tempo = typeof args.bpm === "number" ? injectTempo(args.code, args.bpm) : null;
+  const runtimeBpm = tempo && (tempo.policy as string) === "unchanged-ambiguous" ? args.bpm : undefined;
+  const html = fullPlayerHtml({
+    code: tempo ? tempo.code : args.code,
+    ...(args.title ? { title: args.title } : {}),
+    ...(runtimeBpm !== undefined ? { bpm: runtimeBpm } : {}),
+    ...(session ? { session } : {}),
+    widget: "/widget/strudel",
+    ...(session ? {} : { classic: `${classic.pathname}${classic.search}` }),
+  });
+  const res = playerResponse(html, SHARE_HOST_CSP);
+  // A session page shows whatever the session plays now: never cache it.
+  if (session) res.headers.set("cache-control", "no-store");
+  return res;
+}
+
+/** Placeholder for a session page that has nothing to show yet. */
+const SESSION_WAITING_CODE =
+  "// This live session has no pattern yet.\n// It loads the next one Claude sends, or the code the performer runs.\nsilence";
+
+async function renderSessionPage(env: Env, url: URL, id: string): Promise<Response> {
+  if (!env.JAM) return new Response("Live sessions are not available here.", { status: 503 });
+  const res = await env.JAM.get(env.JAM.idFromName(id)).fetch("https://session/current");
+  if (res.status === 404) {
+    return new Response("This live session has ended (sessions close after 2 hours idle).", {
+      status: 404,
+      headers: { "content-type": "text/plain; charset=utf-8", "x-robots-tag": "noindex" },
+    });
+  }
+  const current = res.status === 200 ? ((await res.json()) as { code?: string }) : {};
+  return renderFullPlayer(
+    { code: typeof current.code === "string" && current.code.trim() ? current.code : SESSION_WAITING_CODE },
+    url,
+    { id, origin: url.origin },
+  );
 }
 
 function shareError(err: unknown): Response {
@@ -1033,7 +1127,7 @@ const SESSION_CORS: Record<string, string> = {
   "access-control-max-age": "86400",
   "access-control-expose-headers": "x-session-listening",
 };
-const SESSION_OPS = new Set(["events", "next", "state", "update"]);
+const SESSION_OPS = new Set(["events", "next", "state", "update", "current"]);
 const SESSION_EVENTS_MAX_BYTES = 256 * 1024;
 const SESSION_UPDATE_MAX_BYTES = 64 * 1024 * 4 + 1024;
 
@@ -1136,12 +1230,33 @@ export default {
     // -------------------------------------------------------------------------
 
     // GET /play?c=<base64url>&bpm=&title=&autoplay=  — Strudel live pattern
+    // The widget, served for the full player page to frame (same origin).
+    if (url.pathname === "/widget/strudel") {
+      return new Response(strudelHtml, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": widgetPageCsp(url.origin),
+          "x-robots-tag": "noindex, nofollow",
+          "referrer-policy": "no-referrer",
+          "x-content-type-options": "nosniff",
+          "cache-control": "public, max-age=300",
+        },
+      });
+    }
+
+    // GET /s/<id> — a live session's second screen: the full player, joined.
+    if (url.pathname.startsWith("/s/")) {
+      const id = url.pathname.slice(3);
+      if (!SESSION_ID_RE.test(id)) return shareError(new ShareParamError("Not a session id.", 400));
+      return renderSessionPage(env, url, id);
+    }
+
     if (url.pathname === "/play") {
       try {
         return renderSharePayload({
           kind: "play",
           args: parsePlaySearchParams(url.searchParams),
-        });
+        }, url);
       } catch (err) {
         return shareError(err);
       }
@@ -1179,7 +1294,7 @@ export default {
       try {
         // Re-validated on the way out: KV holds what we wrote, but a payload
         // that reaches a page generator should never be trusted on provenance.
-        return renderSharePayload(coerceSharePayload(JSON.parse(stored)));
+        return renderSharePayload(coerceSharePayload(JSON.parse(stored)), url);
       } catch (err) {
         return shareError(err);
       }
