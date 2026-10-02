@@ -2031,6 +2031,50 @@ function stageCapabilityNote(code: string): string {
   return parts.length ? ` — ${parts.join("; ")}` : "";
 }
 
+/**
+ * A master limiter between superdough's output and the speakers — a safety
+ * default the brief asked for, and needed: with the worklet effects loading,
+ * crush/coarse layers drove the gallery's glitch piece to peak 2.36 (hard
+ * clipping). Idempotent per output node (superdough rebuilds it on reset).
+ */
+const limited = new WeakSet<object>();
+function ensureLimiter(): void {
+  try {
+    const ctx: AudioContext | undefined = (window as any).getAudioContext?.();
+    const master: AudioNode | undefined = (window as any).getSuperdoughAudioController?.()?.output?.destinationGain;
+    if (!ctx || !master?.connect || limited.has(master)) return;
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -2;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.002;
+    limiter.release.value = 0.12;
+    master.disconnect(ctx.destination);
+    master.connect(limiter);
+    limiter.connect(ctx.destination);
+    limited.add(master);
+  } catch (err) {
+    console.warn("[strudel] master limiter not installed:", err);
+  }
+}
+
+/** Load superdough's AudioWorklets once (bounded wait; a failure only costs those sounds). */
+let workletsReady: Promise<void> | null = null;
+function ensureWorklets(): Promise<void> {
+  const load = (window as any).loadWorklets;
+  if (typeof load !== "function") return Promise.resolve();
+  workletsReady ??= Promise.race([
+    Promise.resolve()
+      .then(() => load())
+      .catch((err: unknown) => {
+        console.warn("[strudel] AudioWorklets did not load:", err);
+        workletsReady = null; // retry on the next evaluation
+      }),
+    new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+  ]).then(() => undefined);
+  return workletsReady;
+}
+
 /** Bumped by every evaluation, so a stale one can tell if a newer one began. */
 let evaluationSeq = 0;
 /** Settles when the evaluation in flight is done; the next one queues on it. */
@@ -2127,6 +2171,11 @@ function installEvaluateHook(editor: any): void {
       clearTimeout(missingSoundTimer);
       missingSoundTimer = null;
     }
+    // superdough loads its AudioWorklets (supersaw, pulse, crush, djf, …) only
+    // on the first mousedown AFTER Strudel loaded — so a piece that started
+    // without one played those silent, and a .djf() anywhere silenced its
+    // whole orbit (measured). Loading them needs no gesture: do it here.
+    await ensureWorklets();
     // This evaluation's onFrame/onEvent/onTap go live only if it succeeds.
     const stageToken = stage.begin();
     speechFailureReported = false;
@@ -2197,6 +2246,7 @@ function installEvaluateHook(editor: any): void {
     // The pattern owns the `setcps` name, so the requested bpm could not be
     // written into the source — apply it now that the scheduler is up.
     const tempoAtRuntime = applyRuntimeTempo();
+    ensureLimiter();
     // A context that is only still starting gets a moment to come up, so the
     // one report this evaluation makes says "blocked" only when it is.
     if (isSchedulerStarted()) await ensureAudioRunning(AUDIO_SETTLE_MS);

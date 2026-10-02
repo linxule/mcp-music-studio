@@ -113,6 +113,8 @@ async function loadHook() {
     const installSplice = () => () => {};
     const noteHumanEdit = () => {};
     const logControlSurface = () => {};
+    const ensureWorklets = () => Promise.resolve();
+    const ensureLimiter = () => {};
     const applyRuntimeTempo = () => false;
     const isSchedulerStarted = () => scheduler.started;
     const ensureAudioRunning = () => getSettle()?.promise ?? Promise.resolve(true);

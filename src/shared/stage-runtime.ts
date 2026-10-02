@@ -400,6 +400,15 @@ export function createStage(env: StageEnv): Stage {
   };
 
   const controlName = (api: string, name: unknown): string => {
+    // fader("rain") with DOUBLE quotes arrives as a one-value mini-notation
+    // pattern (the transpiler's rule) — take its value rather than refuse it.
+    if (name && typeof name === "object" && typeof (name as any).__pure === "string") name = (name as any).__pure;
+    else if (name && typeof name === "object" && typeof (name as any).queryArc === "function") {
+      try {
+        const v = (name as any).queryArc(0, 1)[0]?.value;
+        if (typeof v === "string") name = v;
+      } catch { /* not a name */ }
+    }
     if (typeof name !== "string" || !name.trim()) throw new TypeError(`${api} needs a name, e.g. ${api.replace("(name)", "('rain')")}`);
     return name.trim().slice(0, 32);
   };

@@ -448,6 +448,12 @@ const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknow
 };
 
 function requireName(api: string, name: unknown): void {
+  // A double-quoted name is a one-value mini-notation pattern; the widget accepts it too.
+  if (name && typeof name === "object" && typeof (name as Any).queryArc === "function") {
+    try {
+      name = (name as Any).queryArc(0, 1)[0]?.value;
+    } catch { /* not a name */ }
+  }
   if (typeof name !== "string" || !name.trim()) throw new TypeError(`${api}(name) needs a name, e.g. ${api}('rain')`);
 }
 

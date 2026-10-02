@@ -1071,6 +1071,56 @@ stack(
   note("<a1 f1 d1 e1>").struct("x ~ x ~").s("sawtooth").lpf(500).gain(storm.fmap(on => on * 0.4))
 )`;
 
+const TWO_DECKS = String.raw`setcps(0.5)
+await initHydra()
+
+// ════════ TWO DECKS ════════
+// A back-to-back booth for a live session. Deck A is the listener's, deck B is
+// Claude's: Claude rewrites deck B with update-session while the listener's
+// hands stay on the mixer — the controls keep their values across updates.
+//   xfade (fader)          → equal-power crossfade, A on the left
+//   filter A / filter B    → DJ filter per deck (0.5 = open, lower = low-pass, higher = high-pass)
+//   kill A / kill B (toggle) → bass kill
+//   echo (hold)            → a dotted-eighth echo throw on both decks
+
+const xfade = fader('xfade', { init: 0.5 })
+const filterA = fader('filter A', { init: 0.5 })
+const filterB = fader('filter B', { init: 0.5 })
+const killA = pad('kill A', { toggle: true })
+const killB = pad('kill B', { toggle: true })
+const echo = pad('echo')
+
+const levelA = xfade.fmap(x => Math.cos(x * Math.PI / 2))
+const levelB = xfade.fmap(x => Math.sin(x * Math.PI / 2))
+const bassUnless = (kill, level) => kill.fmap(on => on ? 0 : level)
+
+// ── deck A: the listener's — a straight house groove ──
+const deckA = stack(
+  s("bd*4").bank("RolandTR909").gain(0.9),
+  s("~ cp ~ cp").bank("RolandTR909").gain(0.55),
+  s("[~ hh]*4").bank("RolandTR909").gain(0.4),
+  note("<a1 a1 f1 g1>").struct("x ~ x x ~ x ~ x").s("sawtooth").lpf(420).gain(bassUnless(killA, 0.5))
+).djf(filterA).velocity(levelA).orbit(1)
+
+// ── deck B: Claude's — broken beat, keys, sub ──
+const deckB = stack(
+  s("bd ~ ~ bd ~ ~ bd ~").bank("RolandTR808").gain(0.9),
+  s("~ ~ sd ~").bank("RolandTR808").gain(0.6).room(0.3),
+  s("hh*8").bank("RolandTR808").gain("[0.15 0.3]*4"),
+  note("<[a3,c4,e4] [f3,a3,c4] [g3,b3,d4] [e3,g#3,b3]>").struct("~ x ~ x").s("gm_epiano1").gain(0.45),
+  note("<a1 f1 g1 e1>").struct("x ~ ~ x ~ ~ x ~").s("sine").gain(bassUnless(killB, 0.7))
+).djf(filterB).velocity(levelB).orbit(2)   // djf is per orbit (a bus): each deck needs its own
+
+// ── the picture follows the mixer: deck A warm, deck B cold, crossfaded ──
+osc(8, 0.08, 1.2).kaleid(4).color(1, 0.45, 0.2)
+  .blend(voronoi(6, 0.3, 0.2).color(0.2, 0.55, 1), () => xfade.value)
+  .modulate(noise(2, 0.1), () => a.fft[0] * 0.15)
+  .scrollX(() => (filterA.value - 0.5) * 0.1 * (1 - xfade.value) + (filterB.value - 0.5) * 0.1 * xfade.value)
+  .out()
+
+stack(deckA, deckB)
+  .delay(echo.fmap(e => e * 0.5)).delaytime(0.375).delayfeedback(0.55)`;
+
 export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
   {
     id: "first-light",
@@ -1151,9 +1201,23 @@ export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
     ],
     code: WEATHER_MACHINE,
   },
+  {
+    id: "two-decks",
+    title: "Two Decks — a back-to-back booth",
+    summary:
+      "Deck A is the listener's, deck B is Claude's, and the listener mixes: an equal-power crossfader, a DJ filter per deck, bass kills and an echo throw. Built for a live session — Claude rewrites deck B with update-session while the mixer stays where the listener left it.",
+    teaches: [
+      "a mixer from fader()/pad(): .velocity() for level (it leaves each layer's .gain alone), .djf() for the filter",
+      "one .orbit() per deck: .djf(), delay and room are per orbit (a bus), so two decks on one orbit fight over one filter",
+      "equal-power crossfade: cos and sin of the fader",
+      "a bass kill as a toggle that zeroes one layer",
+      "the B2B shape: keep deck A and the controls, rewrite deck B each turn",
+    ],
+    code: TWO_DECKS,
+  },
 ];
 
-export const GALLERY_IDS = ["first-light", "duet", "petri-dish", "lossy-terminal", "signal-corruption", "weather-machine"] as const;
+export const GALLERY_IDS = ["first-light", "duet", "petri-dish", "lossy-terminal", "signal-corruption", "weather-machine", "two-decks"] as const;
 
 /** The plain-text index get-strudel-guide returns for topic "gallery". */
 export function galleryIndex(): string {

@@ -459,3 +459,12 @@ describe("controls — fader(), pad(), xy()", () => {
     expect(rendered.at(-1)).toEqual([]);
   });
 });
+
+it("a double-quoted control name (a mini-notation pattern) still names the control", () => {
+  const h = harness({ signal: (read) => signal(() => read()) });
+  const t = h.stage.begin();
+  const rain = h.stage.globals.fader(mini("rain") as any, { init: 0.4 });
+  h.stage.commit(t);
+  expect(h.stage.controls().map((c) => c.spec.name)).toEqual(["rain"]);
+  expect(rain.value).toBe(0.4);
+});
