@@ -15,13 +15,14 @@ export const studioScoreArgsSchema = playSheetInputSchema.extend({
   abcNotation: playSheetInputSchema.shape.abcNotation.removeDefault(),
 }).strict();
 const commandSchema = z.object({
-  action: z.enum(["get", "set", "play", "stop", "undo", "review-start", "review-stage", "review-clear", "review-apply"]),
+  action: z.enum(["get", "set", "swap", "play", "stop", "undo", "review-start", "review-stage", "review-clear", "review-apply"]),
   instanceId: z.string().min(1).optional(),
   mode: z.enum(["live", "score"]).optional(),
   expectedRevision: z.number().int().nonnegative().optional(),
   args: z.record(z.string(), z.unknown()).optional(),
   settings: z.record(z.string(), z.unknown()).optional(),
   replace: z.boolean().optional(),
+  quantize: z.number().int().min(0).max(32).optional(),
   requestId: z.string().min(1).optional(),
   question: z.string().max(6000).optional(),
   passage: passageSchema.optional(),
@@ -37,21 +38,39 @@ export interface StudioSnapshot {
   selection?: { from: number; to: number; text: string };
 }
 
+/** What a quantized swap did: the cycle the new code took over at, or why it didn't. */
+export interface StudioSwapOutcome {
+  ok: boolean;
+  cycle: number | null;
+  error?: string;
+  report?: string;
+}
+
+/** Default phrase for swap-pattern: one 4-cycle phrase (quantize = phrase length). */
+export const STUDIO_SWAP_DEFAULT_QUANTIZE = 4;
+
 export interface StudioAdapter {
   read(): StudioSnapshot;
+  /**
+   * Live widgets: replace a PLAYING pattern on the next `quantize`-cycle
+   * boundary (old until the bar, new from it). Rejects, changing nothing, when
+   * the player is stopped. Resolves when the new code took over or failed.
+   */
+  swap?(code: string, quantize: number, isCancelled: () => boolean): Promise<StudioSwapOutcome>;
   apply(args: Record<string, unknown>, settings?: Record<string, unknown>, isCancelled?: () => boolean, onCommit?: () => void): Promise<void>;
   play(isCancelled: () => boolean): Promise<void>;
   stop(): void;
 }
 
 export type StudioCommand = {
-  action: "get" | "set" | "play" | "stop" | "undo" | "review-start" | "review-stage" | "review-clear" | "review-apply";
+  action: "get" | "set" | "swap" | "play" | "stop" | "undo" | "review-start" | "review-stage" | "review-clear" | "review-apply";
   instanceId?: string;
   mode?: StudioMode;
   expectedRevision?: number;
   args?: Record<string, unknown>;
   settings?: Record<string, unknown>;
   replace?: boolean;
+  quantize?: number;
   requestId?: string;
   question?: string;
   passage?: Passage;
@@ -66,6 +85,8 @@ export interface StudioState extends StudioSnapshot {
   busy: boolean;
   canUndo: boolean;
   sharedReview: SharedReview | null;
+  /** Present on a swap's answer. */
+  swap?: StudioSwapOutcome & { quantize: number };
 }
 export interface StudioSession {
   (command: StudioCommand): Promise<StudioState>;
@@ -122,7 +143,9 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
       throw new Error("Studio instance conflict. Read the target widget's current session before sending a command.");
     }
     if (command.mode !== undefined && command.mode !== mode) throw new Error("Studio mode conflict. Use this widget's current mode.");
-    if (command.action !== "set" && (command.args !== undefined || command.settings !== undefined || command.replace !== undefined)) throw new Error("Only set accepts music arguments or settings.");
+    if (command.action !== "set" && command.action !== "swap" && command.args !== undefined) throw new Error("Only set and swap accept music arguments.");
+    if (command.action !== "set" && (command.settings !== undefined || command.replace !== undefined)) throw new Error("Only set accepts settings or replace.");
+    if (command.action !== "swap" && command.quantize !== undefined) throw new Error("Only swap accepts quantize.");
     const reviewKeys = [command.requestId, command.question, command.passage, command.explanation, command.replacement];
     if (!command.action.startsWith("review-") && reviewKeys.some(value => value !== undefined)) throw new Error("Review fields require a review action.");
     const before = read();
@@ -151,6 +174,33 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
     }
     if (command.expectedRevision !== before.revision) {
       throw new Error(`Revision conflict: expected ${command.expectedRevision}, current ${before.revision}. Read the current session before editing.`);
+    }
+    if (command.action === "swap") {
+      // A swap waits for its bar without holding `busy`: a newer swap (or a
+      // stop) must be able to supersede it, and it answers then.
+      if (mode !== "live" || !adapter.swap) throw new Error("swap-pattern is only available in a live (Strudel) widget.");
+      const code = command.args?.code;
+      if (typeof code !== "string" || !code.trim()) throw new Error("swap needs non-empty code.");
+      studioPatternArgsSchema.shape.code.parse(code);
+      const quantize = command.quantize ?? STUDIO_SWAP_DEFAULT_QUANTIZE;
+      const intent = ++playbackIntent;
+      const draft = fingerprint(adapter.read());
+      let outcome: StudioSwapOutcome;
+      try {
+        outcome = await adapter.swap(code, quantize, () => disposed || intent !== playbackIntent);
+      } finally {
+        // Undo restores the source before the swap whenever the editor changed,
+        // even if the new code then failed to play.
+        if (!disposed && fingerprint(adapter.read()) !== draft) {
+          history.push(structuredClone(before));
+          if (history.length > 10) history.shift();
+        }
+      }
+      if (disposed) throw new Error("Studio session has been disposed.");
+      const notifications = reviewNotifications;
+      const after = read();
+      if (notifications === reviewNotifications) notifyReview();
+      return { ...after, ...(outcome.ok ? {} : { error: outcome.error ?? "The swap did not play." }), swap: { ...outcome, quantize } };
     }
     if (command.action === "review-start") {
       if (!command.passage || command.question === undefined) throw new Error("A review needs the exact passage and a question.");

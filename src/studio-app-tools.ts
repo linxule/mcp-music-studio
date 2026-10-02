@@ -2,7 +2,7 @@ import type { App } from "@modelcontextprotocol/ext-apps";
 import { z } from "zod";
 import { reviewResponseSchema } from "./studio-review";
 import {
-  studioLiveSettingsSchema, studioPatternArgsSchema, studioScoreArgsSchema,
+  STUDIO_SWAP_DEFAULT_QUANTIZE, studioLiveSettingsSchema, studioPatternArgsSchema, studioScoreArgsSchema,
   studioScoreSettingsSchema, type StudioCommand, type StudioSession,
 } from "./studio-session";
 
@@ -19,7 +19,7 @@ export function registerStudioAppTools(app: App, session: StudioSession): void {
     try {
       const state = await session(command);
       return {
-        ...(state.error && ["set", "play", "undo", "review-apply"].includes(command.action) ? { isError: true } : {}),
+        ...(state.error && ["set", "swap", "play", "undo", "review-apply"].includes(command.action) ? { isError: true } : {}),
         content: [{ type: "text" as const, text: JSON.stringify(state) }],
         structuredContent: { ...state },
       };
@@ -40,6 +40,17 @@ export function registerStudioAppTools(app: App, session: StudioSession): void {
       inputSchema: studioPatternArgsSchema.extend({ ...identity, expectedRevision: revision, settings: studioLiveSettingsSchema.optional(), replace }).strict(),
       annotations,
     }, ({ instanceId, mode, expectedRevision, settings, replace, ...args }) => execute({ action: "set", instanceId, mode, expectedRevision, settings, replace, args }));
+    app.registerTool("swap-pattern", {
+      description: `Change the music WHILE IT PLAYS: the current pattern keeps playing until the next boundary of \`quantize\` cycles (default ${STUDIO_SWAP_DEFAULT_QUANTIZE}), and the new code plays from that boundary, in time. Patterns run on the player's clock, so set quantize to the phrase length (an 8-bar phrase → 8). 0 swaps at once. Answers once the new code has taken over (swap.cycle) or failed (error; the previous pattern keeps playing). Only for a PLAYING widget — when stopped it changes nothing and says so; use set-pattern and play-current-music instead. Supply instanceId and expectedRevision. undo-studio-edit restores the previous source, stopped. Strudel executes JavaScript.`,
+      inputSchema: z.object({
+        ...identity,
+        expectedRevision: revision,
+        code: studioPatternArgsSchema.shape.code,
+        quantize: z.number().int().min(0).max(32).optional()
+          .describe(`Cycles per phrase to land on (0–32, default ${STUDIO_SWAP_DEFAULT_QUANTIZE}). Use the phrase length of the music.`),
+      }).strict(),
+      annotations: { ...annotations, openWorldHint: true },
+    }, ({ instanceId, mode, expectedRevision, code, quantize }) => execute({ action: "swap", instanceId, mode, expectedRevision, quantize, args: { code } }));
   } else {
     app.registerTool("set-score", {
       description: "Replace this widget's ABC score, stopped. Supply its current instanceId and expectedRevision. Settings not supplied are retained; returned state includes rendering errors. Blank drafts are allowed. Use play-current-music explicitly to start audio.",
