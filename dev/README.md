@@ -19,7 +19,7 @@ The top-level page registers nine WebMCP tools when `document.modelContext`
 This is a page tool surface, not another HTTP MCP endpoint; open the page in a
 WebMCP-capable browser/agent to discover it.
 
-Read state before editing: writes require `expectedRevision`, and snapshots
+Read state before editing: writes require `instanceId` and `expectedRevision`, and snapshots
 read the **live editor buffer**, including unevaluated human edits. Replacements
 and undo are stopped; Play evaluates the current source. Staging Strudel source
 does not validate it. Playback reports actual runtime errors or suspended audio;
@@ -31,14 +31,172 @@ samples still load from the existing CDNs, so this is local hosting, not offline
 audio. No model API key is needed: the browser's agent is the consumer. No shares
 are uploaded. Copy for chat copies the selected passage and question, without sending them. Send-to-chat is hidden because this host has no chat transport.
 
-The opt-in `?studio=1` widget adapter accepts requests only from its immediate
-loopback parent. Messages cross the sandbox via `postMessage`; the host checks
-the responding frame identity. The existing harness's no-CSP caveat still
+The page now discovers and calls the widget's MCP Apps tools through the SDK's
+`AppBridge`. Each iframe has one session controller and one undo history;
+WebMCP is an adapter to those operations. A client pins the instance ID it first
+reads and will not silently adopt a replacement iframe. `?studio=1` still opts
+into the local writing layout and draft/interaction notifications. The legacy
+local request listener uses the same controller and accepts only its immediate
+loopback parent. The existing harness's no-CSP caveat still
 applies. Rebuild and reload after widget source changes; Vite reloads studio
 shell changes automatically. Typecheck it with
 `bunx tsc --noEmit -p dev/tsconfig.studio.json`.
 
 The original diagnostic harness remains at `/`.
+
+### Widget-provided tools
+
+Both ordinary widgets register these MCP Apps tools before connecting, including
+when they are loaded without `?studio=1`:
+
+| Tool | Scope |
+| --- | --- |
+| `get-studio-state` | Live buffer, selection, settings, instance ID, revision, playback and errors |
+| `set-pattern` / `set-score` | Only the tool matching the widget's mode; edit stopped |
+| `play-current-music` | Explicit evaluation/playback in this widget |
+| `stop-music` | Stop this widget, including during a pending operation |
+| `undo-studio-edit` | This widget's existing ten-entry edit history |
+
+App tool discovery is separate from the eight MCP **server** tools. These tools
+operate on a mounted widget's unsaved document; they do not add remote access to
+closed pages or save a project. The existing initial tool-input/render path
+continues to work in hosts that do not discover app-provided tools.
+
+Every mutation requires the widget's current `instanceId`; edit, play and undo
+also require `expectedRevision`. The ID changes on remount. Teardown makes the
+old controller terminal. Reads may omit the ID for discovery. Ordinary edits
+retain omitted settings and metadata. Snapshot restoration uses `replace: true`
+to replace supplied arguments, clearing omitted metadata. Explicit score settings
+replace the whole settings object: missing fields reset to soundFont `default`,
+room `true`, instrumentOverride `false`, warp `100`, and loop `false`. Omitting
+the settings object preserves the current settings.
+Render errors can accompany an updated snapshot and an available Undo action.
+
+Open `/app-tools.html` for a two-widget verification host. It loads the real
+built widgets in opaque sandboxed iframes without the local studio opt-in and
+uses real `AppBridge.listTools` / `callTool` requests. It includes controls for
+reading an unevaluated human edit, editing, undo, stale writes, wrong instance
+IDs, remount and teardown. It never starts playback automatically.
+In Score mode, **Check score settings replacement** verifies the real ABC
+adapter first accepts non-default settings and then resets all five fields when
+given `replace: true` and only `{warp: 100}`.
+
+This harness verifies our SDK integration, not a third-party host's support.
+Actual ChatGPT/Codex app-tool discovery and nested preview permissions need a
+separate host check. The standalone preview remains an isolated sibling iframe;
+this milestone does not add embedded passage-review UI or widen CSP allowlists.
+
+### Stage 1 verification — 1 October 2026
+
+Implemented locally on `codex/studio-app-tools`, based on `963a840`. GPT-6.1 Sol
+implemented the session/tool layer and verification host; Astra reviewed the
+architecture and diff. Its score-settings replacement finding was fixed and
+re-reviewed. This work has not been committed, deployed, or published.
+
+- `bun run build`: passed, including application and server TypeScript checks.
+- `bun node_modules/typescript/bin/tsc --noEmit -p dev/tsconfig.studio.json`: passed.
+- `bun run test`: **1,858 tests across 85 files passed** against the built widgets.
+- Real browser/AppBridge checks, both modes: five tools discovered without
+  `?studio=1`; reads include human edits; writes update the same iframe; undo
+  restores the previous human draft; stale writes and wrong-instance writes are
+  rejected; the other widget remains unchanged. Live mode also checked remount
+  identity and terminal teardown. Score mode checked complete settings replacement.
+- Original WebMCP studio: nine tools discovered; direct edit, staged suggestion,
+  isolated preview construction, Apply, and Undo retain the same draft instance
+  and revision history. Preview construction left source/revision unchanged.
+  No audible playback or phone behavior was certified in this run.
+
+Native Codex follow-up on 1 October:
+
+- A repo-scoped `.codex/config.toml` registers `music-studio-local` against the
+  built `dist/index.js --stdio`. After restarting Codex, all eight local server
+  tools were available in this same chat. The older hosted connector remains
+  separate; its registration/version discrepancy is not fixed by this setup.
+- A local `play-live-pattern` call with `autoplay: false` rendered an interactive
+  widget. The user expanded it; the MCP Apps browser surface exposed its source,
+  title, and controls. Browser UI editing and restoration succeeded in that same
+  panel, with the player remaining stopped. DOM inspection confirmed the restored
+  source; screenshot capture timed out. No audible playback was tested.
+- The model-visible catalog still contained only the eight local server tools,
+  with none of the five app-provided session tools. The browser backend exposed
+  DOM interaction, without an app-tool RPC capability. Therefore native
+  `get-studio-state` -> `set-pattern` -> `undo-studio-edit` remains unverified;
+  UI editing is not evidence of that tool round trip.
+- A separate real stdio probe confirmed both tool/resource metadata and built
+  HTML containing the new session tools. Installed ext-apps SDK inspection
+  confirmed registration before connect advertises the app tool capability.
+  The host must discover and route those tools; the SDK does not merge them into
+  the server's tool catalog. No app-side registration defect was found.
+
+The remaining native integration gate is discovery and routing of app-provided
+tools in the target host. Native rendering is now verified locally; native
+session-tool access is not. Keep the working WebMCP adapter and UI/manual
+fallback while investigating that boundary. Do not make publication or durable
+storage prerequisites for this local host test.
+
+### Stage 2 — shared passage review
+
+Each widget session now owns its review request as well as its source. A request
+contains the question, a fresh `requestId`, and a frozen passage with `instanceId`,
+mode, revision, UTF-16 offsets, and exact selected text. Changing the question
+supersedes the previous request even when the music revision is unchanged.
+Moving the cursor does not silently change an already captured passage.
+
+`get-studio-state.sharedReview` exposes that context. Two additional app-provided
+tools, `explain-selection` and `suggest-edit`, accept the current request ID and
+exact passage. They stage a response without changing the draft, adding Undo
+history, or starting sound. There are now seven tools per widget; the standalone
+WebMCP page still has nine. Apply rechecks the request and current draft, validates
+the assembled source, and uses the same source/settings Undo history as direct
+edits. Source or sound-setting changes make the review stale.
+
+Ordinary embedded widgets have a **Work on a passage** panel with a question,
+selected source, explanation/proposal, explicit Apply, and Undo. Copy for chat
+always has a text fallback; Send question to chat appears only when the host
+supports messages. Manual proposal entry also works when the host cannot route
+the app tools. Embedded audio preview is not offered: it needs a supported
+isolated player, and Apply never substitutes playback for preview.
+
+The standalone page uses the same session-owned review through the existing
+loopback-only bridge for human Begin/Clear/Apply actions and AppBridge tools for
+agent responses. Its isolated sibling-iframe preview remains available and is
+discarded when the question, draft, mode, or proposal changes. Human-only Apply
+describes which controls/tools are exposed; it is not a security boundary against
+JavaScript already executing inside the Strudel widget.
+
+Native Codex routing remains the integration gate described above. Adding the
+review tools does not itself make them available to a host's model. Durable
+project storage/authentication and optional native panels come later, once save
+semantics and ownership are decided. Current session files remain the save
+mechanism; ABC and Strudel remain independent drafts.
+
+Stage 2 verification — 1 October 2026:
+
+- `bun run build` and the standalone TypeScript check passed.
+- Final `bun run test`: **1,881 tests across 86 files passed**. The existing
+  review UI cases were migrated to the real session authority and retained;
+  regressions cover superseded/cleared requests, question typing, late preview
+  loads, manual edits surviving state reads, wrong instances, assembled source
+  bounds, and cancellation that must not add Undo history.
+- GPT-6.1 Sol implemented the shared session and standalone integration; Astra
+  reviewed them and the embedded panel. Findings about stale-question recapture,
+  manual text being reset, false Apply success, and recovery history without a
+  source commit were fixed and re-reviewed.
+- Real built-widget AppBridge harness, both live and score: seven tools discover;
+  changing the question rejects the captured old answer while preserving source
+  and revision; a current native proposal appears in the embedded panel; explicit
+  Apply changes source stopped, and the panel's Undo restores the original draft.
+  Live UI also verified stale-source recapture preserves the new question and
+  blank-to-sequential typing preserves spaces.
+- Original WebMCP page: the agent sees question/request/passage identity; late
+  answers reject; source/revision remain unchanged through isolated live preview;
+  a new question removes that preview. A normal agent read preserves an unstaged
+  manual replacement. Both modes verified isolated preview construction,
+  explicit Apply, and Undo restoring the source. No Play button was pressed;
+  audible playback and phone behavior are not certified by these checks.
+- Browser evidence is the loopback verification host and standalone studio.
+  Native Codex model-to-widget review-tool routing remains unverified. No
+  publication, deployment, commit, or push was performed.
 
 The two widgets (`strudel-app.html`, `mcp-app.html`) are MCP Apps: they get all
 their input from a host over `postMessage`, so opening `dist/strudel-app.html`

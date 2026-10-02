@@ -168,7 +168,7 @@ kbd { font: inherit; }
 .session-help summary, .chat-handoff summary { cursor: pointer; }
 .session-help p { color: var(--muted); }
 .chat-handoff { margin-top: 20px; border-top: 1px solid var(--rule); padding-top: 16px; }
-.chat-handoff label { display: block; margin: 16px 0 8px; font-size: 12px; }
-.chat-handoff textarea { display: block; width: 100%; max-width: 760px; color: var(--ink); background: #faf8f3; border: 1px solid var(--rule); border-radius: 2px; padding: 12px; font: 13px/1.6 var(--machine); resize: vertical; margin-bottom: 12px; }
+.chat-handoff label, .review-panel > label { display: block; margin: 16px 0 8px; font-size: 12px; }
+.chat-handoff textarea, .review-question { display: block; width: 100%; max-width: 760px; color: var(--ink); background: #faf8f3; border: 1px solid var(--rule); border-radius: 2px; padding: 12px; font: 13px/1.6 var(--machine); resize: vertical; margin-bottom: 12px; }
 #copy-status { font-size: 12px; }
 #copy-status:empty { display: none; }

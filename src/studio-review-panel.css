@@ -1,0 +1,37 @@
+.studio-review-panel {
+  flex: 0 1 auto;
+  min-height: 36px;
+  max-height: 50%;
+  overflow: auto;
+  border-top: 1px solid var(--border, var(--color-border));
+  background: var(--surface, var(--color-card-bg));
+  color: var(--text, var(--color-text));
+  font: 13px/20px var(--font-sans, system-ui, sans-serif);
+}
+.studio-review-panel > summary { padding: 8px 12px; cursor: pointer; font-weight: 600; }
+.studio-review-body { padding: 0 12px 12px; }
+.studio-review-body p { margin: 8px 0; white-space: pre-wrap; }
+.studio-review-body h3 { margin: 12px 0 6px; font-size: 13px; }
+.studio-review-body label { display: block; margin: 10px 0 4px; }
+.studio-review-body textarea {
+  display: block; width: 100%; box-sizing: border-box; resize: vertical;
+  padding: 8px; border: 1px solid var(--border, var(--color-border)); border-radius: 4px;
+  color: inherit; background: var(--bg, var(--color-bg)); font: inherit;
+}
+.studio-review-body pre {
+  margin: 0; padding: 10px; max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--bg, var(--color-bg)); border: 1px solid var(--border, var(--color-border));
+  font: 12px/18px var(--font-mono, monospace);
+}
+.studio-review-body button {
+  min-height: 32px; padding: 5px 10px; margin: 4px 0;
+  background: var(--bg, var(--color-bg)); color: inherit; font: inherit;
+  border: 1px solid var(--border, var(--color-border)); border-radius: 4px; cursor: pointer;
+}
+.studio-review-body button:disabled { opacity: .5; cursor: default; }
+.studio-review-body button:focus-visible, .studio-review-body summary:focus-visible { outline: 2px solid var(--accent, var(--color-primary)); outline-offset: 2px; }
+.studio-review-body details { margin: 12px 0; }
+.studio-review-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.studio-review-body .error { color: var(--error, var(--color-danger)); }
+.studio-review-panel [hidden] { display: none !important; }
+@media (pointer: coarse) { .studio-review-body button { min-height: 44px; } }

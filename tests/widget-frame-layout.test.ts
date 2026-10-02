@@ -35,7 +35,7 @@ describe("both widgets follow the host's container", () => {
     ["strudel-app.ts", STRUDEL],
   ] as const) {
     it(`${label} declares the display modes it supports`, () => {
-      expect(source).toContain('{ availableDisplayModes: ["inline", "fullscreen"] }');
+      expect(source).toContain('availableDisplayModes: ["inline", "fullscreen"]');
     });
 
     it(`${label} re-derives its height on display-mode and container changes`, () => {

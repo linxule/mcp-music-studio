@@ -1,5 +1,7 @@
 import { bindSourceLink } from "./source-link.js";
-import { installStudioBridge } from "./studio-session";
+import { createStudioSession, installStudioBridge } from "./studio-session";
+import { registerStudioAppTools } from "./studio-app-tools";
+import { installStudioReviewPanel } from "./studio-review-panel";
 /**
  * @file Sheet Music App — renders ABC notation with abcjs, multi-instrument audio,
  *       style presets, note highlighting, and playback controls.
@@ -1877,7 +1879,7 @@ async function renderAbc(
 // refuse to switch a view into one it didn't list.
 const app = new App(
   { name: "Music Studio", version: VERSION },
-  { availableDisplayModes: ["inline", "fullscreen"] },
+  { availableDisplayModes: ["inline", "fullscreen"], tools: { listChanged: true } },
 );
 appInstance = app;
 
@@ -1911,7 +1913,7 @@ app.ontoolinput = (params) => {
   void applyScoreInput(args, { autoplay: true, permit }).catch(console.error);
 };
 
-async function applyScoreInput(args: Record<string, unknown>, transport: RenderTransport, instrumentOverride = false) {
+async function applyScoreInput(args: Record<string, unknown>, transport: RenderTransport, instrumentOverride = false, onCommit?: () => void) {
   cancelPartialRender();
   const preparedInput = prepareToolInput(args);
   // A new tool call replaces the previous one's transposition caveat, if any.
@@ -1946,6 +1948,7 @@ async function applyScoreInput(args: Record<string, unknown>, transport: RenderT
     // edit bookkeeping so the next user edit is reported to the model.
     cancelEditRender();
     syncEditor(abc);
+    onCommit?.();
     lastEditRendered = abc;
     lastEditReported = abc;
     setEditorMessage(null, "error");
@@ -2066,6 +2069,7 @@ app.ontoolcancelled = (params) => {
 // continuation, including ones whose generation is still current.
 app.onteardown = () => {
   disposed = true;
+  studioSession.dispose();
   newGeneration();
   cancelPartialRender();
   // A pending edit render must not fire into a discarded widget.
@@ -2106,7 +2110,7 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
 
 app.onhostcontextchanged = handleHostContextChanged;
 
-app.connect().then(() => {
+function onMusicAppConnected() {
   // Gate the download button on host capability — Claude mobile lacks
   // downloadFile, so calling it returns -32601. Hide the button there.
   downloadSupported = Boolean(app.getHostCapabilities()?.downloadFile);
@@ -2139,13 +2143,13 @@ app.connect().then(() => {
   if (ctx) {
     handleHostContextChanged(ctx);
   }
-});
+}
 
 // Source access uses the host link API inside sandboxed MCP widgets.
 bindSourceLink(app);
 
 let studioEmptyTransport = { warp: 100, loop: false };
-installStudioBridge({
+const studioSession = createStudioSession({
   read: () => {
     const started = state.synthControl ? readTransport(state.synthControl).wasPlaying : false;
     const status = statusEl.textContent ?? "";
@@ -2171,7 +2175,9 @@ installStudioBridge({
       },
     };
   },
-  apply: async (args, settings) => {
+  apply: async (args, settings, isCancelled, onCommit) => {
+    // Score source/settings commit synchronously, before audio preparation.
+    if (isCancelled?.()) throw new Error("The review request changed. Review the current question before applying.");
     if (typeof settings?.soundFont === "string" && settings.soundFont in SOUNDFONTS) {
       state.currentSoundFont = settings.soundFont as SoundFontName;
       soundFontSelect.value = state.currentSoundFont;
@@ -2192,13 +2198,14 @@ installStudioBridge({
       syncEditor(""); state.currentAbc = ""; sheetMusicEl.replaceChildren(); renderTitle();
       setEditorMessage(null, "error");
       setStatus("Enter ABC notation");
+      onCommit?.();
       return;
     }
     const override = settings?.instrumentOverride === true;
     await applyScoreInput(args, {
       autoplay: false,
       carry: { wasPlaying: false, wasLooping: settings?.loop === true, warp: typeof args.tempo === "number" ? 100 : Number(settings?.warp ?? 100) },
-    }, override);
+    }, override, onCommit);
   },
   play: async (isCancelled) => {
     // A blank draft must never play the last successfully rendered score.
@@ -2234,7 +2241,11 @@ installStudioBridge({
     stopPlayback();
     setStatus("Stopped");
   },
-});
+}, { mode: "score" });
+registerStudioAppTools(app, studioSession);
+installStudioBridge(studioSession);
+installStudioReviewPanel(app, studioSession);
+void app.connect().then(onMusicAppConnected).catch(console.error);
 
 // The local webpage has room to show the source from the outset, without
 // taking keyboard focus away from the host navigation.

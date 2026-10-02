@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 // Execute the actual local adapter with controllable audio promises. The
 // browser-only module cannot be imported into Vitest's Node environment.
 const source = readFileSync(new URL("../src/mcp-app.ts", import.meta.url), "utf8");
-const adapter = source.slice(source.indexOf("installStudioBridge({"));
+const adapter = source.slice(source.indexOf("const studioSession = createStudioSession({"));
 const playBody = adapter.slice(adapter.indexOf("  play: async (isCancelled) => {") + "  play: async (isCancelled) => {".length, adapter.indexOf("\n  stop: () => {")).replace(/\n  },\s*$/, "");
 
 function fixture(draft = "X:1\nK:C\nCDEF|") {

@@ -1,6 +1,7 @@
 import { AppBridge, PostMessageTransport } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { StudioCommand, StudioSnapshot } from '../src/studio-session';
 import type { StudioMode } from '../src/studio-review';
+import { createStudioClient } from './studio-client';
 
 type Snapshot = StudioSnapshot & { revision: number };
 /** A disposable player: its editor, runtime and history are separate from the draft. */
@@ -21,15 +22,7 @@ export function createAudition(host: HTMLElement, mode: StudioMode) {
   }, { hostContext: { theme: 'light', displayMode: 'inline', availableDisplayModes: ['inline'], containerDimensions: { width: host.clientWidth, height: 480 } } });
   bridge.oninitialized = () => { clearTimeout(timer); finish(); };
   bridge.onupdatemodelcontext = async () => ({});
-  const pending = new Map<string, { resolve: (value: Snapshot) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
-  function receive(event: MessageEvent) {
-    if (event.source !== frame.contentWindow || event.data?.channel !== 'music-studio-local-result') return;
-    const waiter = pending.get(event.data.id);
-    if (!waiter) return;
-    clearTimeout(waiter.timer); pending.delete(event.data.id);
-    if (event.data.error) waiter.reject(new Error(event.data.error)); else waiter.resolve(event.data.state);
-  }
-  window.addEventListener('message', receive);
+  const client = createStudioClient(bridge, mode);
   const ready = (async () => {
     await bridge.connect(new PostMessageTransport(frame.contentWindow!, frame.contentWindow!));
     if (disposed) throw new Error('Preview closed.');
@@ -40,12 +33,7 @@ export function createAudition(host: HTMLElement, mode: StudioMode) {
   async function request(command: StudioCommand): Promise<Snapshot> {
     await ready;
     if (disposed) throw new Error('Preview closed.');
-    return new Promise((resolve, reject) => {
-      const id = crypto.randomUUID();
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error('Preview did not respond. Try again.')); }, 30_000);
-      pending.set(id, { resolve, reject, timer });
-      frame.contentWindow!.postMessage({ channel: 'music-studio-local', id, command }, '*');
-    });
+    return client.request(command);
   }
   return {
     async load(args: Record<string, unknown>, settings?: Record<string, unknown>) {
@@ -58,11 +46,7 @@ export function createAudition(host: HTMLElement, mode: StudioMode) {
       clearTimeout(timer);
       fail(new Error('Preview closed.'));
       // Removing the browsing context also ends its audio, including late loads.
-      frame.contentWindow?.postMessage({ channel: 'music-studio-local', id: crypto.randomUUID(), command: { action: 'stop' } }, '*');
       frame.remove();
-      window.removeEventListener('message', receive);
-      for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error('Preview closed.')); }
-      pending.clear();
       void bridge.close().catch(() => {});
     },
   };

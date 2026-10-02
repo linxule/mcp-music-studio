@@ -26,6 +26,7 @@
     </div>
     <section class="review-panel" aria-labelledby="review-title">
       <div class="review-heading"><h2 id="review-title" tabindex="-1">Work on a passage</h2></div>
+      <label for="passage-question">Ask about this passage</label><textarea id="passage-question" class="review-question" rows="2">Explain this passage and suggest one small musical change.</textarea>
       <p id="review-empty" class="review-intro">Select music in the editor, then share it with your agent. Explanations and suggested edits appear here.</p>
       <p id="review-status" role="status"></p>
       <div id="review-content" hidden>
@@ -33,7 +34,7 @@
           <section><h3 id="passage-label">Selected passage</h3><pre id="selected-passage" tabindex="0" aria-label="Selected passage"></pre><p id="review-explanation" class="review-explanation"></p></section>
           <section id="suggestion" hidden><h3>Proposed edit</h3><pre id="proposed-passage" tabindex="0" aria-label="Proposed edit"></pre><div class="review-actions"><button id="hear-suggestion">Preview in context</button><button id="apply-suggestion">Apply edit</button></div></section>
         </div>
-        <details id="chat-handoff" class="chat-handoff"><summary>Copy for chat</summary><label for="passage-question">Ask about this passage</label><textarea id="passage-question" rows="2">Explain this passage and suggest one small musical change.</textarea><button id="copy-passage">Copy passage and question</button><p id="copy-status" role="status"></p><label for="copy-fallback" id="copy-fallback-label" hidden>Copy this text manually</label><textarea id="copy-fallback" rows="6" readonly hidden></textarea></details>
+        <details id="chat-handoff" class="chat-handoff"><summary>Copy for chat</summary><button id="copy-passage">Copy passage and question</button><p id="copy-status" role="status"></p><label for="copy-fallback" id="copy-fallback-label" hidden>Copy this text manually</label><textarea id="copy-fallback" rows="6" readonly hidden></textarea></details>
         <div class="review-options"><details id="manual-edit"><summary>Try your own edit</summary><label for="replacement">Replace the selected text with</label><textarea id="replacement" spellcheck="false" rows="5"></textarea><button id="try-edit">Review this edit</button></details><button id="dismiss-suggestion">Clear review</button></div>
       </div>
       <section id="audition" hidden aria-label="Audition proposed edit"><div class="review-heading"><p>Preview · your draft stays unchanged</p><button id="stop-preview">Close preview</button></div><div id="audition-player"></div></section>

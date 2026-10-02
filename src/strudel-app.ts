@@ -1,5 +1,7 @@
 import { bindSourceLink } from "./source-link.js";
-import { installStudioBridge } from "./studio-session";
+import { createStudioSession, installStudioBridge } from "./studio-session";
+import { registerStudioAppTools } from "./studio-app-tools";
+import { installStudioReviewPanel } from "./studio-review-panel";
 import { installStrudelCompanion } from "./studio-strudel-companion";
 // =============================================================================
 // Strudel ext-apps client — uses @strudel/repl with layout fixes
@@ -68,7 +70,7 @@ const STRUDEL_CDN = "https://unpkg.com/@strudel/repl@1.3.0";
 // refuse to switch a view into one it didn't list.
 const app = new App(
   { name: "Strudel Live Pattern", version: VERSION },
-  { availableDisplayModes: ["inline", "fullscreen"] },
+  { availableDisplayModes: ["inline", "fullscreen"], tools: { listChanged: true } },
 );
 
 const playBtn = document.getElementById("play-btn") as HTMLButtonElement;
@@ -2742,7 +2744,7 @@ function startStreamingBoot(): Promise<void> {
  * @param permit a tool call's autoplay also waits for this: false when the
  *   host rebuilt a widget this view already autoplayed in (src/view-memory.ts).
  */
-async function renderPattern(args: Record<string, unknown>, permit?: Promise<boolean>, canReplace?: () => boolean) {
+async function renderPattern(args: Record<string, unknown>, permit?: Promise<boolean>, canReplace?: () => boolean, onCommit?: () => void) {
   const code = args.code as string | undefined;
   if (!code) return;
 
@@ -2752,11 +2754,16 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
   const pressesAtRender = playPresses;
   const superseded = () => generation !== renderGeneration;
 
-  lastRenderArgs = args;
   const bpm = args.bpm as number | undefined;
   const autoplay = args.autoplay as boolean | undefined;
-  pendingTheme = typeof args.theme === "string" ? args.theme : undefined;
-  setPatternTitle(args.title);
+  const commitMetadata = () => {
+    lastRenderArgs = args;
+    pendingTheme = typeof args.theme === "string" ? args.theme : undefined;
+    setPatternTitle(args.title);
+  };
+  // Native/local edits commit source and musical settings together, after the
+  // live-buffer guard. Ordinary tool rendering retains its existing timing.
+  if (!canReplace) commitMetadata();
 
   try {
     setStatus("Loading Strudel...");
@@ -2777,15 +2784,14 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
     if (superseded()) return;
 
     let finalCode = code;
-    sentCode = code;
-    runtimeCps = null;
+    let nextRuntimeCps: number | null = null;
     if (bpm) {
       const tempo = injectTempo(finalCode, bpm);
       finalCode = tempo.code;
       // String compare, so this still builds against a tempo.ts whose policy
       // union predates the branch.
       if ((tempo.policy as string) === "unchanged-ambiguous") {
-        runtimeCps = tempo.cps;
+        nextRuntimeCps = tempo.cps;
       }
     }
     // Fold in the `visuals` preset AFTER the tempo injection, so a Hydra recipe
@@ -2793,18 +2799,24 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
     // Reduced motion drops the Hydra presets (a WebGL shader is exactly the
     // continuous animation that setting is asking us not to start).
     const reduced = prefersReducedMotion();
-    hydraPresetSkippedForMotion =
+    const skippedForMotion =
       reduced && typeof args.visuals === "string" && args.visuals.startsWith("hydra-");
     finalCode = applyVisualPreset(finalCode, args.visuals, { allowHydra: !reduced });
-    currentCode = finalCode;
-    pendingPartialCode = "";
+    const commitSource = () => {
+      sentCode = code;
+      runtimeCps = nextRuntimeCps;
+      hydraPresetSkippedForMotion = skippedForMotion;
+      currentCode = finalCode;
+      pendingPartialCode = "";
+      stageVisuals(finalCode);
+    };
 
     // Auto-reveal the visuals when the pattern includes a viz method, unless the
     // user has taken manual control of the "Visuals" toggle. (stageVisuals also
     // runs from the evaluate hook, so a Ctrl+Enter on hand-edited code stages
     // too; doing it here as well keeps autoplay:false patterns showing the
     // backdrop they asked for.)
-    stageVisuals(finalCode);
+    if (!canReplace) commitSource();
 
     setStatus("Initializing...");
     const editor = await prepareEditor();
@@ -2815,8 +2827,15 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
       return;
     }
 
+    if (canReplace) {
+      commitMetadata();
+      commitSource();
+      applyEditorTheme(editor, pendingTheme);
+    }
+
     editor.setCode(finalCode);
     lastProgrammaticCode = finalCode;
+    onCommit?.();
 
     // Enable recording once pattern is loaded
     recordBtn.disabled = false;
@@ -3347,6 +3366,7 @@ app.onteardown = () => {
   try {
     session?.stop();
     session = null;
+    studioSession.dispose();
     // Invalidate any in-flight render/boot so a late `await` can't repopulate
     // the DOM of a widget the host has already discarded.
     renderGeneration++;
@@ -3438,6 +3458,70 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
 
 app.onhostcontextchanged = handleHostContextChanged;
 
+// Source access uses the host link API inside sandboxed MCP widgets.
+bindSourceLink(app);
+
+const studioSession = createStudioSession({
+  read: () => ({
+    args: {
+      // Read the LIVE buffer, including edits not evaluated yet.
+      code: getEditor()?.code ?? currentCode,
+      title: titleEl.textContent ?? "",
+      ...(runtimeCps !== null ? { bpm: runtimeCps * 240 } : {}),
+      ...(pendingTheme ? { theme: pendingTheme } : {}),
+    },
+    selection: (() => {
+      const range = getEditor()?.editor?.state?.selection?.main;
+      const from = range?.from ?? 0;
+      const to = range?.to ?? from;
+      return { from, to, text: (getEditor()?.code ?? currentCode).slice(from, to) };
+    })(),
+    playback: currentPlaybackState(),
+    status: statusEl.textContent ?? "",
+    error: statusEl.classList.contains("error") ? statusEl.textContent : null,
+  }),
+  apply: async (args, _settings, isCancelled, onCommit) => {
+    if (isCancelled?.()) throw new Error("The review request changed. Review the current question before applying.");
+    // A replacement is staged stopped; Play is a separate, explicit action.
+    if (isRecording) stopRecording();
+    getEditor()?.stop?.();
+    updatePlayState(false);
+    const before = getLiveCode();
+    if (args.code === "") {
+      renderGeneration++;
+      getEditor()?.setCode(""); currentCode = "";
+      runtimeCps = null;
+      pendingTheme = typeof args.theme === "string" ? args.theme : undefined;
+      setPatternTitle(args.title);
+      if (getEditor()) applyEditorTheme(getEditor(), pendingTheme);
+      setStatus("Enter a Strudel pattern");
+      onCommit?.();
+      return;
+    }
+    await renderPattern({ ...args, autoplay: false }, undefined, () => !isCancelled?.() && getLiveCode() === before, onCommit);
+  },
+  play: async () => {
+    const editor = getEditor();
+    if (!editor) throw new Error("The editor has not loaded yet.");
+    playPresses++;
+    void ensureAudioRunning();
+    await editor.evaluate(true);
+  },
+  stop: () => {
+    companion?.stop();
+    renderGeneration++;
+    playPresses++;
+    if (isRecording) stopRecording();
+    getEditor()?.stop?.();
+    updatePlayState(false);
+    scheduleStateReport();
+    setStatus("Stopped");
+  },
+}, { mode: "live" });
+registerStudioAppTools(app, studioSession);
+installStudioBridge(studioSession);
+installStudioReviewPanel(app, studioSession);
+
 // Connect, then read host capabilities and gate features accordingly.
 app.connect().then(() => {
   const caps = app.getHostCapabilities();
@@ -3463,64 +3547,6 @@ app.connect().then(() => {
   if (ctx) {
     handleHostContextChanged(ctx);
   }
-});
-
-// Source access uses the host link API inside sandboxed MCP widgets.
-bindSourceLink(app);
-
-installStudioBridge({
-  read: () => ({
-    args: {
-      // Read the LIVE buffer, including edits not evaluated yet.
-      code: getEditor()?.code ?? currentCode,
-      title: titleEl.textContent ?? "",
-      ...(runtimeCps !== null ? { bpm: runtimeCps * 240 } : {}),
-      ...(pendingTheme ? { theme: pendingTheme } : {}),
-    },
-    selection: (() => {
-      const range = getEditor()?.editor?.state?.selection?.main;
-      const from = range?.from ?? 0;
-      const to = range?.to ?? from;
-      return { from, to, text: (getEditor()?.code ?? currentCode).slice(from, to) };
-    })(),
-    playback: currentPlaybackState(),
-    status: statusEl.textContent ?? "",
-    error: statusEl.classList.contains("error") ? statusEl.textContent : null,
-  }),
-  apply: async (args) => {
-    // A replacement is staged stopped; Play is a separate, explicit action.
-    if (isRecording) stopRecording();
-    getEditor()?.stop?.();
-    updatePlayState(false);
-    const before = getEditor()?.code;
-    if (args.code === "") {
-      renderGeneration++;
-      getEditor()?.setCode(""); currentCode = "";
-      pendingTheme = typeof args.theme === "string" ? args.theme : undefined;
-      setPatternTitle(args.title);
-      if (getEditor()) applyEditorTheme(getEditor(), pendingTheme);
-      setStatus("Enter a Strudel pattern");
-      return;
-    }
-    await renderPattern({ ...args, autoplay: false }, undefined, () => getEditor()?.code === before || before === undefined);
-  },
-  play: async () => {
-    const editor = getEditor();
-    if (!editor) throw new Error("The editor has not loaded yet.");
-    playPresses++;
-    void ensureAudioRunning();
-    await editor.evaluate(true);
-  },
-  stop: () => {
-    companion?.stop();
-    renderGeneration++;
-    playPresses++;
-    if (isRecording) stopRecording();
-    getEditor()?.stop?.();
-    updatePlayState(false);
-    scheduleStateReport();
-    setStatus("Stopped");
-  },
 });
 
 if (document.documentElement.dataset.audition) container.inert = true;

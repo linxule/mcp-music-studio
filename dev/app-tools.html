@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Music Studio app tools verification</title>
+    <link rel="stylesheet" href="/app-tools.css" />
+  </head>
+  <body>
+    <header>
+      <h1>App tools verification</h1>
+      <p>Two independent built widgets, stopped seeds, real MCP Apps tools. Edit inside either widget, then Read to inspect its unsaved source.</p>
+      <div class="toolbar">
+        <label>Mode <select id="mode"><option value="live">Live</option><option value="score">Score</option></select></label>
+        <button id="mount-both">Remount both with stopped seeds</button>
+        <button id="wrong-instance">Send B instance ID to A (expect rejection)</button>
+        <button id="remount-a">Remount A; retain old instance ID</button>
+        <button id="old-instance">Write to A with old instance ID (expect rejection)</button>
+        <button id="score-settings-replacement" hidden>Check score settings replacement</button>
+        <button id="clear-log">Clear log</button>
+      </div>
+      <p class="note">Sandbox: allow-scripts allow-downloads. No same-origin or autoplay delegation. This local harness does not apply the production resource CSP. Every Play is explicit.</p>
+      <p id="summary" role="status">Mounting…</p>
+    </header>
+    <main id="panes"></main>
+    <section class="log-section">
+      <h2>Request outcomes</h2>
+      <p>Capture write → edit the widget itself → Attempt captured write checks a stale revision without overwriting the human edit. Remount A → old-instance write checks mount identity.</p>
+      <p>Review demo: begin a question in the embedded panel → capture current review → change the question there → inject captured old answer → stage a current proposal → use the panel's Apply edit and Undo edit. Every answer uses real native app tools.</p>
+      <pre id="log" aria-live="polite"></pre>
+    </section>
+    <script type="module" src="/app-tools.ts"></script>
+  </body>
+</html>
