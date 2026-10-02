@@ -61,11 +61,18 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    // node_modules may be a symlink to node_modules.nosync (iCloud skips
+    // *.nosync). Resolved paths then lack "/node_modules/", so Vitest inlined
+    // what it used to load natively and abcjs got two copies of its
+    // sounds-cache singleton (tests/soundfont-cache.test.ts caught it).
+    deps: { moduleDirectories: ["/node_modules/", "/node_modules.nosync/"] },
     server: {
       // Externalized deps are loaded by Node directly, which bypasses the
       // @kabelsalat/web alias above. Process the Strudel packages through Vite
       // so the alias (and its ESM entry) actually applies.
-      deps: { inline: [/@strudel\//, /@kabelsalat\//] },
+      deps: {
+        inline: [/@strudel\//, /@kabelsalat\//],
+      },
     },
   },
 });
