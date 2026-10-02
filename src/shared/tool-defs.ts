@@ -35,13 +35,23 @@ import { GALLERY_IDS, STRUDEL_GALLERY } from "../strudel-gallery.js";
 // @cloudflare/workers-types, and the validator reaches node:child_process and
 // node:vm (see strudel-validate-host.ts) — neither of which exists in workerd.
 import type { StrudelValidation } from "./strudel-validation-types.js";
+import { VERSION } from "../version.js";
 
 // -----------------------------------------------------------------------------
 // Resource URIs
 // -----------------------------------------------------------------------------
 
-export const SHEET_RESOURCE_URI = "ui://sheet-music/mcp-app.html";
-export const STRUDEL_RESOURCE_URI = "ui://strudel/strudel-app.html";
+/**
+ * Versioned per release, in the PATH. Hosts MAY cache a UI resource by its URI
+ * (ext-apps spec), and claude.ai kept serving a pre-0.9 widget after 0.9
+ * shipped ("tilt is not defined", 2026-10-02): a new URI per release is a new
+ * cache entry. The unversioned URIs stay registered as aliases (same HTML), so
+ * a host holding a stale tool listing still resolves something current.
+ */
+export const SHEET_RESOURCE_URI = `ui://sheet-music/${VERSION}/mcp-app.html`;
+export const STRUDEL_RESOURCE_URI = `ui://strudel/${VERSION}/strudel-app.html`;
+export const LEGACY_SHEET_RESOURCE_URI = "ui://sheet-music/mcp-app.html";
+export const LEGACY_STRUDEL_RESOURCE_URI = "ui://strudel/strudel-app.html";
 
 // -----------------------------------------------------------------------------
 // Server-level guidance (flow hint for the model)

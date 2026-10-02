@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "../server";
+import { SHEET_RESOURCE_URI, STRUDEL_RESOURCE_URI } from "../src/shared/tool-defs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
@@ -234,8 +235,9 @@ describe("tools/list per render mode", () => {
       const probe = new Client({ name: "probe", version: "1.0.0" });
       await Promise.all([probe.connect(c), server.server.connect(s)]);
       const uris = (await probe.listResources()).resources.map((r) => r.uri);
-      expect(uris, mode).toContain("ui://sheet-music/mcp-app.html");
-      expect(uris, mode).toContain("ui://strudel/strudel-app.html");
+      for (const uri of [SHEET_RESOURCE_URI, STRUDEL_RESOURCE_URI, "ui://sheet-music/mcp-app.html", "ui://strudel/strudel-app.html"]) {
+        expect(uris, mode).toContain(uri);
+      }
       await probe.close();
       await server.close();
     }

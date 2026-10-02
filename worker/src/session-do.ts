@@ -11,6 +11,9 @@
 //   model   POST update  → queue a pattern, wake the poll, and wait (≤ 9 s) for
 //                          the widget's "applied" so the tool result can say
 //                          whether it ran
+//   widget  POST end     → the listener closed the session (End session): wake
+//                          every listener, fail waiting updates, answer later
+//                          polls/events 410, delete everything 10 min later
 //
 // Plain fetch() + HTTPS long-polling rather than WebSockets on purpose: the
 // widget's CSP connect-src is proven to reach this origin over https (say()
@@ -19,7 +22,8 @@
 // A session exists only after `init` (minted by play-live-pattern or
 // POST /session/new): every other request to an unknown id answers 404 and
 // writes nothing, so guessing ids cannot create storage. An alarm deletes
-// everything after SESSION_IDLE_TTL_MS without activity.
+// everything after SESSION_IDLE_TTL_MS without activity (SESSION_ENDED_TTL_MS
+// after an end).
 //
 // A plain class (no `cloudflare:workers` import) so tests drive it with a fake
 // state; workerd accepts it as a Durable Object class all the same.
@@ -29,13 +33,15 @@ import {
   appendEvents,
   coerceEvents,
   describeSession,
+  endSession,
   estimatedCycle,
   newSession,
   nextBoundary,
   queuePattern,
   recordHeartbeat,
   SESSION_ID_RE,
-  SESSION_IDLE_TTL_MS,
+  sessionExpiresAt,
+  widgetVersion,
   SESSION_MAX_CODE_CHARS,
   SESSION_SWAP_LEAD_S,
   isHumanEvent,
@@ -48,6 +54,7 @@ import {
   type SessionEvent,
 } from "../../src/shared/session.js";
 import type { SessionUpdateOutcome } from "../../src/shared/session-tools.js";
+import { VERSION } from "../../src/version.js";
 
 export interface SessionStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -77,6 +84,14 @@ export const EVENTS_MAX_BYTES = 256 * 1024;
 export const UPDATE_MAX_BYTES = SESSION_MAX_CODE_CHARS * 4 + 1024;
 
 type Applied = Extract<SessionEvent, { t: "applied" }>;
+type Scheduled = Extract<SessionEvent, { t: "scheduled" }>;
+/**
+ * When nobody answered, the server's own guess at the landing bar errs LATE:
+ * the player hears the update a poll round-trip later and decides with its
+ * own (audible) clock, so add this much on top of the swap lead.
+ */
+export const SERVER_ETA_MARGIN_S = 1.5;
+type WakeReason = "pass" | "activity" | "ended";
 
 const json = (body: unknown, status = 200, listening?: boolean): Response =>
   new Response(JSON.stringify(body), {
@@ -100,8 +115,10 @@ export class JamSession {
   private data: SessionData | null | undefined = undefined;
   private pollWaiters = new Set<(p: QueuedPattern | null) => void>();
   private ackWaiters = new Map<number, Array<(e: Applied) => void>>();
+  /** update-session calls waiting to hear which bar the player picked. */
+  private schedWaiters = new Map<number, Array<(e: Scheduled) => void>>();
   /** get-session(wait) calls holding for the listener. */
-  private listeners = new Set<{ mode: ListenMode; wake: (why: "pass" | "activity") => void }>();
+  private listeners = new Set<{ mode: ListenMode; wake: (why: WakeReason) => void }>();
 
   /** Is the model waiting for the listener right now? (The widget's Pass skips the chat then.) */
   private get listening(): boolean {
@@ -132,9 +149,10 @@ export class JamSession {
     if (!this.data) return;
     this.persistedAt = this.now();
     await this.state.storage.put("data", this.data);
-    const due = this.data.lastActivity + SESSION_IDLE_TTL_MS;
+    const due = sessionExpiresAt(this.data);
     const alarm = await this.state.storage.getAlarm();
-    if (alarm === null || alarm < due - 60_000) await this.state.storage.setAlarm(due);
+    // An end moves the deadline EARLIER (10 min), so re-arm in both directions.
+    if (alarm === null || alarm < due - 60_000 || alarm > due + 60_000) await this.state.storage.setAlarm(due);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -159,6 +177,31 @@ export class JamSession {
 
     const data = await this.load();
     if (!data) return json({ error: "unknown session" }, 404);
+    const ended = typeof data.endedAt === "number";
+
+    if (op === "end" && request.method === "POST") {
+      let cycle: unknown = null;
+      try {
+        cycle = ((await readJson(request, 4096)) as { cycle?: unknown } | null)?.cycle ?? null;
+      } catch { /* an end without a cycle */ }
+      if (!endSession(data, cycle, now)) return json({ ok: true, ended: true, already: true });
+      // Everyone waiting hears it now, not at their deadline.
+      for (const listener of [...this.listeners]) listener.wake("ended");
+      this.schedWaiters.clear();
+      for (const [rev, waiters] of [...this.ackWaiters]) {
+        this.ackWaiters.delete(rev);
+        const failed: Applied = { seq: 0, at: now, t: "applied", rev, ok: false, cycle: null, error: "the listener ended the session" };
+        waiters.forEach((w) => w(failed));
+      }
+      this.releasePolls();
+      await this.save();
+      return json({ ok: true, ended: true });
+    }
+
+    // Closed: the players (and any second screen) stop; nothing more is logged.
+    if (ended && (op === "events" || op === "next" || op === "current")) {
+      return json({ error: "session ended" }, 410);
+    }
 
     if (op === "events" && request.method === "POST") {
       let raw: unknown;
@@ -176,6 +219,11 @@ export class JamSession {
         else if (listener.mode === "activity" && added.some(isHumanEvent)) listener.wake("activity");
       }
       for (const e of added) {
+        if (e.t === "scheduled") {
+          const waiters = this.schedWaiters.get(e.rev);
+          waiters?.forEach((w) => w(e));
+          continue;
+        }
         if (e.t !== "applied") continue;
         if (e.ok && e.cycle === null) {
           // A stopped player's answer: give a playing one a moment to beat it.
@@ -219,6 +267,7 @@ export class JamSession {
         this.pollWaiters.add(resolve);
         return () => this.pollWaiters.delete(resolve);
       }, wait, request.signal);
+      if (typeof data.endedAt === "number") return json({ error: "session ended" }, 410);
       return pattern
         ? json(pattern, 200, this.listening)
         : new Response(null, { status: 204, headers: { "cache-control": "no-store", "x-session-listening": this.listening ? "1" : "0" } });
@@ -241,7 +290,7 @@ export class JamSession {
 
     if (op === "state" && request.method === "GET") {
       const mode = url.searchParams.get("wait");
-      if (mode === "pass" || mode === "activity") {
+      if ((mode === "pass" || mode === "activity") && !ended) {
         const fresh = data.events.filter((e) => e.seq > data.readSeq);
         const ready = mode === "pass" ? fresh.some((e) => e.t === "pass") : fresh.some(isHumanEvent);
         if (!ready && this.listeners.size >= MAX_LISTENERS) {
@@ -256,13 +305,15 @@ export class JamSession {
           const after = (await this.load()) ?? null;
           if (!after) return json({ error: "unknown session" }, 404);
           const head =
-            why === null
-              ? `Still listening — the listener did nothing ${mode === "pass" ? "that passes the turn " : ""}for ${Math.round(timeout / 1000)} s. ` +
-                "Call get-session with wait again to keep listening, or update-session to play something.\n"
-              : why === "pass"
-                ? "The listener passed the turn to you.\n"
-                : "The listener is playing:\n";
-          const text = head + describeSession(after, this.now(), after.readSeq);
+            why === "ended"
+              ? "The listener ended the session.\n"
+              : why === null
+                ? `Still listening — the listener did nothing ${mode === "pass" ? "that passes the turn " : ""}for ${Math.round(timeout / 1000)} s. ` +
+                  "Call get-session with wait again to keep listening, or update-session to play something.\n"
+                : why === "pass"
+                  ? "The listener passed the turn to you.\n"
+                  : "The listener is playing:\n";
+          const text = head + describeSession(after, this.now(), after.readSeq, VERSION);
           after.readSeq = after.seq;
           after.lastActivity = this.now();
           await this.save();
@@ -270,7 +321,7 @@ export class JamSession {
         }
       }
       const since = data.readSeq;
-      const text = describeSession(data, now, since);
+      const text = describeSession(data, now, since, VERSION);
       if (url.searchParams.get("peek") !== "1") data.readSeq = data.seq;
       data.lastActivity = now;
       await this.save();
@@ -278,6 +329,7 @@ export class JamSession {
     }
 
     if (op === "update" && request.method === "POST") {
+      if (ended) return json({ error: "session ended" }, 410);
       let raw: { code?: unknown; quantize?: unknown } | null;
       try {
         raw = (await readJson(request, UPDATE_MAX_BYTES)) as typeof raw;
@@ -310,20 +362,40 @@ export class JamSession {
       const widgetSeenMsAgo = hb ? now - hb.at : null;
       const estCycle = estimatedCycle(hb, now);
       const boundary =
-        estCycle === null ? null : nextBoundary(estCycle, pattern.quantize, SESSION_SWAP_LEAD_S * (hb?.cps ?? 0.5));
+        estCycle === null
+          ? null
+          : nextBoundary(estCycle, pattern.quantize, (SESSION_SWAP_LEAD_S + SERVER_ETA_MARGIN_S) * (hb?.cps ?? 0.5));
       let applied: Applied | null = null;
+      let scheduled: Scheduled | null = null;
       // Only wait for a player that is actually there.
       if (widgetSeenMsAgo !== null && widgetSeenMsAgo <= 60_000) {
-        applied = await this.waitFor<Applied>((resolve) => {
+        const deadline = now + ACK_WAIT_MS;
+        const answer = await this.waitFor<Applied | Scheduled>((resolve) => {
           const list = this.ackWaiters.get(pattern.rev) ?? [];
           list.push(resolve);
           this.ackWaiters.set(pattern.rev, list);
+          // The player says which bar it picked: if that bar comes before our
+          // deadline, keep waiting for "applied"; if not, answer with it now.
+          const onScheduled = (e: Scheduled) => {
+            scheduled = e;
+            const cps = data.heartbeat?.cps ?? null;
+            const est = estimatedCycle(data.heartbeat, this.now());
+            const etaMs = cps && est !== null ? ((e.boundary - est) / cps) * 1000 : Infinity;
+            if (this.now() + etaMs + 1000 > deadline) resolve(e);
+          };
+          const sched = this.schedWaiters.get(pattern.rev) ?? [];
+          sched.push(onScheduled);
+          this.schedWaiters.set(pattern.rev, sched);
           return () => {
             const rest = (this.ackWaiters.get(pattern.rev) ?? []).filter((w) => w !== resolve);
             if (rest.length) this.ackWaiters.set(pattern.rev, rest);
             else this.ackWaiters.delete(pattern.rev);
+            const restS = (this.schedWaiters.get(pattern.rev) ?? []).filter((w) => w !== onScheduled);
+            if (restS.length) this.schedWaiters.set(pattern.rev, restS);
+            else this.schedWaiters.delete(pattern.rev);
           };
         }, ACK_WAIT_MS, request.signal);
+        if (answer?.t === "applied") applied = answer;
       }
       const outcome: SessionUpdateOutcome = {
         pattern: { ...pattern, code: "" },
@@ -332,6 +404,8 @@ export class JamSession {
         estCycle,
         boundary,
         cps: hb?.cps ?? null,
+        widget: widgetVersion(data),
+        scheduled: scheduled ? { boundary: (scheduled as Scheduled).boundary } : null,
       };
       return json(outcome);
     }
@@ -340,13 +414,13 @@ export class JamSession {
   }
 
   /** Hold until the listener passes (or, for "activity", plays a little), or `ms`. */
-  private async listen(mode: ListenMode, ms: number, signal?: AbortSignal): Promise<"pass" | "activity" | null> {
+  private async listen(mode: ListenMode, ms: number, signal?: AbortSignal): Promise<WakeReason | null> {
     let settling = false;
-    const result = await this.waitFor<"pass" | "activity">((resolve) => {
+    const result = await this.waitFor<WakeReason>((resolve) => {
       const listener = {
         mode,
-        wake: (why: "pass" | "activity") => {
-          if (why === "pass") return resolve("pass");
+        wake: (why: WakeReason) => {
+          if (why === "pass" || why === "ended") return resolve(why);
           // Catch the whole phrase, not its first tap.
           if (!settling) {
             settling = true;
@@ -397,7 +471,7 @@ export class JamSession {
   async alarm(): Promise<void> {
     const data = await this.load();
     if (!data) return;
-    const due = data.lastActivity + SESSION_IDLE_TTL_MS;
+    const due = sessionExpiresAt(data);
     if (this.now() >= due) {
       await this.state.storage.deleteAll();
       this.data = null;

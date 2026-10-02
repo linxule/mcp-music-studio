@@ -27,7 +27,8 @@ export interface ApplyOutcome {
   report?: string;
 }
 
-export type SessionStatus = "connecting" | "live" | "retrying" | "parked" | "gone";
+/** "gone": expired or unknown (404); "ended": the listener closed it (End session, here or on another screen). */
+export type SessionStatus = "connecting" | "live" | "retrying" | "parked" | "gone" | "ended";
 
 export interface SessionClientEnv {
   fetch(url: string, init?: RequestInit): Promise<Response>;
@@ -231,8 +232,8 @@ export class SessionClient {
         // would be lost (Kimi review). Only small batches ride it.
         keepalive: body.length < KEEPALIVE_MAX_CHARS,
       });
-      if (res.status === 404) {
-        this.gone();
+      if (res.status === 404 || res.status === 410) {
+        this.gone(res.status === 410 ? "ended" : "gone");
         return null;
       }
       if (!res.ok) return null;
@@ -269,12 +270,43 @@ export class SessionClient {
     void this.loop(++this.loopGen);
   }
 
-  private gone(): void {
+  private gone(status: "gone" | "ended" = "gone"): void {
     if (this.stopped) return;
     this.stopped = true;
     this.poll?.abort();
-    this.env.onStatus?.("gone");
+    this.clearPassWatch();
+    this.env.onStatus?.(status);
     this.env.onGone?.();
+  }
+
+  /**
+   * The listener closes the session (End session). Sends what is still
+   * queued, then the end, then stops: no more polls or events. Resolves
+   * whether the service confirmed it (an already-closed session counts).
+   */
+  async end(cycle: number | null): Promise<boolean> {
+    if (this.stopped) return false;
+    await this.flush();
+    this.stopped = true;
+    this.poll?.abort();
+    if (this.flushTimer !== null) this.env.clearTimeout(this.flushTimer);
+    this.flushTimer = null;
+    this.queue = [];
+    this.clearPassWatch();
+    let ok = false;
+    try {
+      const res = await this.env.fetch(`${this.base}/end`, {
+        method: "POST",
+        headers: { "content-type": "text/plain;charset=UTF-8" },
+        body: JSON.stringify({ cycle }),
+        keepalive: true,
+      });
+      ok = res.ok || res.status === 404 || res.status === 410;
+    } catch {
+      ok = false;
+    }
+    this.env.onStatus?.("ended");
+    return ok;
   }
 
   private sleep(ms: number): Promise<void> {
@@ -302,7 +334,7 @@ export class SessionClient {
       // Parked (or replaced) while the reply was on its way: a queued pattern
       // stays on the server and arrives on rejoin.
       if (this.parked || gen !== this.loopGen) return;
-      if (res.status === 404) return this.gone();
+      if (res.status === 404 || res.status === 410) return this.gone(res.status === 410 ? "ended" : "gone");
       this.noteListening(res.headers?.get?.("x-session-listening"));
       if (res.status === 204) {
         this.failures = 0;

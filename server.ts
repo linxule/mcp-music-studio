@@ -32,7 +32,9 @@ import {
 import { VERSION } from "./src/version.js";
 import {
   SHEET_RESOURCE_URI,
+  LEGACY_SHEET_RESOURCE_URI,
   STRUDEL_RESOURCE_URI,
+  LEGACY_STRUDEL_RESOURCE_URI,
   SERVER_INSTRUCTIONS,
   advertiseUiExtension,
   playToolAnnotations,
@@ -371,27 +373,29 @@ export function createServer(options?: ServerOptions): McpServer {
   // ---------------------------------------------------------------------------
   // Resource: UI (bundled HTML/JS/CSS) — Sheet Music
   // ---------------------------------------------------------------------------
-  server.registerResource(
-    SHEET_RESOURCE_URI,
-    SHEET_RESOURCE_URI,
-    { mimeType: RESOURCE_MIME_TYPE, description: "Sheet Music Viewer UI" },
-    async (): Promise<ReadResourceResult> => {
-      const html = await fs.readFile(
-        path.join(DIST_DIR, "mcp-app.html"),
-        "utf-8",
-      );
-      return {
-        contents: [
-          {
-            uri: SHEET_RESOURCE_URI,
-            mimeType: RESOURCE_MIME_TYPE,
-            text: html,
-            _meta: { ui: { csp: { ...SHEET_CSP } } },
-          },
-        ],
-      };
-    },
-  );
+  for (const uri of [SHEET_RESOURCE_URI, LEGACY_SHEET_RESOURCE_URI]) {
+    server.registerResource(
+      uri,
+      uri,
+      { mimeType: RESOURCE_MIME_TYPE, description: "Sheet Music Viewer UI" },
+      async (): Promise<ReadResourceResult> => {
+        const html = await fs.readFile(
+          path.join(DIST_DIR, "mcp-app.html"),
+          "utf-8",
+        );
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: RESOURCE_MIME_TYPE,
+              text: html,
+              _meta: { ui: { csp: { ...SHEET_CSP } } },
+            },
+          ],
+        };
+      },
+    );
+  }
 
   // ===========================================================================
   // STRUDEL — Live Pattern Tool
@@ -569,27 +573,29 @@ export function createServer(options?: ServerOptions): McpServer {
   // ---------------------------------------------------------------------------
   // Resource: UI (bundled HTML/JS/CSS) — Strudel REPL
   // ---------------------------------------------------------------------------
-  server.registerResource(
-    STRUDEL_RESOURCE_URI,
-    STRUDEL_RESOURCE_URI,
-    { mimeType: RESOURCE_MIME_TYPE, description: "Strudel Live Pattern REPL" },
-    async (): Promise<ReadResourceResult> => {
-      const html = await fs.readFile(
-        path.join(DIST_DIR, "strudel-app.html"),
-        "utf-8",
-      );
-      return {
-        contents: [
-          {
-            uri: STRUDEL_RESOURCE_URI,
-            mimeType: RESOURCE_MIME_TYPE,
-            text: html,
-            _meta: { ui: { csp: { ...STRUDEL_CSP } } },
-          },
-        ],
-      };
-    },
-  );
+  for (const uri of [STRUDEL_RESOURCE_URI, LEGACY_STRUDEL_RESOURCE_URI]) {
+    server.registerResource(
+      uri,
+      uri,
+      { mimeType: RESOURCE_MIME_TYPE, description: "Strudel Live Pattern REPL" },
+      async (): Promise<ReadResourceResult> => {
+        const html = await fs.readFile(
+          path.join(DIST_DIR, "strudel-app.html"),
+          "utf-8",
+        );
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: RESOURCE_MIME_TYPE,
+              text: html,
+              _meta: { ui: { csp: { ...STRUDEL_CSP } } },
+            },
+          ],
+        };
+      },
+    );
+  }
 
   return server;
 }

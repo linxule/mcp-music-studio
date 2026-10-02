@@ -7,7 +7,14 @@ import { createServer } from "../server";
 import { createMusicServer } from "../worker/src/index";
 import { ABC_GUIDE_TOPICS } from "../src/abc-guide";
 import { STRUDEL_GUIDE_TOPICS } from "../src/strudel-guide";
-import { MUSIC_PROMPTS } from "../src/shared/tool-defs";
+import {
+  LEGACY_SHEET_RESOURCE_URI,
+  LEGACY_STRUDEL_RESOURCE_URI,
+  MUSIC_PROMPTS,
+  SHEET_RESOURCE_URI,
+  STRUDEL_RESOURCE_URI,
+} from "../src/shared/tool-defs";
+import { VERSION } from "../src/version";
 
 // =============================================================================
 // Local (stdio/HTTP) vs Cloudflare Worker parity
@@ -71,13 +78,16 @@ describe("tools/list parity", () => {
       const tools = (await client.listTools()).tools;
       const sheet = tools.find((t) => t.name === "play-sheet-music");
       const strudel = tools.find((t) => t.name === "play-live-pattern");
+      // Versioned per release: a host caching widgets by URI gets a new entry.
+      expect(SHEET_RESOURCE_URI).toBe(`ui://sheet-music/${VERSION}/mcp-app.html`);
+      expect(STRUDEL_RESOURCE_URI).toBe(`ui://strudel/${VERSION}/strudel-app.html`);
       expect(sheet?._meta).toEqual({
-        ui: { resourceUri: "ui://sheet-music/mcp-app.html" },
-        "ui/resourceUri": "ui://sheet-music/mcp-app.html",
+        ui: { resourceUri: SHEET_RESOURCE_URI },
+        "ui/resourceUri": SHEET_RESOURCE_URI,
       });
       expect(strudel?._meta).toEqual({
-        ui: { resourceUri: "ui://strudel/strudel-app.html" },
-        "ui/resourceUri": "ui://strudel/strudel-app.html",
+        ui: { resourceUri: STRUDEL_RESOURCE_URI },
+        "ui/resourceUri": STRUDEL_RESOURCE_URI,
       });
     }
   });
@@ -102,8 +112,9 @@ describe("resources/list parity", () => {
     const l = byUri((await local.listResources()).resources);
     const w = byUri((await worker.listResources()).resources);
     expect(l).toEqual(w);
-    expect(l.map((r) => r.uri)).toContain("ui://sheet-music/mcp-app.html");
-    expect(l.map((r) => r.uri)).toContain("ui://strudel/strudel-app.html");
+    for (const uri of [SHEET_RESOURCE_URI, STRUDEL_RESOURCE_URI, LEGACY_SHEET_RESOURCE_URI, LEGACY_STRUDEL_RESOURCE_URI]) {
+      expect(l.map((r) => r.uri)).toContain(uri);
+    }
     // Both guide families are mirrored as resources, one per topic — derived
     // from the topic lists so adding a topic doesn't need a test edit, but a
     // transport that forgets to mirror one still fails.
@@ -117,17 +128,19 @@ describe("resources/list parity", () => {
 
   it("serves both UI resources with the ext-apps mime type and CSP _meta", async () => {
     for (const client of [local, worker]) {
-      const sheet = await client.readResource({
-        uri: "ui://sheet-music/mcp-app.html",
-      });
+      const sheet = await client.readResource({ uri: SHEET_RESOURCE_URI });
+      // The unversioned alias serves the same, current widget.
+      const legacy = await client.readResource({ uri: LEGACY_SHEET_RESOURCE_URI });
+      expect(legacy.contents[0]?.text).toBe(sheet.contents[0]?.text);
+      expect(legacy.contents[0]?.uri).toBe(LEGACY_SHEET_RESOURCE_URI);
       expect(sheet.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
       expect(sheet.contents[0]?._meta).toEqual({
         ui: { csp: { connectDomains: ["https://paulrosen.github.io"] } },
       });
 
-      const strudel = await client.readResource({
-        uri: "ui://strudel/strudel-app.html",
-      });
+      const strudel = await client.readResource({ uri: STRUDEL_RESOURCE_URI });
+      const legacyStrudel = await client.readResource({ uri: LEGACY_STRUDEL_RESOURCE_URI });
+      expect(legacyStrudel.contents[0]?.text).toBe(strudel.contents[0]?.text);
       expect(strudel.contents[0]?.mimeType).toBe("text/html;profile=mcp-app");
       const csp = (
         strudel.contents[0]?._meta as {
