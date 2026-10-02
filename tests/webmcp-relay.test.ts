@@ -389,7 +389,7 @@ describe("relaying the real studio app tools over App/AppBridge", () => {
     const relay = createWidgetToolRelay({ bridge, modelContext: web.context, exclude: ["explain-selection", "suggest-edit"], descriptionSuffix: "This controls the music player on this page." })!;
     cleanup.push(() => relay.dispose());
     await relay.refresh();
-    expect(web.names()).toEqual(["get-studio-state", "play-current-music", "set-pattern", "stop-music", "undo-studio-edit"]);
+    expect(web.names()).toEqual(["get-studio-state", "play-current-music", "set-pattern", "stop-music", "swap-pattern", "undo-studio-edit"]);
     expect(web.tools.get("set-pattern")!.description).toMatch(/Replace this widget's Strudel source[\s\S]*\nThis controls the music player on this page\.$/);
     expect((web.tools.get("set-pattern")!.inputSchema as { properties: Record<string, unknown> }).properties).toHaveProperty("expectedRevision");
 
@@ -415,17 +415,17 @@ describe("relaying the real studio app tools over App/AppBridge", () => {
     const changed = vi.fn(() => void relay.refresh());
     bridge.setNotificationHandler("notifications/tools/list_changed", changed);
     await relay.refresh();
-    expect(web.names()).not.toContain("swap-pattern");
+    expect(web.names()).not.toContain("late-tool");
 
-    const swap = app.registerTool("swap-pattern", {
-      description: "Swap the pattern on the next bar.",
+    const swap = app.registerTool("late-tool", {
+      description: "A tool registered after the widget initialised.",
       inputSchema: z.object({ code: z.string() }).strict(),
-    }, async ({ code }) => ({ content: [{ type: "text" as const, text: `swapped ${code}` }] }));
-    await vi.waitFor(() => expect(web.names()).toContain("swap-pattern"));
+    }, async ({ code }) => ({ content: [{ type: "text" as const, text: `late ${code}` }] }));
+    await vi.waitFor(() => expect(web.names()).toContain("late-tool"));
     expect(changed).toHaveBeenCalled();
-    expect(await web.run("swap-pattern", { code: "x" })).toBe("swapped x");
+    expect(await web.run("late-tool", { code: "x" })).toBe("late x");
 
     swap.remove();
-    await vi.waitFor(() => expect(web.names()).not.toContain("swap-pattern"));
+    await vi.waitFor(() => expect(web.names()).not.toContain("late-tool"));
   });
 });
