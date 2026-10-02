@@ -1,0 +1,152 @@
+// Acceptance check for the WebMCP relay on the share page, in a real browser,
+// against the real Worker (wrangler dev):
+//   - /play hosts the widget AND offers its MCP Apps tools on the TOP-LEVEL
+//     document.modelContext (the only place a browser agent looks);
+//   - the review tools stay off, descriptions say what they control;
+//   - an agent's get-studio-state -> set-pattern (instanceId + revision) ->
+//     play-current-music -> stop-music works, audibly (measured), and a stale
+//     revision comes back as a readable result;
+//   - dispose() takes the tools off the page again.
+//
+//   bun run build
+//   (cd worker && bun install && bunx wrangler dev --port 8798)
+//   bun scripts/verify-share-webmcp.mjs
+//
+// Chromium exposes document.modelContext behind --enable-experimental-web-platform-features
+// (measured on 153: registerTool/getTools/executeTool; executeTool takes the input as a
+// JSON STRING there, the spec says object - both are tried).
+import { chromium } from "playwright";
+
+const ORIGIN = process.env.ORIGIN ?? "http://127.0.0.1:8798";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const fail = (msg) => {
+  console.error(`✗ ${msg}`);
+  process.exitCode = 1;
+};
+const ok = (msg) => console.log(`✓ ${msg}`);
+const check = (cond, pass, bad) => (cond ? ok(pass) : fail(bad ?? pass));
+
+const LEVEL_TAP = `(() => {
+  if (!globalThis.BaseAudioContext) return;
+  const desc = Object.getOwnPropertyDescriptor(BaseAudioContext.prototype, 'destination');
+  const taps = new WeakMap();
+  globalThis.__peak = 0;
+  Object.defineProperty(BaseAudioContext.prototype, 'destination', { configurable: true, get() {
+    if (this instanceof OfflineAudioContext) return desc.get.call(this);
+    let t = taps.get(this);
+    if (!t) {
+      const real = desc.get.call(this), g = this.createGain(), a = this.createAnalyser();
+      a.fftSize = 512; g.connect(real); g.connect(a);
+      Object.defineProperty(g, 'maxChannelCount', { value: real.maxChannelCount || 2 });
+      const buf = new Float32Array(512);
+      setInterval(() => { a.getFloatTimeDomainData(buf); let p = 0; for (const v of buf) p = Math.max(p, Math.abs(v)); globalThis.__peak = Math.max(globalThis.__peak, p); }, 10);
+      t = g; taps.set(this, t);
+    }
+    return t;
+  } });
+})();`;
+
+const b64 = (s) => Buffer.from(s, "utf8").toString("base64url");
+const SEED = `s("bd*2").gain(0.3)`;
+const NEXT = `s("bd*4, hh*8").gain(0.8)`;
+
+const browser = await chromium.launch({
+  headless: true,
+  args: ["--enable-experimental-web-platform-features", "--autoplay-policy=no-user-gesture-required"],
+});
+const context = await browser.newContext({ viewport: { width: 1000, height: 800 } });
+await context.addInitScript(LEVEL_TAP);
+const page = await context.newPage();
+const errors = [];
+page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+page.on("pageerror", (e) => errors.push(String(e)));
+
+const res = await page.goto(`${ORIGIN}/play?c=${b64(SEED)}&title=${encodeURIComponent("WebMCP check")}`);
+check(res.status() === 200, "/play answers 200", `/play answered ${res.status()}`);
+check(await page.evaluate(() => !!document.modelContext), "document.modelContext exists in this Chromium", "no document.modelContext: is the flag on?");
+if (!(await page.evaluate(() => !!document.modelContext))) {
+  await browser.close();
+  process.exit(1);
+}
+
+// What an agent does: list, then execute by RegisteredTool. Input as a string first (Chromium 153), object second (spec).
+const tools = () =>
+  page.evaluate(async () =>
+    (await document.modelContext.getTools()).map((t) => ({
+      name: t.name,
+      description: t.description,
+      annotations: t.annotations,
+      schema: typeof t.inputSchema === "string" ? JSON.parse(t.inputSchema) : t.inputSchema,
+    })),
+  );
+const run = (name, input = {}) =>
+  page.evaluate(
+    async ([n, i]) => {
+      const tool = (await document.modelContext.getTools()).find((t) => t.name === n);
+      if (!tool) throw new Error(`not listed: ${n}`);
+      let out;
+      try {
+        out = await document.modelContext.executeTool(tool, JSON.stringify(i));
+      } catch {
+        out = await document.modelContext.executeTool(tool, i);
+      }
+      try {
+        return JSON.parse(out);
+      } catch {
+        return out;
+      }
+    },
+    [name, input],
+  );
+
+// An agent would watch ontoolchange; polling does the same here. The relay waits for
+// the widget to apply the shared pattern before offering tools, so the first read is real.
+for (let i = 0; i < 90 && !(await tools()).some((t) => t.name === "get-studio-state"); i++) await sleep(500);
+const listed = await tools();
+const names = listed.map((t) => t.name).sort();
+console.log(`  tools: ${names.join(", ")}`);
+for (const want of ["get-studio-state", "set-pattern", "play-current-music", "stop-music", "undo-studio-edit"]) {
+  check(names.includes(want), `relayed: ${want}`, `missing: ${want}`);
+}
+check(!names.includes("explain-selection") && !names.includes("suggest-edit"), "the review tools are not offered (no review panel here)");
+const set = listed.find((t) => t.name === "set-pattern");
+check(set?.description?.endsWith("This controls the music player on this page."), "descriptions end with the 'controls the player on this page' line", `description: ${set?.description}`);
+check(set?.schema?.properties?.expectedRevision && set?.schema?.properties?.instanceId, "the widget's input schema came through (instanceId, expectedRevision)", `schema: ${JSON.stringify(set?.schema)}`);
+const get = listed.find((t) => t.name === "get-studio-state");
+check(get?.annotations?.readOnlyHint === true, "read-only annotation preserved", `annotations: ${JSON.stringify(get?.annotations)}`);
+console.log(`  untrustedContentHint on get-studio-state: ${JSON.stringify(get?.annotations?.untrustedContentHint)} (this Chromium may not surface it)`);
+
+let state = await run("get-studio-state");
+check(typeof state?.instanceId === "string" && Number.isInteger(state?.revision) && state?.mode === "live", `get-studio-state -> ${state?.mode} rev ${state?.revision}`, `state: ${JSON.stringify(state).slice(0, 200)}`);
+check(String(state?.args?.code ?? "").includes('s("bd*2")'), "it is the shared pattern, stopped", `code: ${state?.args?.code}`);
+check(state?.playback === "stopped", "nothing plays until asked", `playback: ${state?.playback}`);
+
+const stale = await run("set-pattern", { instanceId: state.instanceId, expectedRevision: state.revision + 9, code: NEXT });
+check(stale?.isError === true && /revision/i.test(stale?.error ?? ""), `a stale revision is a readable result: ${String(stale?.error).slice(0, 70)}`, `stale: ${JSON.stringify(stale)}`);
+
+const staged = await run("set-pattern", { instanceId: state.instanceId, expectedRevision: state.revision, code: NEXT });
+check(staged?.args?.code?.includes("hh*8") && staged.revision > state.revision, `set-pattern staged it (rev ${staged?.revision}), still stopped: ${staged?.playback}`, `staged: ${JSON.stringify(staged).slice(0, 200)}`);
+
+const frame = page.frames().find((f) => f.url().includes("/widget/strudel"));
+await frame.evaluate(() => { globalThis.__peak = 0; });
+const played = await run("play-current-music", { instanceId: staged.instanceId, expectedRevision: staged.revision });
+console.log(`  play-current-music -> playback ${played?.playback}${played?.error ? `, error ${played.error}` : ""}`);
+await sleep(3000);
+const peak = await frame.evaluate(() => globalThis.__peak ?? 0);
+check(peak > 0.05, `audible after the agent's play (peak ${peak.toFixed(3)})`, `no sound after play (peak ${peak}, playback ${played?.playback})`);
+
+const stopped = await run("stop-music", { instanceId: staged.instanceId });
+check(stopped?.playback === "stopped", "stop-music stops it", `stop: ${JSON.stringify(stopped).slice(0, 160)}`);
+const undone = await run("undo-studio-edit", { instanceId: staged.instanceId, expectedRevision: stopped.revision });
+check(String(undone?.args?.code ?? "").includes('s("bd*2")'), "undo-studio-edit restores the shared pattern", `undo: ${JSON.stringify(undone).slice(0, 160)}`);
+
+// Teardown: the page's own handle (what pagehide calls) takes the tools off WebMCP.
+await page.evaluate(() => window.__share.relay.dispose());
+const after = await tools();
+check(after.length === 0, "dispose() unregisters every relayed tool", `still listed: ${after.map((t) => t.name).join(", ")}`);
+
+// "Hash of blocked script: eval-sha256-..." is what Chromium 153 logs for the Strudel REPL's eval
+// under --enable-experimental-web-platform-features; the production page logs it too, the flag is the cause.
+const real = errors.filter((e) => !/favicon|AudioContext was not allowed|Hash of blocked script: "eval-sha256/i.test(e));
+real.length ? fail(`console errors: ${real.slice(0, 3).map((e) => e.slice(0, 400)).join(" | ")}`) : ok("no console errors");
+await browser.close();

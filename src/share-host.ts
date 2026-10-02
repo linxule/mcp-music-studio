@@ -17,9 +17,14 @@
 // press (CLAUDE.md, "Shared Strudel pages require deliberate evaluation").
 // A /s/<id> page also passes _meta.session, so the widget joins a live session
 // as a second screen.
+//
+// Where the browser has WebMCP (document.modelContext), the widget's MCP Apps
+// tools are relayed to the page's agent too — an agent only sees top-level
+// page tools, never an iframe's (src/webmcp-relay.ts).
 // =============================================================================
 
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
+import { createWidgetToolRelay } from "./webmcp-relay";
 
 interface ShareInit {
   code: string;
@@ -32,6 +37,9 @@ interface ShareInit {
   /** The standalone page, for browsers the full player doesn't suit. */
   classic?: string;
 }
+
+/** Widget tools that need the human review panel, which this page does not have. */
+export const RELAY_EXCLUDED_TOOLS = ["explain-selection", "suggest-edit"];
 
 /** What the frame may use — the reason this page exists. */
 export const FRAME_ALLOW = "autoplay; microphone; accelerometer; gyroscope; magnetometer; midi; fullscreen; clipboard-write";
@@ -93,6 +101,26 @@ function saveResource(resource: { uri?: string; mimeType?: string; blob?: string
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
 
+/**
+ * The widget takes a moment after ui/initialize to apply the pattern it was
+ * sent; an agent reading its state before then sees an empty draft and loses
+ * its first edit to a revision conflict. Wait (bounded) for the pattern to land.
+ */
+async function patternApplied(bridge: AppBridge, expected: string): Promise<void> {
+  if (!expected) return;
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      const result = await bridge.callTool({ name: "get-studio-state", arguments: {} }, { timeout: 5_000 });
+      const code = (result.structuredContent as { args?: { code?: unknown } } | undefined)?.args?.code;
+      if (typeof code === "string" && code.length > 0) return;
+    } catch {
+      return; // no such tool, or no answer: nothing to wait for
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+}
+
 async function mount(): Promise<void> {
   const frame = document.createElement("iframe");
   frame.title = init.title ? `${init.title} — Strudel player` : "Strudel player";
@@ -114,6 +142,20 @@ async function mount(): Promise<void> {
     { hostContext: hostContext() },
   );
 
+  // Anyone can craft a /play link, so what a read tool returns is third-party
+  // content: say so to the agent (WebMCP's untrustedContentHint).
+  const relay = createWidgetToolRelay({
+    bridge,
+    exclude: RELAY_EXCLUDED_TOOLS,
+    descriptionSuffix: "This controls the music player on this page.",
+    annotate: (tool) => (tool.annotations?.readOnlyHint ? { untrustedContentHint: true } : undefined),
+    onError: (error, what) => console.warn(`WebMCP relay: ${what}:`, error),
+  });
+  const syncRelay = () => void relay?.refresh().catch((error) => console.warn("WebMCP relay: listing the player's tools failed:", error));
+  // A tool the widget adds or changes after it initialised (tools/list_changed).
+  if (relay) bridge.setNotificationHandler("notifications/tools/list_changed", syncRelay);
+  addEventListener("pagehide", () => relay?.dispose());
+
   let sent = false;
   bridge.oninitialized = async () => {
     note.remove();
@@ -132,6 +174,8 @@ async function mount(): Promise<void> {
         ...(init.session ? { session: { id: init.session.id, origin: location.origin, rev: init.session.rev ?? 0 } } : {}),
       },
     });
+    // Tools appear once the pattern is in, so an agent's first read sees it.
+    if (relay) void patternApplied(bridge, init.code).then(syncRelay);
   };
   bridge.onupdatemodelcontext = async () => ({});
   bridge.onsizechange = () => {};
@@ -170,7 +214,7 @@ async function mount(): Promise<void> {
   // initialize request can never arrive before our listener (dev/host.ts).
   await bridge.connect(new PostMessageTransport(frame.contentWindow!, frame.contentWindow!));
   frame.src = init.widget;
-  (window as unknown as { __share: unknown }).__share = { bridge, frame, init };
+  (window as unknown as { __share: unknown }).__share = { bridge, frame, init, relay };
 }
 
 void mount().catch((err) => {
