@@ -27,9 +27,14 @@ export interface SessionUpdateOutcome {
 
 export interface SessionBackend {
   /** Open a session; returns its id. */
-  create(): Promise<string>;
+  /** `seed` is the code it opens with, so a second screen (/s/<id>) can load it. */
+  create(seed?: string): Promise<string>;
   /** The model-facing description, advancing the read mark; null if unknown. */
-  state(id: string, wait?: { mode: "pass" | "activity"; timeoutMs?: number }): Promise<string | null>;
+  state(
+    id: string,
+    wait?: { mode: "pass" | "activity"; timeoutMs?: number },
+    signal?: AbortSignal,
+  ): Promise<string | null>;
   update(id: string, code: string, quantize: number): Promise<SessionUpdateOutcome | null>;
 }
 
@@ -211,8 +216,13 @@ export function registerSessionTools(
       inputSchema: getSessionInputSchema,
       annotations: GET_SESSION_ANNOTATIONS,
     },
-    async (args: { session: string; wait?: "pass" | "activity" }): Promise<CallToolResult> => {
-      const text = await backend.state(args.session, args.wait ? { mode: args.wait } : undefined);
+    async (
+      args: { session: string; wait?: "pass" | "activity" },
+      extra?: { signal?: AbortSignal },
+    ): Promise<CallToolResult> => {
+      // A cancelled call must stop listening, or the player's Pass is told a
+      // model heard it when none will (Codex review).
+      const text = await backend.state(args.session, args.wait ? { mode: args.wait } : undefined, extra?.signal);
       if (text === null) return unknownSession(args.session);
       return { content: [{ type: "text", text }] };
     },
@@ -260,16 +270,20 @@ export function httpSessionBackend(
   call: (path: string, init?: RequestInit) => Promise<Response>,
 ): SessionBackend {
   return {
-    async create() {
-      const res = await call("/session/new", { method: "POST" });
+    async create(seed) {
+      const res = await call("/session/new", {
+        method: "POST",
+        headers: { "content-type": "text/plain;charset=UTF-8" },
+        body: seed ? JSON.stringify({ seed }) : undefined,
+      });
       if (!res.ok) throw new Error(`session service answered ${res.status}`);
       const body = (await res.json()) as { id?: unknown };
       if (typeof body.id !== "string") throw new Error("session service sent no id");
       return body.id;
     },
-    async state(id, wait) {
+    async state(id, wait, signal) {
       const q = wait ? `?wait=${wait.mode}${wait.timeoutMs ? `&timeout=${wait.timeoutMs}` : ""}` : "";
-      const res = await call(`/session/${id}/state${q}`);
+      const res = await call(`/session/${id}/state${q}`, signal ? { signal } : undefined);
       if (res.status === 404) return null;
       if (!res.ok) throw new Error(`session service answered ${res.status}`);
       return ((await res.json()) as { text: string }).text;
@@ -296,12 +310,14 @@ export async function attachSession(
   result: CallToolResult,
   backend: SessionBackend,
   origin: string,
+  /** The code the piece starts with — what /s/<id> loads before any update. */
+  seed?: string,
 ): Promise<CallToolResult> {
   if (result.isError) return result;
   let line: string;
   let meta: Record<string, unknown> = {};
   try {
-    const id = await backend.create();
+    const id = await backend.create(seed);
     // A second screen: the same session in the full player, where tilt and
     // the microphone are allowed (a chat's widget frame blocks them).
     line = `${sessionNote(id)} The same session opens in a browser too (another device, sensors, fullscreen): ${origin}/s/${id}`;

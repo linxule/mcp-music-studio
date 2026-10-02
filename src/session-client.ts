@@ -63,7 +63,11 @@ export class SessionClient {
     readonly origin: string,
     readonly id: string,
     private readonly env: SessionClientEnv,
-  ) {}
+    /** The rev the player already shows (a joined page): don't re-apply it or older. */
+    startRev = 0,
+  ) {
+    this.rev = Math.max(0, Math.floor(startRev) || 0);
+  }
 
   private get base(): string {
     return `${this.origin}/session/${this.id}`;

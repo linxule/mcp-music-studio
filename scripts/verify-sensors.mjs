@@ -47,6 +47,19 @@ s("hh*8").gain(room.fmap(v => 0.2 + v * 0.6)).pan(lean.x)`;
 
 async function open(browser, permissions) {
   const context = await browser.newContext({ viewport: { width: 900, height: 900 } });
+  // Count real microphone requests in every frame (Kimi review: the
+  // "not before a tap" claim was only read off the strip).
+  await context.addInitScript(() => {
+    globalThis.__gum = 0;
+    const md = navigator.mediaDevices;
+    if (md?.getUserMedia) {
+      const real = md.getUserMedia.bind(md);
+      md.getUserMedia = (c) => {
+        globalThis.__gum++;
+        return real(c);
+      };
+    }
+  });
   if (permissions) await context.grantPermissions(permissions, { origin: new URL(HARNESS).origin });
   const page = await context.newPage();
   await page.goto(HARNESS);
@@ -83,8 +96,8 @@ const reports = (page) =>
   await sleep(800);
   const before = await tags(frame);
   before.includes("by hand") ? ok(`before a tap, both are played by hand (${before.join(", ")})`) : fail(`before a tap: ${before}`);
-  const tracksBefore = await frame.evaluate(() => navigator.mediaDevices && performance.now() > 0);
-  void tracksBefore;
+  const asksBefore = await frame.evaluate(() => globalThis.__gum);
+  asksBefore === 0 ? ok("no microphone request before a tap") : fail(`getUserMedia called ${asksBefore}× before any tap`);
   // A tap inside the frame asks for the mic.
   const box = await (await page.$("iframe")).boundingBox();
   await page.mouse.click(box.x + box.width / 2, box.y + 120);

@@ -1234,7 +1234,13 @@ export function createBrowserSensors(w: any) {
   let micNodes: any[] = [];
   let micAsked = false;
   let micLevel = 0;
+  // Each request gets a generation; a grant that arrives for an older one
+  // (the piece dropped mic() and asked again while the prompt was up) is
+  // stopped, not adopted — two overlapping grants leaked a live stream
+  // (Codex + Kimi review).
+  let micGen = 0;
   const stopMic = () => {
+    micGen++;
     if (micTimer !== null) w.clearInterval?.(micTimer);
     micTimer = null;
     for (const n of micNodes) {
@@ -1249,6 +1255,7 @@ export function createBrowserSensors(w: any) {
     micLevel = 0;
   };
   const startMic = () => {
+    const gen = ++micGen;
     micAsked = true;
     set("mic", { state: "listening" });
     Promise.resolve()
@@ -1258,11 +1265,12 @@ export function createBrowserSensors(w: any) {
         }),
       )
       .then((stream: any) => {
-        if (!want.mic) {
+        if (gen !== micGen || !want.mic) {
           stream.getTracks().forEach((t: any) => t.stop());
           return;
         }
         micStream = stream;
+        try {
         const ctx =
           (typeof w.getAudioContext === "function" ? w.getAudioContext() : null) ??
           new (w.AudioContext ?? w.webkitAudioContext)();
@@ -1281,6 +1289,13 @@ export function createBrowserSensors(w: any) {
           micLevel += (target - micLevel) * SENSOR_SMOOTHING;
           feed("mic", micLevel);
         }, 50);
+        } catch (err) {
+          // Granted, but the analysis graph could not be built: release the
+          // microphone rather than leave it open behind a "denied" (Codex review).
+          stream.getTracks().forEach((t: any) => t.stop());
+          micStream = null;
+          throw err;
+        }
         set("mic", { state: "live" });
       })
       .catch((err: any) => {

@@ -62,6 +62,8 @@ export interface SessionState {
 }
 
 export const POLL_WAIT_MS = 20_000;
+/** get-session(wait) calls one session holds at once. */
+export const MAX_LISTENERS = 2;
 /**
  * A stopped player answers "loaded, not playing" (cycle null). When a second
  * screen joins a session, a stopped page must not win the race against the
@@ -144,7 +146,12 @@ export class JamSession {
       const id = url.searchParams.get("id") ?? "";
       if (!SESSION_ID_RE.test(id)) return json({ error: "bad id" }, 400);
       if (!(await this.load())) {
-        this.data = newSession(id, now);
+        let seed: string | undefined;
+        try {
+          const body = (await readJson(request, UPDATE_MAX_BYTES)) as { seed?: unknown } | null;
+          if (typeof body?.seed === "string") seed = body.seed;
+        } catch { /* no seed */ }
+        this.data = newSession(id, now, seed);
         await this.save();
       }
       return json({ id });
@@ -226,7 +233,10 @@ export class JamSession {
       const fromUpdate = data.pattern ? { code: data.pattern.code, at: data.pattern.at, source: "update" } : null;
       const fromEdit = edit?.code ? { code: edit.code, at: edit.at, source: "edit" } : null;
       const pick = fromUpdate && fromEdit ? (fromEdit.at > fromUpdate.at ? fromEdit : fromUpdate) : fromUpdate ?? fromEdit;
-      return pick ? json({ ...pick, rev: data.pattern?.rev ?? 0 }) : new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+      if (pick) return json({ ...pick, rev: data.pattern?.rev ?? 0 });
+      // Nothing sent or edited yet: the piece the session opened with.
+      if (data.seed) return json({ code: data.seed, at: data.created, source: "seed", rev: 0 });
+      return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
     }
 
     if (op === "state" && request.method === "GET") {
@@ -234,9 +244,15 @@ export class JamSession {
       if (mode === "pass" || mode === "activity") {
         const fresh = data.events.filter((e) => e.seq > data.readSeq);
         const ready = mode === "pass" ? fresh.some((e) => e.t === "pass") : fresh.some(isHumanEvent);
-        if (!ready) {
+        if (!ready && this.listeners.size >= MAX_LISTENERS) {
+          // Only the model listens; a pile of held reads is an id-holder's
+          // flood (Kimi review). Answer at once instead.
+        } else if (!ready) {
           const timeout = Math.min(LISTEN_MAX_MS, Math.max(1000, Number(url.searchParams.get("timeout")) || LISTEN_DEFAULT_MS));
           const why = await this.listen(mode, timeout, request.signal);
+          // The caller went away (a cancelled tool call): leave the events
+          // unread for the next read (Codex + Kimi review).
+          if (request.signal?.aborted) return json({ error: "cancelled" }, 499);
           const after = (await this.load()) ?? null;
           if (!after) return json({ error: "unknown session" }, 404);
           const head =

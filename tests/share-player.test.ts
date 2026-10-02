@@ -84,7 +84,7 @@ describe("GET /s/<id> — a live session's second screen", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const init = initOf(await res.text());
     expect(init.code).toBe('s("bd*4")');
-    expect(init.session).toEqual({ id: ID, origin: ORIGIN });
+    expect(init.session).toEqual({ id: ID, origin: ORIGIN, rev: 1 });
     expect(init.classic).toBeUndefined();
   });
 

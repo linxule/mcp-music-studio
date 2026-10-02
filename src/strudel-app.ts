@@ -264,6 +264,12 @@ function setStatus(text: string, type: StatusType = "normal") {
 function updatePlayState(playing: boolean) {
   // The session's heartbeat rides on its poll; re-poll so it hears this now.
   if (playing !== isPlaying) session?.nudge();
+  // Audio may only now exist (a start after a blocked autoplay): limit it.
+  if (playing) {
+    try {
+      ensureLimiter();
+    } catch { /* declared further down this module */ }
+  }
   if (!playing) {
     clearDrawLayers();
     // Stop means quiet: a sentence from say() does not outlive the music.
@@ -2045,12 +2051,17 @@ function stageCapabilityNote(code: string): string {
  * crush/coarse layers drove the gallery's glitch piece to peak 2.36 (hard
  * clipping). Idempotent per output node (superdough rebuilds it on reset).
  */
-const limited = new WeakSet<object>();
+const limiters = new WeakMap<object, DynamicsCompressorNode>();
+/** The limiter on the current master, if installed — the recorder taps its output. */
+function currentLimiter(): DynamicsCompressorNode | null {
+  const master = (window as any).getSuperdoughAudioController?.()?.output?.destinationGain;
+  return (master && limiters.get(master)) ?? null;
+}
 function ensureLimiter(): void {
   try {
     const ctx: AudioContext | undefined = (window as any).getAudioContext?.();
     const master: AudioNode | undefined = (window as any).getSuperdoughAudioController?.()?.output?.destinationGain;
-    if (!ctx || !master?.connect || limited.has(master)) return;
+    if (!ctx || !master?.connect || limiters.has(master)) return;
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -2;
     limiter.knee.value = 0;
@@ -2060,7 +2071,7 @@ function ensureLimiter(): void {
     master.disconnect(ctx.destination);
     master.connect(limiter);
     limiter.connect(ctx.destination);
-    limited.add(master);
+    limiters.set(master, limiter);
   } catch (err) {
     console.warn("[strudel] master limiter not installed:", err);
   }
@@ -2420,7 +2431,10 @@ function setupRecordingTap(): MediaStream | null {
     const dest = audioCtx.createMediaStreamDestination();
     // Master output: superdough controller's destinationGain node
     const controller = (window as any).getSuperdoughAudioController?.();
-    const masterGain = controller?.output?.destinationGain;
+    // Record what is HEARD: after the master limiter when there is one
+    // (Codex review — the export skipped the limiting playback had).
+    ensureLimiter();
+    const masterGain: AudioNode | undefined = currentLimiter() ?? controller?.output?.destinationGain;
     if (masterGain?.connect) {
       masterGain.connect(dest);
       recordingMasterGain = masterGain;
@@ -3051,7 +3065,7 @@ function setSessionBadge(status: "connecting" | "live" | "retrying" | "gone" = s
   passBtn.hidden = status === "gone";
 }
 
-function startSession(id: string, origin: string): void {
+function startSession(id: string, origin: string, startRev = 0): void {
   if (session || !SESSION_ID_RE.test(id) || !/^https:\/\/|^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return;
   session = new SessionClient(origin.replace(/\/+$/, ""), id, {
     fetch: (url, init) => fetch(url, init),
@@ -3065,7 +3079,7 @@ function startSession(id: string, origin: string): void {
       claudeListening = listening;
       setSessionBadge();
     },
-  });
+  }, startRev);
   const ctx = app.getHostContext() as { platform?: string } | undefined;
   const host = (app as unknown as { getHostVersion?: () => { name?: string; version?: string } | undefined })
     .getHostVersion?.();
@@ -3241,9 +3255,9 @@ const viewIds = new ViewIdChannel();
 
 app.ontoolresult = (result) => {
   viewIds.put(viewIdOf(result));
-  const meta = (result as { _meta?: { session?: { id?: unknown; origin?: unknown } } })._meta?.session;
+  const meta = (result as { _meta?: { session?: { id?: unknown; origin?: unknown; rev?: unknown } } })._meta?.session;
   if (meta && typeof meta.id === "string" && typeof meta.origin === "string") {
-    startSession(meta.id, meta.origin);
+    startSession(meta.id, meta.origin, typeof meta.rev === "number" ? meta.rev : 0);
     return;
   }
   // A host that drops a result's _meta still shows the widget its text: the

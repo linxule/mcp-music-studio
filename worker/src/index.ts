@@ -312,7 +312,7 @@ export interface FullPlayerInit {
   code: string;
   title?: string;
   bpm?: number;
-  session?: { id: string; origin: string };
+  session?: { id: string; origin: string; rev?: number };
   widget: string;
   classic?: string;
 }
@@ -324,7 +324,7 @@ export function fullPlayerHtml(init: FullPlayerInit): string {
 function renderFullPlayer(
   args: { code: string; title?: string; bpm?: number },
   url: URL,
-  session?: { id: string; origin: string },
+  session?: { id: string; origin: string; rev?: number },
 ): Response {
   const classic = new URL(url);
   classic.searchParams.set("classic", "1");
@@ -361,11 +361,13 @@ async function renderSessionPage(env: Env, url: URL, id: string): Promise<Respon
       headers: { "content-type": "text/plain; charset=utf-8", "x-robots-tag": "noindex" },
     });
   }
-  const current = res.status === 200 ? ((await res.json()) as { code?: string }) : {};
+  const current = res.status === 200 ? ((await res.json()) as { code?: string; rev?: number }) : {};
   return renderFullPlayer(
     { code: typeof current.code === "string" && current.code.trim() ? current.code : SESSION_WAITING_CODE },
     url,
-    { id, origin: url.origin },
+    // The page already shows rev N (or a newer edit): the player must not
+    // re-apply an older update over it (Codex review).
+    { id, origin: url.origin, rev: typeof current.rev === "number" ? current.rev : 0 },
   );
 }
 
@@ -820,7 +822,7 @@ export function createMusicServer(
           }, origin),
         ),
       );
-      return args.session ? attachSession(played, sessions, origin) : played;
+      return args.session ? attachSession(played, sessions, origin, toPlayShareArgs(args).code) : played;
     },
   );
 
@@ -1170,7 +1172,16 @@ export async function handleSessionRoute(request: Request, env: Env): Promise<Re
     if (!(await limit(env.SESSION_NEW_LIMITER))) return sessionJson({ error: "too many new sessions" }, 429);
     const id = mintSessionId();
     const stub = env.JAM.get(env.JAM.idFromName(id));
-    const res = await stub.fetch(`https://session/init?id=${id}`, { method: "POST" });
+    let seed: string | undefined;
+    try {
+      const raw = await readBodyWithinLimit(request, SESSION_UPDATE_MAX_BYTES);
+      const parsed = raw ? (JSON.parse(raw) as { seed?: unknown }) : null;
+      if (typeof parsed?.seed === "string") seed = parsed.seed;
+    } catch { /* a session without a seed */ }
+    const res = await stub.fetch(`https://session/init?id=${id}`, {
+      method: "POST",
+      body: seed ? JSON.stringify({ seed }) : undefined,
+    });
     if (!res.ok) return sessionJson({ error: "could not open a session" }, 502);
     return sessionJson({ id });
   }

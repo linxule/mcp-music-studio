@@ -233,7 +233,7 @@ Without `--stdio` the server listens over Streamable HTTP. That endpoint is **un
 |------|-------------|------------|
 | `play-sheet-music` | ABC notation → visual sheet music + multi-instrument audio | `abcNotation`, `title?`, `instrument?`, `style?`, `tempo?` (40–240), `swing?` (0–75), `drumIntro?` (0–8), `transpose?` (−12–12) |
 | `play-live-pattern` | Strudel code → live-coded patterns with synthesis + effects | `code`, `title?`, `bpm?` (40–300), `autoplay?`, `visuals?`, `theme?`, `session?` |
-| `get-session` | Read a live session: what the player is doing, its errors, and what the listener did (taps, controls, edits, Pass) | `session` |
+| `get-session` | Read a live session: what the player is doing, its errors, and what the listener did (taps, controls, edits, Pass) — or listen until they pass | `session`, `wait?` (`pass` \| `activity`) |
 | `update-session` | Swap a new pattern into a live session's player on the next bar or phrase — no new player | `session`, `code`, `quantize?` (0–32) |
 | `get-music-guide` | ABC reference (7 topics: instruments, drums, syntax, genres...) | `topic` |
 | `get-strudel-guide` | Strudel reference (15 topics: sounds, effects, visuals, hydra, genres, stage, film, interactive, craft, gallery...) | `topic`, `piece?` (with `gallery`) |
@@ -255,6 +255,35 @@ Slash-command / menu entry points, in clients that surface MCP prompts:
 | `compose-beat` | Generate + play a Strudel pattern in a genre (args: `genre`, `mood?`) |
 | `harmonize-melody` | Add chords/accompaniment to an ABC melody and play it (args: `melody`, `style?`) |
 | `arrange-tune` | Turn a melody/idea into a multi-voice arrangement (args: `tune`, `instrumentation?`) |
+
+## 0.9.0 — October 2, 2026
+
+The booth, the stage and the room.
+
+- **Listen**: `get-session` with `wait: "pass"` holds until the listener
+  presses **Pass**, then returns what they did — so a whole back-to-back set
+  runs inside one reply: answer, listen, answer. The player shows "Claude is
+  listening", and Pass skips the chat when the AI already heard it
+  (measured: 60 ms from press to the AI's read in production).
+- **Share links open the full player**: the real widget — stage, Hydra, code,
+  controls, recording with a real download — hosted by a page of our own,
+  where the microphone and motion sensors can be allowed. `/s/<id>` opens a
+  live session on another screen. The old page stays at `?classic=1`.
+  Shared pages never start on their own: an old link with `autoplay=1`
+  now waits for Play too.
+- **Sensors as controls**: `tilt()` and `mic()` follow the device's motion and
+  input loudness where the page allows it (permission on the first tap; the
+  mic only when a piece asks, analysed locally, never recorded or sent), and
+  turn into an xy pad and a fader you play by hand where it doesn't — so a
+  piece works in the chat and on a phone alike.
+- **Two Decks**: a gallery piece for back-to-back sets — your deck, Claude's
+  deck, a crossfader, filters, bass kills and an echo throw.
+- **Fixed — worklet sounds were silent until a click**: supersaw, pulse,
+  crush, coarse and the DJ filter only loaded on the first mouse press after
+  the player loaded, and a `.djf()` silenced everything on its bus. They now
+  load before the first note.
+- **A master limiter**: with those effects sounding, a glitch piece peaked at
+  2.4× full scale (hard clipping); a limiter now keeps every piece near 1.
 
 ## 0.8.0 — October 2, 2026
 

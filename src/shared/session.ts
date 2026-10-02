@@ -135,12 +135,15 @@ export interface SessionData {
   rev: number;
   pattern: QueuedPattern | null;
   heartbeat: Heartbeat | null;
+  /** The code the session opened with, so a second screen has something to load. */
+  seed?: string | null;
   /** The widget's answer for the newest rev — kept apart from the log, which is trimmed. */
   lastApplied?: Extract<SessionEvent, { t: "applied" }> | null;
 }
 
-export function newSession(id: string, now: number): SessionData {
+export function newSession(id: string, now: number, seed?: string): SessionData {
   return {
+    seed: typeof seed === "string" && seed.trim() ? seed.slice(0, SESSION_MAX_CODE_CHARS) : null,
     id,
     created: now,
     lastActivity: now,

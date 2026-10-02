@@ -635,6 +635,46 @@ describe("createBrowserSensors (fake window)", () => {
     expect(f.stopped).toEqual(["track"]);
   });
 
+  it("an overlapping grant (dropped and re-declared during the prompt) is stopped, not leaked", async () => {
+    const { createBrowserSensors } = await import("../src/shared/stage-runtime");
+    const f = fakeWindow();
+    const grants: Array<(stream: any) => void> = [];
+    let n = 0;
+    f.w.navigator.mediaDevices.getUserMedia = () =>
+      new Promise((resolve) => grants.push(() => resolve({ getTracks: () => [{ stop: () => f.stopped.push(`track${n++}`) }] })));
+    const sensors = createBrowserSensors(f.w);
+    const on = () => sensors.sync({ tilt: false, mic: true }, () => undefined, () => undefined);
+    on();
+    f.fire("pointerup"); // grant #1 pending
+    await new Promise((r) => setTimeout(r, 0));
+    sensors.sync({ tilt: false, mic: false }, () => undefined, () => undefined);
+    on();
+    f.fire("pointerup"); // grant #2 pending
+    await new Promise((r) => setTimeout(r, 0));
+    grants[0]();
+    grants[1]();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(f.stopped).toHaveLength(1); // #1 stopped on arrival
+    sensors.sync({ tilt: false, mic: false }, () => undefined, () => undefined);
+    expect(f.stopped).toHaveLength(2); // #2 released with mic()
+    expect(f.intervals).toHaveLength(1);
+  });
+
+  it("a grant whose analysis can't be built releases the microphone", async () => {
+    const { createBrowserSensors } = await import("../src/shared/stage-runtime");
+    const f = fakeWindow();
+    f.w.AudioContext = function () {
+      return { createMediaStreamSource: () => { throw new Error("boom"); }, createAnalyser: () => ({}) };
+    };
+    const states: any[] = [];
+    const sensors = createBrowserSensors(f.w);
+    sensors.sync({ tilt: false, mic: true }, () => undefined, (s, st) => states.push(st.state));
+    f.fire("pointerup");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(f.stopped).toEqual(["track"]);
+    expect(states.at(-1)).toBe("denied");
+  });
+
   it("reports a refused mic and doesn't ask again on every tap", async () => {
     const { createBrowserSensors } = await import("../src/shared/stage-runtime");
     const f = fakeWindow({ gum: "deny" });

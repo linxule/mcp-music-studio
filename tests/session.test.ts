@@ -19,7 +19,7 @@ import {
   type SessionData,
 } from "../src/shared/session";
 import { spliceAt, hapStart, settle, isSpliced } from "../src/shared/splice";
-import { JamSession, MAX_POLL_WAITERS, type SessionStorage } from "../worker/src/session-do";
+import { JamSession, MAX_LISTENERS, MAX_POLL_WAITERS, type SessionStorage } from "../worker/src/session-do";
 import { SessionClient } from "../src/session-client";
 import {
   attachSession,
@@ -685,5 +685,56 @@ describe("sensors in the session log", () => {
     expect(text).toContain("tilt (tilt: x left→right, y) x 0.90, y 0.30, played by the device");
     expect(text).toContain("mic (mic loudness 0–1) 0, played by hand — the sensor isn't available");
     expect(text).toContain("- the device moved xy 'tilt' 2 times, ending at x 0.90, y 0.30 (cycles 2.0–3.0).");
+  });
+});
+
+
+describe("review fixes (0.9, Codex + Kimi)", () => {
+  it("a session opens with its seed, so a second screen has the piece", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST", body: JSON.stringify({ seed: 's("bd*4")' }) });
+    expect(await (await h.call("current")).json()).toMatchObject({ code: 's("bd*4")', source: "seed", rev: 0 });
+    await h.call("update", { method: "POST", body: JSON.stringify({ code: "s('hh*8')" }) });
+    expect(await (await h.call("current")).json()).toMatchObject({ code: "s('hh*8')", source: "update", rev: 1 });
+  });
+
+  it("a cancelled listen leaves the events unread", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    const abort = new AbortController();
+    const listening = h.obj.fetch(new Request("https://session/state?wait=pass", { signal: abort.signal }));
+    await vi.waitFor(() => expect((h.obj as any).listeners.size).toBe(1));
+    await h.call("events", { method: "POST", body: JSON.stringify({ events: [{ t: "tap", cycle: 1, x: 0.5, y: 0.5 }] }) });
+    abort.abort();
+    expect((await listening).status).toBe(499);
+    expect((await (await h.call("state")).json()).text).toContain("the human tapped 1 time");
+  });
+
+  it("holds at most MAX_LISTENERS listens; extras answer at once", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    for (let i = 0; i < MAX_LISTENERS; i++) void h.call("state?wait=pass");
+    await vi.waitFor(() => expect((h.obj as any).listeners.size).toBe(MAX_LISTENERS));
+    const extra = await h.call("state?wait=pass");
+    expect(extra.status).toBe(200);
+    expect((h.obj as any).listeners.size).toBe(MAX_LISTENERS);
+  });
+
+  it("a joined player starts after the rev its page already shows", async () => {
+    const urls: string[] = [];
+    const client = new SessionClient("https://example.test", ID, {
+      fetch: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/events")) return new Response("{}");
+        urls.push(url);
+        return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("abort"))));
+      },
+      setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 5)),
+      clearTimeout: (h) => clearTimeout(h as any),
+      clock: () => ({ cycle: 0, cps: 0.5, state: "stopped" }),
+      apply: async () => ({ ok: true, cycle: 0 }),
+    }, 3);
+    client.start({});
+    await vi.waitFor(() => expect(urls[0]).toContain("after=3"));
+    client.stop();
   });
 });

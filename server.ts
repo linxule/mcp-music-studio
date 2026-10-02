@@ -413,7 +413,9 @@ export function createServer(options?: ServerOptions): McpServer {
           { keepOnError: true },
         ),
       );
-      return args.session ? attachSession(played, sessions, DEFAULT_SHARE_ORIGIN) : played;
+      return args.session
+        ? attachSession(played, sessions, DEFAULT_SHARE_ORIGIN, toPlayShareArgs(args).code)
+        : played;
     }
 
     // The standalone page gets the SAME reduction the share link gets, so all

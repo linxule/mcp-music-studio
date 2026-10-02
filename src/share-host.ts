@@ -26,7 +26,7 @@ interface ShareInit {
   title?: string;
   bpm?: number;
   /** A live session for the widget to join (a /s/<id> page). */
-  session?: { id: string; origin: string };
+  session?: { id: string; origin: string; rev?: number };
   /** Where the widget is served. */
   widget: string;
   /** The standalone page, for browsers the full player doesn't suit. */
@@ -129,7 +129,7 @@ async function mount(): Promise<void> {
         viewUUID: crypto.randomUUID(),
         // The page's own origin: the Worker served it, and behind a proxy (or
         // wrangler dev) the Worker's idea of its URL can differ from the browser's.
-        ...(init.session ? { session: { id: init.session.id, origin: location.origin } } : {}),
+        ...(init.session ? { session: { id: init.session.id, origin: location.origin, rev: init.session.rev ?? 0 } } : {}),
       },
     });
   };
