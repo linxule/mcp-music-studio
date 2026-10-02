@@ -53,11 +53,12 @@ when they are loaded without `?studio=1`:
 | --- | --- |
 | `get-studio-state` | Live buffer, selection, settings, instance ID, revision, playback and errors |
 | `set-pattern` / `set-score` | Only the tool matching the widget's mode; edit stopped |
+| `swap-pattern` | Live widgets only: change a PLAYING pattern on the next `quantize`-cycle boundary (default 4; = phrase length), the same splice as `update-session`. Answers with the cycle it took over (`swap.cycle`) or the error (the old pattern keeps playing). Stopped player → changes nothing and says to use `set-pattern` + `play-current-music`. A newer swap (or a session update) supersedes a waiting one, which answers; stop during the wait answers at once (code stays in the editor). Undo restores the previous source, stopped. With a live session joined, the swap is logged like an edit, so `get-session` and `/s/<id>` see it. Acceptance: `scripts/verify-swap.mjs` |
 | `play-current-music` | Explicit evaluation/playback in this widget |
 | `stop-music` | Stop this widget, including during a pending operation |
 | `undo-studio-edit` | This widget's existing ten-entry edit history |
 
-App tool discovery is separate from the eight MCP **server** tools. These tools
+App tool discovery is separate from the ten MCP **server** tools. These tools
 operate on a mounted widget's unsaved document; they do not add remote access to
 closed pages or save a project. The existing initial tool-input/render path
 continues to work in hosts that do not discover app-provided tools.

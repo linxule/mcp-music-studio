@@ -14,7 +14,7 @@ export function createStudioClient(bridge: AppBridge, mode: StudioMode, options:
   const editTool = mode === 'live' ? 'set-pattern' : 'set-score';
   const names = {
     get: 'get-studio-state', set: editTool, play: 'play-current-music',
-    stop: 'stop-music', undo: 'undo-studio-edit',
+    stop: 'stop-music', undo: 'undo-studio-edit', swap: 'swap-pattern',
   } as const;
 
   function accept(state: WidgetSnapshot | undefined): WidgetSnapshot {
@@ -41,7 +41,8 @@ export function createStudioClient(bridge: AppBridge, mode: StudioMode, options:
   async function discover() {
     const listing = await bridge.listTools({}, { timeout: 15_000 });
     const available = new Set(listing.tools.map(tool => tool.name));
-    if ([...Object.values(names), 'explain-selection', 'suggest-edit'].some(name => !available.has(name))) {
+    // swap-pattern is live-only (and newer): optional for discovery.
+    if ([names.get, names.set, names.play, names.stop, names.undo, 'explain-selection', 'suggest-edit'].some(name => !available.has(name))) {
       throw new Error('This widget does not provide studio tools. Rebuild and reload.');
     }
     await invoke(names.get, { mode });
@@ -67,6 +68,12 @@ export function createStudioClient(bridge: AppBridge, mode: StudioMode, options:
       if (command.settings !== undefined) args.settings = command.settings;
     } else if (command.action === 'play' || command.action === 'undo') {
       args.expectedRevision = command.expectedRevision;
+    } else if (command.action === 'swap') {
+      if (mode !== 'live') throw new Error('swap-pattern is only available in live mode.');
+      return invoke(names.swap, {
+        instanceId: target, expectedRevision: command.expectedRevision, code: command.args?.code,
+        ...(command.quantize === undefined ? {} : { quantize: command.quantize }),
+      });
     }
     return invoke(names[command.action], args);
   }

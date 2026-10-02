@@ -3167,15 +3167,28 @@ function scheduleSpliceSweep(): void {
   }, 1000);
 }
 
-async function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome> {
+function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome> {
+  return quantizedSwap(pattern.code, pattern.quantize, () => (session ? null : "the player closed"));
+}
+
+/**
+ * The quantized swap shared by update-session and the swap-pattern widget
+ * tool: the code goes into the editor at once; while playing, it is evaluated
+ * just before the next `quantize`-cycle boundary and spliced in from it (old
+ * pattern until the bar). One counter for both callers, so the newest swap of
+ * either kind wins and an older one answers "replaced". `cancelled` returns a
+ * reason when the caller has gone away.
+ */
+async function quantizedSwap(code: string, quantize: number, cancelled: () => string | null): Promise<ApplyOutcome> {
   const mine = ++sessionApplySeq;
+  const replaced = { ok: false, cycle: null, error: "replaced by a newer swap or update before it played" } as const;
   const editor = await prepareEditor().catch(() => null);
   if (!editor?.repl) return { ok: false, cycle: null, error: "the player could not load Strudel" };
-  if (mine !== sessionApplySeq) return { ok: false, cycle: null, error: "replaced by a newer update before it played" };
-  lastProgrammaticCode = pattern.code;
-  sentCode = pattern.code;
-  currentCode = pattern.code;
-  editor.setCode(pattern.code);
+  if (mine !== sessionApplySeq) return replaced;
+  lastProgrammaticCode = code;
+  sentCode = code;
+  currentCode = code;
+  editor.setCode(code);
   if (!isSchedulerStarted()) {
     return {
       ok: true,
@@ -3186,27 +3199,28 @@ async function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome
   const scheduler = editor.repl.scheduler;
   const cps = Number(scheduler?.cps) || 0.5;
   let boundary: number | null = null;
-  if (pattern.quantize > 0) {
-    boundary = nextBoundary(stageEnv.audibleCycle() ?? 0, pattern.quantize, SESSION_SWAP_LEAD_S * cps);
+  if (quantize > 0) {
+    boundary = nextBoundary(stageEnv.audibleCycle() ?? 0, quantize, SESSION_SWAP_LEAD_S * cps);
     setStatus(`Next pattern lands at bar ${Math.round(boundary)}`, "playing");
     const giveUpAt = Date.now() + ((boundary - (stageEnv.audibleCycle() ?? 0)) / cps) * 1000 + 5000;
     for (;;) {
-      if (mine !== sessionApplySeq) return { ok: false, cycle: null, error: "replaced by a newer update before it played" };
-      if (!session) return { ok: false, cycle: null, error: "the player closed" };
+      if (mine !== sessionApplySeq) return replaced;
       // Stopped while waiting: the boundary will never come (Codex review).
       if (!isSchedulerStarted()) {
         return {
           ok: true,
           cycle: null,
-          report: "Loaded into the editor, but the user stopped the player before the bar — it plays when they press Play.",
+          report: "Loaded into the editor, but someone stopped the player before the bar — it plays when Play is pressed.",
         };
       }
+      const gone = cancelled();
+      if (gone) return { ok: false, cycle: null, error: gone };
       const scheduled = Number(scheduler.now?.());
       const remaining = (boundary - SESSION_EVAL_LEAD_S * cps - scheduled) / cps;
       if (!Number.isFinite(remaining) || remaining <= 0 || Date.now() > giveUpAt) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(remaining * 1000, 250)));
     }
-    pendingSplice = { boundary, code: editor.code ?? pattern.code };
+    pendingSplice = { boundary, code: editor.code ?? code };
   }
   lastReportText = "";
   const ranBefore = evaluationSeq;
@@ -3220,7 +3234,7 @@ async function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome
   const err = readEvalError();
   if (err) {
     const msg = err.message || String(err);
-    return { ok: false, cycle: null, error: msg + sourceLineNote(msg, pattern.code, pattern.code) };
+    return { ok: false, cycle: null, error: msg + sourceLineNote(msg, code, code) };
   }
   return { ok: true, cycle: boundary ?? stageEnv.audibleCycle(), report: lastReportText || undefined };
 }
@@ -3499,6 +3513,26 @@ const studioSession = createStudioSession({
       return;
     }
     await renderPattern({ ...args, autoplay: false }, undefined, () => !isCancelled?.() && getLiveCode() === before, onCommit);
+  },
+  swap: async (code, quantize, isCancelled) => {
+    // Edits stage stopped and Play is explicit (studio rule): a swap only
+    // changes music that is already playing.
+    if (!isSchedulerStarted()) {
+      throw new Error("The player is stopped: swap-pattern changes a PLAYING pattern on the bar. Use set-pattern, then play-current-music.");
+    }
+    const outcome = await quantizedSwap(code, quantize, () =>
+      isCancelled() ? "superseded by a newer studio action before it played" : null);
+    if (outcome.ok && session) {
+      // The booth's other side sees it like a human edit (it came from the
+      // user's page — e.g. their browser agent), and /s/<id> follows it.
+      session.log({
+        t: "report",
+        text: `swap-pattern (a tool on the user's page) swapped new code in${outcome.cycle !== null ? ` at cycle ${outcome.cycle.toFixed(1)}` : ""}.`,
+      });
+      lastLoggedEdit = code;
+      session.log({ t: "edit", cycle: outcome.cycle, code, chars: code.length }, true);
+    }
+    return outcome;
   },
   play: async () => {
     const editor = getEditor();

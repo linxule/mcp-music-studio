@@ -117,7 +117,7 @@ describe("native widget app tools over real App/AppBridge transports", () => {
   it("discovers typed tools, reads an unsaved buffer, shares local edits and native undo without autoplay", async () => {
     const widget = await mounted();
     const tools = (await widget.host.listTools({})).tools;
-    expect(tools.map(tool => tool.name).sort()).toEqual(["explain-selection", "get-studio-state", "play-current-music", "set-pattern", "stop-music", "suggest-edit", "undo-studio-edit"]);
+    expect(tools.map(tool => tool.name).sort()).toEqual(["explain-selection", "get-studio-state", "play-current-music", "set-pattern", "stop-music", "suggest-edit", "swap-pattern", "undo-studio-edit"]);
     const setSchema = tools.find(tool => tool.name === "set-pattern")!.inputSchema;
     expect(setSchema.required).toEqual(expect.arrayContaining(["instanceId", "expectedRevision", "code"]));
     expect(setSchema.additionalProperties).toBe(false);
