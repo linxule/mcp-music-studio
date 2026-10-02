@@ -175,9 +175,12 @@ const undone = await run("undo-studio-edit", { instanceId: staged.instanceId, ex
 check(String(undone?.args?.code ?? "").includes('s("bd*2")'), "undo-studio-edit restores the shared pattern", `undo: ${JSON.stringify(undone).slice(0, 160)}`);
 
 // Teardown: the page's own handle (what pagehide calls) takes the tools off WebMCP.
+// Only OUR tools: in production Cloudflare's zone-level WebMCP bridge
+// (/.webmcp/bridge.js) also registers the /mcp server's tools and C2PA tools.
+const ours = new Set(await page.evaluate(() => window.__share.relay.tools()));
 await page.evaluate(() => window.__share.relay.dispose());
-const after = await tools();
-check(after.length === 0, "dispose() unregisters every relayed tool", `still listed: ${after.map((t) => t.name).join(", ")}`);
+const after = (await tools()).filter((t) => ours.has(t.name));
+check(ours.size > 0 && after.length === 0, `dispose() unregisters every relayed tool (${ours.size})`, `still listed: ${after.map((t) => t.name).join(", ")}`);
 
 // "Hash of blocked script: eval-sha256-..." is what Chromium 153 logs for the Strudel REPL's eval
 // under --enable-experimental-web-platform-features; the production page logs it too, the flag is the cause.
