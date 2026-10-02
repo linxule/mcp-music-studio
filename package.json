@@ -1,6 +1,6 @@
 {
   "name": "mcp-music-studio",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "type": "module",
   "description": "Two-mode MCP music studio: scored composition (ABC notation) and live performance (Strudel live coding). Interactive ext-apps widgets with sheet music rendering, in-place editing and MIDI/WAV export, all 128 General MIDI instruments, style presets, and a live REPL with Hydra shader visuals — plus a stage runtime for music videos, short films and interactive pieces, with server-rendered spoken lines, live jam sessions the AI plays along in, and player tools for in-browser agents (WebMCP).",
   "keywords": [

@@ -2,6 +2,18 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## 0.10.1 — October 2, 2026
+
+From a field test in claude.ai, where the listen loop ran three full handovers inside one reply.
+
+- **End session.** A button beside Pass closes a live session. The player keeps playing your last pattern; a listening AI is told at once; a later `get-session` or `update-session` says the session was ended; other screens on `/s/<id>` stop; the log is deleted 10 minutes later.
+- **Pass says where it goes.** When the AI isn't listening, the button reads "Pass → chat": it logs your turn and also puts a message in the chat, the only way to start the AI's next turn. "Send to chat" is hidden during a live session, where edits are already logged.
+- **Fixed — a cached older player.** "tilt is not defined" in claude.ai came from a host still using an older player. Player addresses now carry the version, so a new release reaches every chat. The player reports its version when it joins a session, and `get-session` warns when it is older than the server.
+- **Fixed — the reported bar.** `update-session` said "queued for cycle 40" for a swap that started at 48. The player now reports the bar it picks as soon as it picks it, and that is what the tool says.
+- **Fixed — "applied at cycle ?"** for a stopped player now reads that the code is loaded and starts when Play is pressed.
+- **The README is short now**, with Chinese, French and Japanese versions. Details moved to `docs/` and this changelog.
+- The npm package now includes `scripts/build-stage-runtime.mjs`, which the build needs. The privacy policy covers everything a session stores, ending a session, and Cloudflare's own WebMCP script on the domain.
+
 ## 0.10.0 — October 2, 2026
 
 Tools on the player itself.
