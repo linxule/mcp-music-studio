@@ -1005,6 +1005,72 @@ stack(
 )
 `;
 
+const WEATHER_MACHINE = String.raw`setcps(0.45)
+await initHydra()
+
+// ════════ WEATHER MACHINE ════════
+// An instrument, not a recording: the strip at the bottom of the player is yours.
+//   rain (fader)    → hats, and the drops on screen
+//   warmth (fader)  → the pad's filter
+//   wind (xy)       → x leans the rain and pans the air, y is how much air
+//   thunder (hold)  → a low rumble and a slow flash
+//   storm (toggle)  → the band comes in
+
+const rain = fader('rain', { init: 0.3 })
+const warmth = fader('warmth', { min: 300, max: 4000, init: 900 })
+const wind = xy('wind')
+const thunder = pad('thunder')
+const storm = pad('storm', { toggle: true })
+
+// ── the sky: rain on a canvas, fed into Hydra ──
+const cvs = document.createElement('canvas')
+cvs.width = 640
+cvs.height = 400
+const g = cvs.getContext('2d')
+const drops = Array.from({ length: 220 }, () => ({ x: Math.random(), y: Math.random(), v: 0.6 + Math.random() }))
+let flash = 0
+onFrame(f => {
+  g.fillStyle = 'rgba(4,8,16,0.35)'
+  g.fillRect(0, 0, cvs.width, cvs.height)
+  const n = Math.floor(drops.length * rain.value)
+  const lean = (wind.x.value - 0.5) * 0.6
+  g.strokeStyle = 'rgba(160,200,255,0.8)'
+  g.lineWidth = 2
+  for (let i = 0; i < n; i++) {
+    const d = drops[i]
+    d.y += d.v * f.dt * (0.6 + rain.value * 1.6)
+    d.x = (d.x + lean * f.dt + 1) % 1
+    if (d.y > 1) { d.y -= 1; d.x = Math.random() }
+    g.beginPath()
+    g.moveTo(d.x * cvs.width, d.y * cvs.height)
+    g.lineTo((d.x + lean * 0.04) * cvs.width, d.y * cvs.height + 14)
+    g.stroke()
+  }
+  // A slow swell, never a strobe.
+  flash = thunder.value ? Math.min(1, flash + f.dt * 3) : Math.max(0, flash - f.dt * 1.5)
+  if (flash > 0) {
+    g.fillStyle = 'rgba(220,230,255,' + (flash * 0.3) + ')'
+    g.fillRect(0, 0, cvs.width, cvs.height)
+  }
+})
+s1.init({ src: cvs, dynamic: true })
+src(s1)
+  .add(noise(3, 0.1).color(0.1, 0.15, 0.3), () => 0.2 + wind.y.value * 0.4)
+  .modulate(osc(6, 0.1), () => wind.y.value * 0.02)
+  .blend(src(o0).scale(1.01), 0.4)
+  .out(o0)
+
+// ── the sound: every layer reads a control ──
+const CHORDS = "<[a2,e3,c4,g4] [f2,c3,a3,e4] [d2,a2,f3,c4] [e2,b2,g#3,d4]>"
+stack(
+  note(CHORDS).s("sawtooth").lpf(warmth).attack(0.6).release(2).gain(0.18).room(0.8),
+  s("hh*16").gain(rain.fmap(r => r * 0.5)).hpf(6000).pan(wind.x),
+  s("white*8").decay(0.2).sustain(0).hpf(3000).gain(wind.y.fmap(y => y * 0.15)).pan(wind.x),
+  s("bd*8").bank("RolandTR808").lpf(140).room(0.6).gain(thunder.fmap(t => t * 0.9)),
+  s("bd ~ ~ bd, ~ sd").bank("RolandTR909").gain(storm.fmap(on => on * 0.8)),
+  note("<a1 f1 d1 e1>").struct("x ~ x ~").s("sawtooth").lpf(500).gain(storm.fmap(on => on * 0.4))
+)`;
+
 export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
   {
     id: "first-light",
@@ -1072,9 +1138,22 @@ export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
     ],
     code: SIGNAL_CORRUPTION,
   },
+  {
+    id: "weather-machine",
+    title: "Weather Machine — an instrument the listener plays",
+    summary:
+      "Rain, warmth, wind, thunder and storm are controls on the player's strip; the listener performs the weather, and the sound and the sky both follow. Built for a live session: the controls keep their values when Claude updates the pattern.",
+    teaches: [
+      "fader(), pad(), xy(): controls that are patterns (.gain(rain)) and numbers (rain.value)",
+      "one control driving sound AND picture",
+      "a toggle that brings a band in",
+      "flashes that swell instead of strobe",
+    ],
+    code: WEATHER_MACHINE,
+  },
 ];
 
-export const GALLERY_IDS = ["first-light", "duet", "petri-dish", "lossy-terminal", "signal-corruption"] as const;
+export const GALLERY_IDS = ["first-light", "duet", "petri-dish", "lossy-terminal", "signal-corruption", "weather-machine"] as const;
 
 /** The plain-text index get-strudel-guide returns for topic "gallery". */
 export function galleryIndex(): string {

@@ -431,6 +431,9 @@ const {
   observeTap(tap) {
     session?.log({ t: "tap", ...tap });
   },
+  observeControl(change) {
+    session?.log({ t: "control", ...change });
+  },
   reportError(api, error) {
     const msg = (error as Error)?.message ?? String(error);
     console.error(`[stage] ${api} callback threw:`, error);
@@ -2157,6 +2160,7 @@ function installEvaluateHook(editor: any): void {
       noteHumanEdit(code);
       pruneDrawLayers(code);
       stage.commit(stageToken);
+      logControlSurface();
       stageErrorReported = false;
       if (holdForVoice) {
         setStatus("Loading voice…", "normal");
@@ -2941,6 +2945,8 @@ function startSession(id: string, origin: string): void {
   });
   // The first report this widget made may have come before the session existed.
   if (lastReportText) session.log({ t: "report", text: lastReportText }, true);
+  lastControlSurface = "";
+  logControlSurface();
 }
 
 /**
@@ -3021,6 +3027,21 @@ async function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome
     return { ok: false, cycle: null, error: msg + sourceLineNote(msg, pattern.code, pattern.code) };
   }
   return { ok: true, cycle: boundary ?? stageEnv.audibleCycle(), report: lastReportText || undefined };
+}
+
+/** Tell the session which controls the player now shows (when that changes). */
+let lastControlSurface = "";
+function logControlSurface(): void {
+  const list = stage.controls().map(({ spec, value }) => ({
+    name: spec.name,
+    kind: spec.kind,
+    value,
+    ...(spec.kind === "fader" ? { min: spec.min, max: spec.max } : {}),
+  }));
+  const key = JSON.stringify(list.map(({ name, kind }) => [name, kind]));
+  if (key === lastControlSurface) return;
+  lastControlSurface = key;
+  session?.log({ t: "controls", list }, true);
 }
 
 /** A successful evaluation of code we did not put there is the human's edit. */

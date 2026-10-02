@@ -427,8 +427,35 @@ const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknow
       if ("error" in request) throw new TypeError(request.error);
       return C.s(ttsSampleName(request));
     },
+    // Controls read their initial value here: a signal pattern with .value.
+    fader(name: unknown, options: { min?: number; max?: number; init?: number } = {}) {
+      requireName("fader", name);
+      const min = Number.isFinite(options.min) ? options.min! : 0;
+      const max = Number.isFinite(options.max) ? options.max! : 1;
+      if (!(max > min)) throw new RangeError(`fader('${name}'): max must be greater than min`);
+      const init = Math.min(max, Math.max(min, Number.isFinite(options.init) ? options.init! : min));
+      return control(init);
+    },
+    pad(name: unknown, options: { init?: boolean } = {}) {
+      requireName("pad", name);
+      return control(options.init ? 1 : 0);
+    },
+    xy(name: unknown) {
+      requireName("xy", name);
+      return { x: control(0.5), y: control(0.5), value: [0.5, 0.5] };
+    },
   };
 };
+
+function requireName(api: string, name: unknown): void {
+  if (typeof name !== "string" || !name.trim()) throw new TypeError(`${api}(name) needs a name, e.g. ${api}('rain')`);
+}
+
+function control(value: number): Any {
+  const pattern = C.signal(() => value);
+  Object.defineProperty(pattern, "value", { get: () => value, configurable: true });
+  return pattern;
+}
 
 /** How many a0…aN band globals to stand in for (hydra tutorials go up to ~8). */
 const AUDIO_BAND_GLOBALS = 16;

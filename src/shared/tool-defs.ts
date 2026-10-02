@@ -67,7 +67,7 @@ export const SERVER_INSTRUCTIONS =
   "play-live-pattern can paint as well as play: add .pianoroll() to a pattern, pass visuals (a preset) and theme, or write " +
   "`await initHydra()` shader code that follows the music via H(pattern) and a.fft — the " +
   "'hydra' topic has copy-ready recipes. Pattern code is real browser JavaScript, so a piece can also " +
-  "draw its own canvases into Hydra, react to every note (onEvent), take taps (onTap) and speak on the beat " +
+  "draw its own canvases into Hydra, react to every note (onEvent), take taps (onTap), give the user faders and pads to play (fader, pad, xy) and speak on the beat " +
   "(say) — music videos, short films and duets: topics 'craft', 'stage', 'film', 'interactive', and finished " +
   "pieces in 'gallery'. For a piece you will keep changing, or a back-to-back jam with the user, open a live session " +
   "(play-live-pattern session: true → update-session / get-session) — the player keeps playing and tells you what happened. " +
@@ -460,7 +460,8 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "`theme` sets the code-editor colour scheme, which also tints the visuals — match it to the mood " +
   "(teletext chiptune, sonicPink synthwave, nord ambient, gruvboxDark lofi). " +
   "Beyond music: the code is real browser JavaScript — cycle(), onFrame, onEvent(pattern, fn), onTap and " +
-  "say(text) (a spoken line as a sample) build music videos, short films and interactive pieces; " +
+  "say(text) (a spoken line as a sample) build music videos, short films and interactive pieces, and " +
+  "fader('name') / pad('name') / xy('name') put controls on the player that the user performs (each is a pattern, e.g. .gain(fader('rain'))); " +
   "see topics 'stage', 'film', 'interactive' and 'gallery'. " +
   "Each call creates a NEW player. To keep one player going — iterating on a piece, or playing back-to-back with the user — pass session: true, then change it with update-session (it swaps on the next bar) and read what happened with get-session (runtime errors, the user's taps and edits). " +
   "Use get-strudel-guide for genre templates, sound references, and advanced features " +

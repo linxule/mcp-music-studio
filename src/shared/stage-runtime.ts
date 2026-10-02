@@ -76,7 +76,51 @@ export interface StageEnv {
   reportError(api: string, error: unknown): void;
   /** Sees every tap delivered to the piece (a live session logs them). */
   observeTap?(tap: { x: number; y: number; cycle: number }): void;
+  /** Strudel's signal(): a continuous pattern that samples `read` when queried. */
+  signal?(read: () => number): unknown;
+  /**
+   * Show the committed evaluation's controls with their current values; the
+   * surface calls `input` as the performer moves them (`final` on release).
+   */
+  renderControls?(controls: ControlSpec[], values: ReadonlyMap<string, ControlValue>, input: ControlInput): void;
+  /** A control was set by the performer (a live session logs it). */
+  observeControl?(change: { name: string; kind: ControlKind; value: ControlValue; cycle: number }): void;
 }
+
+export type ControlKind = "fader" | "pad" | "xy";
+/** A fader or pad is a number; an xy pad is [x, y], each 0..1 (y up). */
+export type ControlValue = number | [number, number];
+export type ControlInput = (name: string, value: ControlValue, final: boolean) => void;
+export interface ControlSpec {
+  kind: ControlKind;
+  name: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  /** pad: stays on until pressed again (otherwise on only while held). */
+  toggle: boolean;
+  init: ControlValue;
+}
+
+export interface FaderOptions {
+  min?: number;
+  max?: number;
+  init?: number;
+  step?: number;
+  label?: string;
+}
+export interface PadOptions {
+  toggle?: boolean;
+  init?: boolean;
+  label?: string;
+}
+
+/** A control as a pattern: `.gain(fader('rain'))` — and `.value` for draw loops. */
+export type ControlHandle = { readonly value: number };
+
+/** At most this many controls on the strip — it has to fit a phone. */
+export const MAX_CONTROLS = 12;
 
 export interface StageFrame {
   cycle: number;
@@ -195,7 +239,12 @@ export interface Stage {
     onEvent: (pattern: unknown, fn: (event: StageEvent) => void) => () => void;
     onTap: (fn: (tap: StageTap) => void) => () => void;
     say: (text: unknown, options?: SayOptions) => unknown;
+    fader: (name: unknown, options?: FaderOptions) => ControlHandle;
+    pad: (name: unknown, options?: PadOptions) => ControlHandle;
+    xy: (name: unknown, options?: { label?: string }) => { x: ControlHandle; y: ControlHandle; readonly value: [number, number] };
   };
+  /** Current control values (diagnostics, a live session's snapshot). */
+  controls(): Array<{ spec: ControlSpec; value: ControlValue }>;
   /**
    * An evaluation is starting: collect its registrations separately. Returns
    * a token for commit/rollback, so a stale evaluation (one that outlived a
@@ -224,6 +273,12 @@ export function createStage(env: StageEnv): Stage {
   // (pending is gone) and start a loop nobody can stop.
   let disposed = false;
   let generation = 0;
+  // Controls: specs belong to an evaluation (like registrations); VALUES
+  // outlive it, so re-running a piece mid-performance keeps the faders where
+  // the performer left them.
+  let controlSpecs = new Map<string, ControlSpec>();
+  let pendingControls: Map<string, ControlSpec> | null = null;
+  const controlValues = new Map<string, ControlValue>();
 
   const cycle = (): number => {
     const c = env.audibleCycle();
@@ -344,6 +399,58 @@ export function createStage(env: StageEnv): Stage {
     };
   };
 
+  const controlName = (api: string, name: unknown): string => {
+    if (typeof name !== "string" || !name.trim()) throw new TypeError(`${api} needs a name, e.g. ${api.replace("(name)", "('rain')")}`);
+    return name.trim().slice(0, 32);
+  };
+
+  const declare = (spec: ControlSpec): void => {
+    const known = controlValues.get(spec.name);
+    const fits =
+      known !== undefined &&
+      (spec.kind === "xy" ? Array.isArray(known) : typeof known === "number" && known >= spec.min && known <= spec.max);
+    if (!fits) controlValues.set(spec.name, spec.init);
+    if (!pendingControls) return; // called from a draw loop: just read it
+    if (!pendingControls.has(spec.name) && pendingControls.size >= MAX_CONTROLS) {
+      throw new RangeError(`At most ${MAX_CONTROLS} controls fit on the strip`);
+    }
+    pendingControls.set(spec.name, spec);
+  };
+
+  const readNumber = (name: string, index?: 0 | 1): number => {
+    const v = controlValues.get(name);
+    if (Array.isArray(v)) return v[index ?? 0];
+    return typeof v === "number" ? v : 0;
+  };
+
+  const handle = (read: () => number): ControlHandle => {
+    const pattern = (env.signal?.(read) ?? {}) as object;
+    Object.defineProperty(pattern, "value", { get: read, configurable: true, enumerable: false });
+    return pattern as ControlHandle;
+  };
+
+  const setControl: ControlInput = (name, value, final) => {
+    const spec = controlSpecs.get(name);
+    if (!spec || disposed) return;
+    const clean: ControlValue = Array.isArray(value)
+      ? [Math.min(1, Math.max(0, value[0])), Math.min(1, Math.max(0, value[1]))]
+      : Math.min(spec.max, Math.max(spec.min, Number(value) || 0));
+    controlValues.set(name, clean);
+    if (final) {
+      try {
+        env.observeControl?.({ name, kind: spec.kind, value: clean, cycle: cycle() });
+      } catch { /* an observer never stops the control */ }
+    }
+  };
+
+  const renderControls = (): void => {
+    try {
+      env.renderControls?.([...controlSpecs.values()], controlValues, setControl);
+    } catch (error) {
+      env.reportError("controls", error);
+    }
+  };
+
   const requireFunction = (api: string, fn: unknown): void => {
     if (typeof fn !== "function") throw new TypeError(`${api} needs a function, got ${typeof fn}`);
   };
@@ -378,18 +485,76 @@ export function createStage(env: StageEnv): Stage {
       env.prefetch?.(url);
       return env.sound(name);
     },
+    fader(name, options = {}) {
+      const id = controlName("fader(name)", name);
+      const min = finite(options.min) ?? 0;
+      const max = finite(options.max) ?? 1;
+      if (!(max > min)) throw new RangeError(`fader('${id}'): max must be greater than min`);
+      const init = Math.min(max, Math.max(min, finite(options.init) ?? min));
+      declare({
+        kind: "fader",
+        name: id,
+        label: typeof options.label === "string" ? options.label.slice(0, 24) : id,
+        min,
+        max,
+        step: finite(options.step) ?? (max - min) / 100,
+        toggle: false,
+        init,
+      });
+      return handle(() => readNumber(id));
+    },
+    pad(name, options = {}) {
+      const id = controlName("pad(name)", name);
+      declare({
+        kind: "pad",
+        name: id,
+        label: typeof options.label === "string" ? options.label.slice(0, 24) : id,
+        min: 0,
+        max: 1,
+        step: 1,
+        toggle: options.toggle === true,
+        init: options.init ? 1 : 0,
+      });
+      return handle(() => readNumber(id));
+    },
+    xy(name, options = {}) {
+      const id = controlName("xy(name)", name);
+      declare({
+        kind: "xy",
+        name: id,
+        label: typeof options.label === "string" ? options.label.slice(0, 24) : id,
+        min: 0,
+        max: 1,
+        step: 0,
+        toggle: false,
+        init: [0.5, 0.5],
+      });
+      const x = handle(() => readNumber(id, 0));
+      const y = handle(() => readNumber(id, 1));
+      return {
+        x,
+        y,
+        get value(): [number, number] {
+          return [readNumber(id, 0), readNumber(id, 1)];
+        },
+      };
+    },
   };
 
   return {
     globals,
     begin() {
       pending = new Set();
+      pendingControls = new Map();
       return ++generation;
     },
     commit(token) {
       if (!pending || (token !== undefined && token !== generation)) return;
       active = pending;
       pending = null;
+      if (pendingControls) controlSpecs = pendingControls;
+      pendingControls = null;
+      renderControls();
       // The previous piece's sentence does not belong to this one.
       env.cancelSpeech?.();
       sync();
@@ -397,16 +562,22 @@ export function createStage(env: StageEnv): Stage {
     rollback(token) {
       if (token !== undefined && token !== generation) return;
       pending = null;
+      pendingControls = null;
       sync();
     },
     stop() {
       disposed = true;
       active = new Set();
       pending = null;
+      pendingControls = null;
+      controlSpecs = new Map();
+      renderControls();
       env.cancelSpeech?.();
       sync();
     },
     size: () => active.size,
+    controls: () =>
+      [...controlSpecs.values()].map((spec) => ({ spec, value: controlValues.get(spec.name) ?? spec.init })),
   };
 }
 
@@ -457,7 +628,7 @@ const TAP_SLOP_PX = 10;
 
 /** Taps on these are the UI's, not the piece's. Blank editor space still counts. */
 export const TAP_EXCLUDE =
-  "button, input, select, textarea, a, label, summary, .cm-line, .cm-gutters, .cm-panels, .cm-tooltip, [role=button]";
+  "button, input, select, textarea, a, label, summary, .cm-line, .cm-gutters, .cm-panels, .cm-tooltip, [role=button], .ms-controls";
 
 export interface BrowserStageOptions {
   /** The running StrudelMirror's scheduler (Cyclist or NeoCyclist), if any. */
@@ -471,6 +642,9 @@ export interface BrowserStageOptions {
   /** A say() clip could not be loaded — once per clip, with the server's reason. */
   reportSpeech?(url: string, reason: string): void;
   observeTap?(tap: { x: number; y: number; cycle: number }): void;
+  observeControl?(change: { name: string; kind: ControlKind; value: ControlValue; cycle: number }): void;
+  /** Where the control strip goes (default: tapArea). */
+  controlsHost?: HTMLElement;
 }
 
 /** The browser env plus what only a page needs: waiting for say() clips. */
@@ -604,6 +778,10 @@ export function createBrowserStageEnv(options: BrowserStageOptions): BrowserStag
     toPattern: (value) => (typeof w.reify === "function" ? w.reify(value) : undefined),
     reportError: options.reportError,
     observeTap: options.observeTap,
+    observeControl: options.observeControl,
+    signal: (read) => (typeof w.signal === "function" ? w.signal(() => read()) : undefined),
+    renderControls: (specs, values, input) =>
+      renderControlStrip(options.controlsHost ?? options.tapArea, specs, values, input),
     ttsOrigin: options.ttsOrigin,
     registerSample(name, url) {
       // Registered when (and only if) the clip loads — see loadClip.
@@ -633,4 +811,159 @@ export function createBrowserStageEnv(options: BrowserStageOptions): BrowserStag
     w.clearTimeout(timer);
   };
   return { env, speech, speechReady };
+}
+
+// -----------------------------------------------------------------------------
+// The control strip — fader(), pad(), xy() drawn for the performer
+//
+// Native elements on purpose: a range input is multi-touch, keyboard and
+// screen-reader ready for free, and survives the host's sandbox. The strip
+// sits at the bottom of the stage, above the code, and is excluded from taps.
+// Rebuilt only when an evaluation commits — values live in the stage, so a
+// rebuilt fader comes back where the performer left it.
+// -----------------------------------------------------------------------------
+
+const CONTROL_STYLE = `
+.ms-controls{position:absolute;left:0;right:0;bottom:0;z-index:20;display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+ padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));background:color-mix(in srgb,var(--background,#111) 72%,transparent);
+ backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);font:12px/1.2 system-ui,sans-serif;color:var(--foreground,#eee);touch-action:none}
+.ms-controls.ms-fixed{position:fixed}
+.ms-fader{display:flex;align-items:center;gap:6px;flex:1 1 140px;min-width:120px}
+.ms-fader span{min-width:3em;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ms-fader input{flex:1;min-width:0;height:32px;accent-color:var(--caret,#7aa2f7)}
+.ms-pad{min-width:56px;min-height:44px;padding:0 12px;border-radius:10px;border:1px solid currentColor;background:transparent;
+ color:inherit;font:600 12px system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;touch-action:none;user-select:none;-webkit-user-select:none}
+.ms-pad[aria-pressed=true]{background:var(--caret,#7aa2f7);color:var(--background,#111);border-color:transparent}
+.ms-xy{position:relative;width:96px;height:96px;border-radius:10px;border:1px solid currentColor;touch-action:none;flex:none}
+.ms-xy i{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:var(--caret,#7aa2f7);pointer-events:none}
+.ms-xy span{position:absolute;left:6px;top:4px;opacity:.75;pointer-events:none}
+`;
+
+function renderControlStrip(
+  host: HTMLElement,
+  specs: ControlSpec[],
+  values: ReadonlyMap<string, ControlValue>,
+  input: ControlInput,
+): void {
+  const doc = host.ownerDocument;
+  if (!doc.getElementById("ms-controls-style")) {
+    const style = doc.createElement("style");
+    style.id = "ms-controls-style";
+    style.textContent = CONTROL_STYLE;
+    doc.head.appendChild(style);
+  }
+  let strip = host.querySelector<HTMLElement>(":scope > .ms-controls");
+  if (!specs.length) {
+    strip?.remove();
+    return;
+  }
+  if (!strip) {
+    strip = doc.createElement("div");
+    strip.className = "ms-controls";
+    strip.setAttribute("role", "group");
+    strip.setAttribute("aria-label", "Controls");
+    if (host === doc.body || host === doc.documentElement) strip.classList.add("ms-fixed");
+    host.appendChild(strip);
+  }
+  strip.replaceChildren();
+  for (const spec of specs) {
+    const value = values.get(spec.name) ?? spec.init;
+    if (spec.kind === "fader") {
+      const label = doc.createElement("label");
+      label.className = "ms-fader";
+      const name = doc.createElement("span");
+      name.textContent = spec.label;
+      const range = doc.createElement("input");
+      range.type = "range";
+      range.min = String(spec.min);
+      range.max = String(spec.max);
+      range.step = String(spec.step || "any");
+      range.value = String(value);
+      range.setAttribute("aria-label", spec.label);
+      range.addEventListener("input", () => input(spec.name, Number(range.value), false));
+      range.addEventListener("change", () => input(spec.name, Number(range.value), true));
+      label.append(name, range);
+      strip.appendChild(label);
+    } else if (spec.kind === "pad") {
+      const button = doc.createElement("button");
+      button.type = "button";
+      button.className = "ms-pad";
+      button.textContent = spec.label;
+      const show = (on: boolean) => button.setAttribute("aria-pressed", String(on));
+      show(value === 1);
+      if (spec.toggle) {
+        button.addEventListener("click", () => {
+          const on = button.getAttribute("aria-pressed") !== "true";
+          show(on);
+          input(spec.name, on ? 1 : 0, true);
+        });
+      } else {
+        const press = (on: boolean) => {
+          if ((button.getAttribute("aria-pressed") === "true") === on) return;
+          show(on);
+          input(spec.name, on ? 1 : 0, true);
+        };
+        button.addEventListener("pointerdown", (e) => {
+          button.setPointerCapture?.(e.pointerId);
+          press(true);
+        });
+        for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+          button.addEventListener(type, () => press(false));
+        }
+        button.addEventListener("keydown", (e) => {
+          if ((e.key === " " || e.key === "Enter") && !e.repeat) press(true);
+        });
+        button.addEventListener("keyup", (e) => {
+          if (e.key === " " || e.key === "Enter") press(false);
+        });
+      }
+      strip.appendChild(button);
+    } else {
+      const pad = doc.createElement("div");
+      pad.className = "ms-xy";
+      pad.setAttribute("role", "slider");
+      pad.setAttribute("aria-label", `${spec.label} (x and y)`);
+      pad.tabIndex = 0;
+      const dot = doc.createElement("i");
+      const name = doc.createElement("span");
+      name.textContent = spec.label;
+      pad.append(name, dot);
+      const place = ([x, y]: [number, number]) => {
+        dot.style.left = `${x * 100}%`;
+        dot.style.top = `${(1 - y) * 100}%`;
+        pad.setAttribute("aria-valuetext", `x ${x.toFixed(2)}, y ${y.toFixed(2)}`);
+      };
+      place(Array.isArray(value) ? value : [0.5, 0.5]);
+      let dragging = false;
+      const at = (e: PointerEvent): [number, number] => {
+        const r = pad.getBoundingClientRect();
+        const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+        const y = Math.min(1, Math.max(0, 1 - (e.clientY - r.top) / r.height));
+        return [x, y];
+      };
+      pad.addEventListener("pointerdown", (e) => {
+        dragging = true;
+        pad.setPointerCapture?.(e.pointerId);
+        const v = at(e);
+        place(v);
+        input(spec.name, v, false);
+      });
+      pad.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        const v = at(e);
+        place(v);
+        input(spec.name, v, false);
+      });
+      const end = (e: PointerEvent) => {
+        if (!dragging) return;
+        dragging = false;
+        const v = at(e);
+        place(v);
+        input(spec.name, v, true);
+      };
+      pad.addEventListener("pointerup", end);
+      pad.addEventListener("pointercancel", end);
+      strip.appendChild(pad);
+    }
+  }
 }

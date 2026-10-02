@@ -65,7 +65,18 @@ export type SessionEvent =
       report?: string;
     }
   | { seq: number; at: number; t: "pass"; cycle: number | null }
+  | { seq: number; at: number; t: "control"; name: string; kind: string; value: number | [number, number]; cycle: number | null }
+  | { seq: number; at: number; t: "controls"; list: ControlState[] }
   | { seq: number; at: number; t: "update"; rev: number; quantize: number };
+
+/** One control on the player's strip, as the model sees it. */
+export interface ControlState {
+  name: string;
+  kind: string;
+  value: number | [number, number];
+  min?: number;
+  max?: number;
+}
 
 /** An event before the log stamps it. */
 export type NewEvent = SessionEvent extends infer E ? (E extends SessionEvent ? Omit<E, "seq" | "at"> : never) : never;
@@ -123,6 +134,18 @@ const text = (v: unknown, max = SESSION_MAX_TEXT_CHARS): string | null =>
 
 type Incoming = Record<string, unknown>;
 
+function controlValue(v: unknown): number | [number, number] | null {
+  if (Array.isArray(v) && v.length === 2) {
+    const x = finite(v[0]);
+    const y = finite(v[1]);
+    return x === null || y === null ? null : [x, y];
+  }
+  return finite(v);
+}
+
+const showValue = (v: number | [number, number]): string =>
+  Array.isArray(v) ? `x ${v[0].toFixed(2)}, y ${v[1].toFixed(2)}` : String(Math.round(v * 1000) / 1000);
+
 /**
  * Turn what a widget posted into log events. The widget is untrusted (anyone
  * holding the id can post), so every field is re-typed and bounded; unknown
@@ -176,6 +199,31 @@ export function coerceEvents(raw: unknown, max = 64): NewEvent[] {
       case "pass":
         out.push({ t: "pass", cycle: finite(e.cycle) });
         break;
+      case "control": {
+        const name = text(e.name, 32);
+        const value = controlValue(e.value);
+        if (name && value !== null) out.push({ t: "control", name, kind: text(e.kind, 8) ?? "?", value, cycle: finite(e.cycle) });
+        break;
+      }
+      case "controls": {
+        if (!Array.isArray(e.list)) break;
+        const list: ControlState[] = [];
+        for (const c of e.list.slice(0, 12)) {
+          const item = c as Incoming;
+          const name = text(item?.name, 32);
+          const value = controlValue(item?.value);
+          if (!name || value === null) continue;
+          list.push({
+            name,
+            kind: text(item.kind, 8) ?? "?",
+            value,
+            min: finite(item.min) ?? undefined,
+            max: finite(item.max) ?? undefined,
+          });
+        }
+        out.push({ t: "controls", list });
+        break;
+      }
     }
   }
   return out;
@@ -311,6 +359,37 @@ export function describeSession(data: SessionData, now: number, since = data.rea
     );
   }
 
+  // The strip as it stands: the last snapshot, moved by every control event since.
+  let snapshotAt = -1;
+  for (let i = data.events.length - 1; i >= 0; i--) {
+    if (data.events[i].t === "controls") {
+      snapshotAt = i;
+      break;
+    }
+  }
+  if (snapshotAt >= 0) {
+    const snap = data.events[snapshotAt] as Extract<SessionEvent, { t: "controls" }>;
+    const now = new Map(snap.list.map((c) => [c.name, { ...c }]));
+    for (const e of data.events.slice(snapshotAt + 1)) {
+      if (e.t === "control" && now.has(e.name)) now.get(e.name)!.value = e.value;
+    }
+    if (now.size) {
+      lines.push(
+        "Controls on the player now: " +
+          [...now.values()]
+            .map((c) =>
+              c.kind === "pad"
+                ? `${c.name} (pad) ${c.value === 1 ? "on" : "off"}`
+                : c.kind === "fader"
+                  ? `${c.name} (fader ${c.min ?? 0}–${c.max ?? 1}) ${showValue(c.value)}`
+                  : `${c.name} (xy) ${showValue(c.value)}`,
+            )
+            .join("; ") +
+          ". Read them in code with fader('name') / pad('name') / xy('name') — same names keep their values across updates.",
+      );
+    }
+  }
+
   const fresh = data.events.filter((e) => e.seq > since);
   if (!fresh.length) {
     lines.push("Nothing new since your last read.");
@@ -318,9 +397,27 @@ export function describeSession(data: SessionData, now: number, since = data.rea
   }
   lines.push(since > 0 ? "Since your last read:" : "Log:");
 
-  // Walk in order, folding runs of taps into one line.
+  // Walk in order, folding runs of taps — and of moves on one control — into one line.
   let taps: Array<Extract<SessionEvent, { t: "tap" }>> = [];
+  let moves: Array<Extract<SessionEvent, { t: "control" }>> = [];
+  const flushMoves = () => {
+    if (!moves.length) return;
+    const first = moves[0];
+    const last = moves[moves.length - 1];
+    const span = first.cycle === last.cycle ? `cycle ${cyc(first.cycle)}` : `cycles ${cyc(first.cycle)}–${cyc(last.cycle)}`;
+    if (first.kind === "pad") {
+      const presses = moves.filter((m) => m.value === 1);
+      lines.push(
+        `- the human pressed pad '${first.name}' ${presses.length} time${presses.length === 1 ? "" : "s"} ` +
+          `(${presses.map((m) => cyc(m.cycle)).join(", ") || span}); now ${last.value === 1 ? "on" : "off"}.`,
+      );
+    } else {
+      lines.push(`- the human moved ${first.kind} '${first.name}' ${moves.length === 1 ? "to" : `${moves.length} times, ending at`} ${showValue(last.value)} (${span}).`);
+    }
+    moves = [];
+  };
   const flushTaps = () => {
+    flushMoves();
     if (taps.length) lines.push(`- ${describeTaps(taps)}`);
     taps = [];
   };
@@ -329,9 +426,17 @@ export function describeSession(data: SessionData, now: number, since = data.rea
   const lastEdit = editsWithCode[editsWithCode.length - 1];
   for (const e of fresh) {
     if (e.t === "tap") {
+      flushMoves();
       taps.push(e);
       continue;
     }
+    if (e.t === "control") {
+      if (taps.length) flushTaps();
+      if (moves.length && moves[0].name !== e.name) flushMoves();
+      moves.push(e);
+      continue;
+    }
+    if (e.t === "controls") continue;
     flushTaps();
     switch (e.t) {
       case "joined":

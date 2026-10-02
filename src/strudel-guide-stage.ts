@@ -316,6 +316,51 @@ stack(
   or simpler, prepare every line up front and choose between them.
 - Don't use speechSynthesis: it never plays in the Claude mobile app.
 
+## Controls — an instrument the listener plays
+fader(), pad() and xy() put real controls on a strip at the bottom of the
+player. Each one is a PATTERN (use it anywhere a number pattern goes), and its .value is a
+plain number for onFrame and Hydra:
+
+const rain = fader('rain')                                   // 0..1
+const warmth = fader('warmth', { min: 300, max: 4000, init: 900 })
+const thunder = pad('thunder')                               // 1 while held
+const storm = pad('storm', { toggle: true })                 // on/off
+const wind = xy('wind')                                      // wind.x, wind.y: 0..1, y up
+stack(
+  s("hh*16").gain(rain.fmap(r => r * 0.5)).pan(wind.x),
+  note("<a2 f2 d2 e2>").s("sawtooth").lpf(warmth).gain(0.3),
+  s("bd*8").bank("RolandTR808").lpf(140).gain(thunder),
+  s("bd ~ ~ bd, ~ sd").bank("RolandTR909").gain(storm.fmap(on => on * 0.8))
+)
+
+- Values live outside the code: re-running the piece (or a live-session
+  update) keeps every control where the performer left it, as long as the
+  name stays the same.
+- At most 12 controls; 3–5 is a better instrument. Name them for what they do
+  to the music ("rain", "drop"), not "fader1".
+- Hydra and canvases read .value: () => rain.value * 0.5.
+- Changes are heard within ~0.2 s (the scheduler's look-ahead).
+- Every move is logged for you in a live session (below).
+"weather-machine" in topic "gallery" is a complete instrument.
+
+## Live sessions — playing back-to-back
+play-live-pattern with session: true keeps ONE player open, and you get two
+tools for it:
+- get-session: what is playing, runtime errors, the controls as they stand,
+  and what the listener did since you last looked — taps, control moves, code
+  they edited and ran, and Pass (their "your turn").
+- update-session(code, quantize): your next pattern lands on the next bar
+  (quantize 1), phrase (4 or 8) or at once (0). No new player; the music never
+  stops; the result says whether it ran.
+
+A turn: the listener plays and presses Pass → you read get-session → you answer
+with update-session. Answer what they DID: they held thunder through four bars
+→ the next phrase is the storm; they killed the band and leaned the wind hard
+left → strip it to the pad and let it drift; they edited your code → keep their
+change and build on it. Send the whole pattern, change one or two things, and
+keep their controls (same names) so their hands stay on the instrument. Say one
+line in the chat about what you heard and what you answered with.
+
 ## Ideas that work
 - A simulation composes: Game of Life, a flock, a random walk — make each
   generation a pure function of the bar number, and let a playhead read it.
@@ -387,6 +432,9 @@ You can't see or hear the widget. These are the ways it tells you what happened.
   sounds, stops the user made, voice and tap capabilities. If your host gives
   you a tool to read the widget's context (claude.ai: read_widget_context),
   read it before assuming something played.
+- A live session (play-live-pattern with session: true): get-session returns
+  the widget's reports from the server, in every host — the reliable channel
+  where the host gives you no tool to read widget context.
 - The user. Ask what they see and hear when it matters.
 
 ## Line numbers

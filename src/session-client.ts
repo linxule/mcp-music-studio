@@ -42,6 +42,8 @@ export interface SessionClientEnv {
 /** Batch window for ordinary events (taps); reports and answers go at once. */
 export const FLUSH_DELAY_MS = 1500;
 const BACKOFF_MS = [1000, 2000, 5000, 10_000, 30_000];
+/** How often the player's state is compared with what the server last heard. */
+export const STATE_WATCH_MS = 1000;
 
 export class SessionClient {
   private queue: NewEvent[] = [];
@@ -50,6 +52,8 @@ export class SessionClient {
   private rev = 0;
   private poll: AbortController | null = null;
   private failures = 0;
+  /** The play state the current poll told the server. */
+  private sentState: string | null = null;
 
   constructor(
     readonly origin: string,
@@ -64,6 +68,21 @@ export class SessionClient {
   start(join: Omit<Extract<NewEvent, { t: "joined" }>, "t">): void {
     this.log({ t: "joined", ...join }, true);
     void this.loop();
+    this.watchState();
+  }
+
+  /**
+   * The heartbeat rides on the poll, which can hang for 20 s. Whenever the
+   * player's state differs from what the current poll reported (a start, a
+   * stop, audio unblocked — whichever code path caused it), poll again now.
+   */
+  private watchState(): void {
+    if (this.stopped) return;
+    this.env.setTimeout(() => {
+      if (this.stopped) return;
+      if (this.sentState !== null && this.env.clock().state !== this.sentState) this.nudge();
+      this.watchState();
+    }, STATE_WATCH_MS);
   }
 
   stop(): void {
@@ -134,6 +153,7 @@ export class SessionClient {
       if (clock.cycle !== null) q.set("cycle", String(Math.round(clock.cycle * 1000) / 1000));
       if (clock.cps !== null) q.set("cps", String(clock.cps));
       this.poll = new AbortController();
+      this.sentState = clock.state;
       let res: Response;
       try {
         res = await this.env.fetch(`${this.base}/next?${q}`, { signal: this.poll.signal, cache: "no-store" });

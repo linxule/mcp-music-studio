@@ -1,7 +1,7 @@
 // The stage runtime (src/shared/stage-runtime.ts): cycle(), onFrame, onEvent,
 // onTap, say() — driven by a fake clock and a fake requestAnimationFrame, with
 // real Strudel patterns.
-import { note, s } from "@strudel/core";
+import { note, s, signal } from "@strudel/core";
 import { mini } from "@strudel/mini";
 import { describe, expect, it, vi } from "vitest";
 import { createStage, guardBrowserSpeech, type StageEnv } from "../src/shared/stage-runtime";
@@ -362,5 +362,100 @@ describe("Opus gauntlet fixes", () => {
     expect(taps).toEqual([[0.5, 0.25]]);
     ev("pointerdown", 0, 0, "mouse"); // a click is immediate
     expect(taps).toHaveLength(2);
+  });
+});
+
+describe("controls — fader(), pad(), xy()", () => {
+  const withControls = () => {
+    const rendered: Array<Array<{ name: string; kind: string }>> = [];
+    const observed: unknown[] = [];
+    let input: ((name: string, value: any, final: boolean) => void) | null = null;
+    const h = harness({
+      // A real Strudel signal: sampled when queried.
+      signal: (read) => signal(() => read()),
+      renderControls: (specs, _values, set) => {
+        rendered.push(specs.map((sp) => ({ name: sp.name, kind: sp.kind })));
+        input = set;
+      },
+      observeControl: (c) => void observed.push(c),
+    });
+    return { h, rendered, observed, move: (n: string, v: any, final = true) => input?.(n, v, final) };
+  };
+
+  it("a fader is a pattern that reads the performer's value", () => {
+    const { h, move } = withControls();
+    const t = h.stage.begin();
+    const rain = h.stage.globals.fader("rain", { min: 0, max: 2, init: 0.5 });
+    h.stage.commit(t);
+    const sampled = () => (s(mini("hh*4")).gain(rain as any) as any).queryArc(0, 1).map((x: any) => x.value.gain);
+    expect(rain.value).toBe(0.5);
+    expect(sampled()).toEqual([0.5, 0.5, 0.5, 0.5]);
+    move("rain", 1.5);
+    expect(rain.value).toBe(1.5);
+    expect(sampled()).toEqual([1.5, 1.5, 1.5, 1.5]);
+    move("rain", 9); // clamped to the range
+    expect(rain.value).toBe(2);
+  });
+
+  it("values survive a re-evaluation; specs belong to it", () => {
+    const { h, rendered, move } = withControls();
+    let t = h.stage.begin();
+    h.stage.globals.fader("rain");
+    h.stage.globals.pad("drop", { toggle: true });
+    h.stage.commit(t);
+    move("rain", 0.8);
+    t = h.stage.begin();
+    const again = h.stage.globals.fader("rain");
+    h.stage.commit(t);
+    expect(again.value).toBe(0.8);
+    expect(rendered.at(-1)).toEqual([{ name: "rain", kind: "fader" }]);
+    // A failed evaluation keeps the strip it had.
+    t = h.stage.begin();
+    h.stage.globals.xy("space");
+    h.stage.rollback(t);
+    expect(h.stage.controls().map((c) => c.spec.name)).toEqual(["rain"]);
+  });
+
+  it("reports final moves with the cycle, not every drag step", () => {
+    const { h, observed, move } = withControls();
+    const t = h.stage.begin();
+    h.stage.globals.fader("rain");
+    h.stage.commit(t);
+    h.frame(3.25);
+    move("rain", 0.2, false);
+    move("rain", 0.4, false);
+    move("rain", 0.6, true);
+    expect(observed).toEqual([{ name: "rain", kind: "fader", value: 0.6, cycle: 3.25 }]);
+  });
+
+  it("an xy pad has x and y patterns and clamps to 0..1", () => {
+    const { h, move } = withControls();
+    const t = h.stage.begin();
+    const space = h.stage.globals.xy("space");
+    h.stage.commit(t);
+    expect(space.value).toEqual([0.5, 0.5]);
+    move("space", [1.4, -0.2]);
+    expect(space.value).toEqual([1, 0]);
+    expect(space.x.value).toBe(1);
+    expect(space.y.value).toBe(0);
+  });
+
+  it("refuses a nameless control and an empty range, and caps the strip", () => {
+    const { h } = withControls();
+    const t = h.stage.begin();
+    expect(() => h.stage.globals.fader("")).toThrow(/needs a name/);
+    expect(() => h.stage.globals.fader("x", { min: 1, max: 1 })).toThrow(/max must be greater/);
+    for (let i = 0; i < 12; i++) h.stage.globals.pad(`p${i}`);
+    expect(() => h.stage.globals.pad("one-too-many")).toThrow(/At most 12/);
+    h.stage.rollback(t);
+  });
+
+  it("teardown clears the strip", () => {
+    const { h, rendered } = withControls();
+    const t = h.stage.begin();
+    h.stage.globals.pad("drop");
+    h.stage.commit(t);
+    h.stage.stop();
+    expect(rendered.at(-1)).toEqual([]);
   });
 });

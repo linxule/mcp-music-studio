@@ -12,7 +12,7 @@ import { TTS_SAMPLE_PREFIX } from "../src/shared/tts";
  * use the stage runtime. They run where the production validator runs them:
  * the vm sandbox, with its inert browser and stage stand-ins.
  */
-const USES_BROWSER = /\bdocument\.|\bwindow\.|\bonFrame\(|\bonEvent\(|\bonTap\(|\bsay\(|\bcycle\(\)/;
+const USES_BROWSER = /\bdocument\.|\bwindow\.|\bonFrame\(|\bonEvent\(|\bonTap\(|\bsay\(|\bcycle\(\)|\b(?:fader|pad|xy)\(/;
 const evaluate = (code: string) => (USES_BROWSER.test(code) ? evalStrudelSandboxed(code) : evalStrudel(code));
 
 /**

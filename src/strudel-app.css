@@ -195,6 +195,12 @@ html, body {
   max-width: 40%;
 }
 
+/* fader()/pad()/xy() strip (src/shared/stage-runtime.ts) covers the bottom of
+   the stage: let the code scroll clear of it. */
+.repl-section:has(> .ms-controls) .strudel-container {
+  padding-bottom: 72px;
+}
+
 /* Live session: a small state chip next to the status line. */
 .session-badge {
   font-size: 11px;

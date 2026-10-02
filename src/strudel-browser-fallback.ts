@@ -588,6 +588,7 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     getScheduler: function () { var ed = getEditor(); return (ed && ed.repl && ed.repl.scheduler) || null; },
     isPlaying: function () { var ed = getEditor(); return !!(ed && ed.repl && ed.repl.state && ed.repl.state.started); },
     tapArea: document.documentElement,
+    controlsHost: document.body,
     reportError: function (api, err) { console.error('[stage] ' + api + ' callback threw:', err); },
     ttsOrigin: ${JSON.stringify(DEFAULT_SHARE_ORIGIN)},
     reportSpeech: function (url, reason) {

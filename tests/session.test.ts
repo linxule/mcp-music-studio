@@ -436,3 +436,56 @@ describe("session tools", () => {
     expect(seen).toEqual(["POST /session/new", `GET /session/${ID}/state`, `POST /session/${ID}/update`]);
   });
 });
+
+describe("controls in the session log", () => {
+  it("shows the strip as it stands and folds moves", () => {
+    const data = newSession(ID, 0);
+    appendEvents(data, [{ t: "joined", host: "h" }], 0);
+    recordHeartbeat(data, { cycle: 1, cps: 0.5, state: "playing" }, 0);
+    appendEvents(
+      data,
+      coerceEvents([
+        { t: "controls", list: [{ name: "rain", kind: "fader", value: 0, min: 0, max: 1 }, { name: "drop", kind: "pad", value: 0 }, { name: "space", kind: "xy", value: [0.5, 0.5] }] },
+        { t: "control", name: "rain", kind: "fader", value: 0.3, cycle: 2 },
+        { t: "control", name: "rain", kind: "fader", value: 0.9, cycle: 3 },
+        { t: "control", name: "drop", kind: "pad", value: 1, cycle: 4 },
+        { t: "control", name: "drop", kind: "pad", value: 0, cycle: 4.2 },
+        { t: "control", name: "drop", kind: "pad", value: 1, cycle: 5 },
+        { t: "control", name: "space", kind: "xy", value: [0.1, 0.9], cycle: 6 },
+      ]),
+      1000,
+    );
+    const text = describeSession(data, 2000);
+    expect(text).toContain("Controls on the player now: rain (fader 0–1) 0.9; drop (pad) on; space (xy) x 0.10, y 0.90.");
+    expect(text).toContain("- the human moved fader 'rain' 2 times, ending at 0.9 (cycles 2.0–3.0).");
+    expect(text).toContain("- the human pressed pad 'drop' 2 times (4.0, 5.0); now on.");
+    expect(text).toContain("- the human moved xy 'space' to x 0.10, y 0.90 (cycle 6.0).");
+  });
+});
+
+describe("SessionClient heartbeat", () => {
+  it("re-polls when the player's state changes mid-poll", async () => {
+    let state = "stopped";
+    const urls: string[] = [];
+    const client = new SessionClient("https://example.test", ID, {
+      fetch: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/events")) return new Response("{}");
+        urls.push(url);
+        // Hang like a long-poll until aborted.
+        return new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))),
+        );
+      },
+      setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 5)),
+      clearTimeout: (h) => clearTimeout(h as any),
+      clock: () => ({ cycle: 0, cps: 0.5, state }),
+      apply: async () => ({ ok: true, cycle: 0 }),
+    });
+    client.start({});
+    await vi.waitFor(() => expect(urls).toHaveLength(1));
+    expect(urls[0]).toContain("state=stopped");
+    state = "playing";
+    await vi.waitFor(() => expect(urls.some((u) => u.includes("state=playing"))).toBe(true));
+    client.stop();
+  });
+});
