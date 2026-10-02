@@ -83,9 +83,39 @@ export interface StageEnv {
    * surface calls `input` as the performer moves them (`final` on release).
    */
   renderControls?(controls: ControlSpec[], values: ReadonlyMap<string, ControlValue>, input: ControlInput): void;
-  /** A control was set by the performer (a live session logs it). */
-  observeControl?(change: { name: string; kind: ControlKind; value: ControlValue; cycle: number }): void;
+  /** A control was set by the performer or a sensor (a live session logs it). */
+  observeControl?(change: { name: string; kind: ControlKind; value: ControlValue; cycle: number; source?: ControlSource }): void;
+  /**
+   * Start or stop the device sensors the committed piece declared. The env
+   * calls `feed` with each reading and `status` whenever a sensor's state
+   * changes; permission is asked on the next user gesture, never before.
+   */
+  sensors?(
+    want: Record<SensorKind, boolean>,
+    feed: (sensor: SensorKind, value: ControlValue) => void,
+    status: (sensor: SensorKind, state: SensorState) => void,
+  ): void;
+  /** Move a rendered control to a sensor's reading (no re-render). */
+  showControlValue?(name: string, value: ControlValue): void;
+  /** The strip was (re)drawn: a live session snapshots it. */
+  observeSurface?(): void;
+  /** Milliseconds, for throttling sensor moves into the log. */
+  now?(): number;
 }
+
+/** tilt() reads device orientation; mic() the input loudness. */
+export type SensorKind = "tilt" | "mic";
+/**
+ * live: readings arrive. waiting: a tap is needed to ask permission.
+ * listening: asked/listening, nothing has arrived yet. denied: the user or
+ * the host refused. unsupported: this browser has no such sensor API.
+ * Anything but live means the control is played by hand on the strip.
+ */
+export interface SensorState {
+  state: "live" | "waiting" | "listening" | "denied" | "unsupported" | "off";
+  detail?: string;
+}
+export type ControlSource = "sensor" | "manual";
 
 export type ControlKind = "fader" | "pad" | "xy";
 /** A fader or pad is a number; an xy pad is [x, y], each 0..1 (y up). */
@@ -101,6 +131,10 @@ export interface ControlSpec {
   /** pad: stays on until pressed again (otherwise on only while held). */
   toggle: boolean;
   init: ControlValue;
+  /** tilt()/mic(): the device sensor that feeds this control when it can. */
+  sensor?: SensorKind;
+  /** Who moves it right now: the sensor, or the performer's hand. */
+  source?: ControlSource;
 }
 
 export interface FaderOptions {
@@ -242,7 +276,11 @@ export interface Stage {
     fader: (name: unknown, options?: FaderOptions) => ControlHandle;
     pad: (name: unknown, options?: PadOptions) => ControlHandle;
     xy: (name: unknown, options?: { label?: string }) => { x: ControlHandle; y: ControlHandle; readonly value: [number, number] };
+    tilt: (name?: unknown, options?: { label?: string }) => { x: ControlHandle; y: ControlHandle; readonly value: [number, number] };
+    mic: (name?: unknown, options?: { label?: string }) => ControlHandle;
   };
+  /** Each sensor's state, measured in this frame (for the model's report). */
+  sensorStates(): Record<SensorKind, SensorState>;
   /** Current control values (diagnostics, a live session's snapshot). */
   controls(): Array<{ spec: ControlSpec; value: ControlValue }>;
   /**
@@ -279,6 +317,10 @@ export function createStage(env: StageEnv): Stage {
   let controlSpecs = new Map<string, ControlSpec>();
   let pendingControls: Map<string, ControlSpec> | null = null;
   const controlValues = new Map<string, ControlValue>();
+  const sensorStates: Record<SensorKind, SensorState> = { tilt: { state: "off" }, mic: { state: "off" } };
+  /** Last time (ms) and value a sensor move was logged, per control. */
+  const sensorLogged = new Map<string, { at: number; value: ControlValue }>();
+  const SENSOR_LOG_MS = 500;
 
   const cycle = (): number => {
     const c = env.audibleCycle();
@@ -444,19 +486,68 @@ export function createStage(env: StageEnv): Stage {
     const clean: ControlValue = Array.isArray(value)
       ? [Math.min(1, Math.max(0, value[0])), Math.min(1, Math.max(0, value[1]))]
       : Math.min(spec.max, Math.max(spec.min, Number(value) || 0));
+    // A control the sensor is playing doesn't take the hand too.
+    if (spec.sensor && sensorStates[spec.sensor].state === "live") return;
     controlValues.set(name, clean);
     if (final) {
       try {
-        env.observeControl?.({ name, kind: spec.kind, value: clean, cycle: cycle() });
+        env.observeControl?.({ name, kind: spec.kind, value: clean, cycle: cycle(), ...(spec.sensor ? { source: "manual" as const } : {}) });
       } catch { /* an observer never stops the control */ }
     }
   };
 
+  const sourceOf = (spec: ControlSpec): ControlSpec =>
+    spec.sensor ? { ...spec, source: sensorStates[spec.sensor].state === "live" ? "sensor" : "manual" } : spec;
+
   const renderControls = (): void => {
     try {
-      env.renderControls?.([...controlSpecs.values()], controlValues, setControl);
+      env.renderControls?.([...controlSpecs.values()].map(sourceOf), controlValues, setControl);
+      env.observeSurface?.();
     } catch (error) {
       env.reportError("controls", error);
+    }
+  };
+
+  const feedSensor = (sensor: SensorKind, value: ControlValue): void => {
+    if (disposed || sensorStates[sensor].state !== "live") return;
+    const now = env.now?.() ?? Date.now();
+    for (const spec of controlSpecs.values()) {
+      if (spec.sensor !== sensor) continue;
+      const clean: ControlValue = Array.isArray(value)
+        ? [Math.min(1, Math.max(0, value[0])), Math.min(1, Math.max(0, value[1]))]
+        : Math.min(1, Math.max(0, Number(value) || 0));
+      controlValues.set(spec.name, clean);
+      try {
+        env.showControlValue?.(spec.name, clean);
+      } catch { /* the strip is cosmetic */ }
+      // A sensor moves continuously: log at most twice a second, and only a
+      // real change, so the session log holds the gesture, not the noise.
+      const last = sensorLogged.get(spec.name);
+      const moved = !last || distance(last.value, clean) > 0.03;
+      if (moved && (!last || now - last.at >= SENSOR_LOG_MS)) {
+        sensorLogged.set(spec.name, { at: now, value: clean });
+        try {
+          env.observeControl?.({ name: spec.name, kind: spec.kind, value: clean, cycle: cycle(), source: "sensor" });
+        } catch { /* an observer never stops the sensor */ }
+      }
+    }
+  };
+
+  const setSensorState = (sensor: SensorKind, state: SensorState): void => {
+    const before = sensorStates[sensor];
+    sensorStates[sensor] = state;
+    // live ↔ not-live changes who plays the control: redraw the strip.
+    if ((before.state === "live") !== (state.state === "live") && !disposed) renderControls();
+  };
+
+  const syncSensors = (): void => {
+    const want = { tilt: false, mic: false };
+    if (!disposed) for (const spec of controlSpecs.values()) if (spec.sensor) want[spec.sensor] = true;
+    for (const k of ["tilt", "mic"] as const) if (!want[k]) sensorStates[k] = { state: "off" };
+    try {
+      env.sensors?.(want, feedSensor, setSensorState);
+    } catch (error) {
+      env.reportError("sensors", error);
     }
   };
 
@@ -548,6 +639,44 @@ export function createStage(env: StageEnv): Stage {
         },
       };
     },
+    tilt(name = "tilt", options = {}) {
+      const id = controlName("tilt(name)", name);
+      declare({
+        kind: "xy",
+        name: id,
+        label: typeof options.label === "string" ? options.label.slice(0, 24) : id,
+        min: 0,
+        max: 1,
+        step: 0,
+        toggle: false,
+        init: [0.5, 0.5],
+        sensor: "tilt",
+      });
+      const x = handle(() => readNumber(id, 0));
+      const y = handle(() => readNumber(id, 1));
+      return {
+        x,
+        y,
+        get value(): [number, number] {
+          return [readNumber(id, 0), readNumber(id, 1)];
+        },
+      };
+    },
+    mic(name = "mic", options = {}) {
+      const id = controlName("mic(name)", name);
+      declare({
+        kind: "fader",
+        name: id,
+        label: typeof options.label === "string" ? options.label.slice(0, 24) : id,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        toggle: false,
+        init: 0,
+        sensor: "mic",
+      });
+      return handle(() => readNumber(id));
+    },
   };
 
   return {
@@ -563,6 +692,7 @@ export function createStage(env: StageEnv): Stage {
       pending = null;
       if (pendingControls) controlSpecs = pendingControls;
       pendingControls = null;
+      syncSensors();
       renderControls();
       // The previous piece's sentence does not belong to this one.
       env.cancelSpeech?.();
@@ -580,14 +710,22 @@ export function createStage(env: StageEnv): Stage {
       pending = null;
       pendingControls = null;
       controlSpecs = new Map();
+      syncSensors();
       renderControls();
       env.cancelSpeech?.();
       sync();
     },
     size: () => active.size,
     controls: () =>
-      [...controlSpecs.values()].map((spec) => ({ spec, value: controlValues.get(spec.name) ?? spec.init })),
+      [...controlSpecs.values()].map((spec) => ({ spec: sourceOf(spec), value: controlValues.get(spec.name) ?? spec.init })),
+    sensorStates: () => ({ tilt: { ...sensorStates.tilt }, mic: { ...sensorStates.mic } }),
   };
+}
+
+function distance(a: ControlValue, b: ControlValue): number {
+  if (Array.isArray(a) && Array.isArray(b)) return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
+  if (typeof a === "number" && typeof b === "number") return Math.abs(a - b);
+  return Infinity;
 }
 
 // -----------------------------------------------------------------------------
@@ -651,9 +789,13 @@ export interface BrowserStageOptions {
   /** A say() clip could not be loaded — once per clip, with the server's reason. */
   reportSpeech?(url: string, reason: string): void;
   observeTap?(tap: { x: number; y: number; cycle: number }): void;
-  observeControl?(change: { name: string; kind: ControlKind; value: ControlValue; cycle: number }): void;
+  observeControl?(change: { name: string; kind: ControlKind; value: ControlValue; cycle: number; source?: ControlSource }): void;
   /** Where the control strip goes (default: tapArea). */
   controlsHost?: HTMLElement;
+  /** The strip was redrawn (a live session snapshots it). */
+  observeSurface?(): void;
+  /** A sensor's state changed — measured here, for the model's report. */
+  observeSensor?(sensor: SensorKind, state: SensorState): void;
 }
 
 /** The browser env plus what only a page needs: waiting for say() clips. */
@@ -715,6 +857,7 @@ export function createBrowserStageEnv(options: BrowserStageOptions): BrowserStag
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   };
+  const sensors = createBrowserSensors(w);
   const env: StageEnv = {
     audibleCycle() {
       const scheduler = options.getScheduler();
@@ -791,6 +934,17 @@ export function createBrowserStageEnv(options: BrowserStageOptions): BrowserStag
     signal: (read) => (typeof w.signal === "function" ? w.signal(() => read()) : undefined),
     renderControls: (specs, values, input) =>
       renderControlStrip(options.controlsHost ?? options.tapArea, specs, values, input),
+    showControlValue: (name, value) => {
+      const host = options.controlsHost ?? options.tapArea;
+      (host.querySelector(":scope > .ms-controls") as any)?.__msShow?.get(name)?.(value);
+    },
+    observeSurface: options.observeSurface,
+    now: () => Date.now(),
+    sensors: (want, feed, status) =>
+      sensors.sync(want, feed, (sensor, state) => {
+        status(sensor, state);
+        options.observeSensor?.(sensor, state);
+      }),
     ttsOrigin: options.ttsOrigin,
     registerSample(name, url) {
       // Registered when (and only if) the clip loads — see loadClip.
@@ -846,6 +1000,10 @@ const CONTROL_STYLE = `
 .ms-xy{position:relative;width:96px;height:96px;border-radius:10px;border:1px solid currentColor;touch-action:none;flex:none}
 .ms-xy i{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:var(--caret,#7aa2f7);pointer-events:none}
 .ms-xy span{position:absolute;left:6px;top:4px;opacity:.75;pointer-events:none}
+.ms-src{font-style:normal;font-size:10px;opacity:.7;margin-left:4px;letter-spacing:.03em}
+.ms-src[data-live]{opacity:1;color:var(--caret,#7aa2f7)}
+.ms-xy .ms-src{position:absolute;right:6px;bottom:4px;left:auto;top:auto}
+.ms-live{pointer-events:none}
 `;
 
 function renderControlStrip(
@@ -875,6 +1033,21 @@ function renderControlStrip(
     host.appendChild(strip);
   }
   strip.replaceChildren();
+  // Sensor-fed controls move without a redraw: name → show(value).
+  const show = new Map<string, (value: ControlValue) => void>();
+  (strip as any).__msShow = show;
+  const sourceTag = (spec: ControlSpec): HTMLElement | null => {
+    if (!spec.sensor) return null;
+    const tag = doc.createElement("em");
+    tag.className = "ms-src";
+    const live = spec.source === "sensor";
+    if (live) tag.dataset.live = "";
+    tag.textContent = live ? `● ${spec.sensor === "tilt" ? "tilt" : "mic"}` : "by hand";
+    tag.title = live
+      ? `Played by the device's ${spec.sensor === "tilt" ? "motion sensor" : "microphone"}`
+      : `The ${spec.sensor === "tilt" ? "motion sensor" : "microphone"} isn't available here (yet) — tap to allow it, or play it by hand`;
+    return tag;
+  };
   for (const spec of specs) {
     const value = values.get(spec.name) ?? spec.init;
     if (spec.kind === "fader") {
@@ -891,6 +1064,14 @@ function renderControlStrip(
       range.setAttribute("aria-label", spec.label);
       range.addEventListener("input", () => input(spec.name, Number(range.value), false));
       range.addEventListener("change", () => input(spec.name, Number(range.value), true));
+      const tag = sourceTag(spec);
+      if (tag) name.appendChild(tag);
+      if (spec.source === "sensor") {
+        range.disabled = true;
+        show.set(spec.name, (v) => {
+          if (typeof v === "number") range.value = String(v);
+        });
+      }
       label.append(name, range);
       strip.appendChild(label);
     } else if (spec.kind === "pad") {
@@ -943,6 +1124,14 @@ function renderControlStrip(
         pad.setAttribute("aria-valuetext", `x ${x.toFixed(2)}, y ${y.toFixed(2)}`);
       };
       place(Array.isArray(value) ? value : [0.5, 0.5]);
+      const tag = sourceTag(spec);
+      if (tag) pad.appendChild(tag);
+      if (spec.source === "sensor") {
+        pad.classList.add("ms-live");
+        show.set(spec.name, (v) => {
+          if (Array.isArray(v)) place(v);
+        });
+      }
       let dragging = false;
       const at = (e: PointerEvent): [number, number] => {
         const r = pad.getBoundingClientRect();
@@ -975,4 +1164,192 @@ function renderControlStrip(
       strip.appendChild(pad);
     }
   }
+}
+
+// -----------------------------------------------------------------------------
+// Device sensors — tilt() and mic()
+//
+// Field test 2026-10-02: inside the claude.ai widget both are blocked by the
+// host's frame (no permission policy for them); on a share page the mic works
+// and tilt needs iOS's DeviceOrientationEvent.requestPermission() called
+// INSIDE a gesture. So nothing is asked up front: a piece that declares tilt()
+// or mic() gets a control on the strip that the performer plays by hand, and
+// the first tap asks for the sensor. If readings arrive, the sensor takes the
+// control over; if not, the hand keeps it. The state is reported either way.
+// -----------------------------------------------------------------------------
+
+type SensorFeed = (sensor: SensorKind, value: ControlValue) => void;
+type SensorStatus = (sensor: SensorKind, state: SensorState) => void;
+
+/** Smoothing for readings (0..1 of the gap closed per reading). */
+const SENSOR_SMOOTHING = 0.25;
+/** Degrees of tilt from level to the edge of the range. */
+const TILT_RANGE_DEG = 35;
+/** RMS → 0..1: speech near a phone mic sits around 0.05–0.2 RMS. */
+const MIC_GAIN = 5;
+
+export function createBrowserSensors(w: any) {
+  let want: Record<SensorKind, boolean> = { tilt: false, mic: false };
+  let feed: SensorFeed = () => undefined;
+  let report: SensorStatus = () => undefined;
+  const state: Record<SensorKind, SensorState> = { tilt: { state: "off" }, mic: { state: "off" } };
+  const set = (sensor: SensorKind, next: SensorState) => {
+    if (state[sensor].state === next.state && state[sensor].detail === next.detail) return;
+    state[sensor] = next;
+    report(sensor, next);
+  };
+
+  // ── tilt ──
+  let orientationOn = false;
+  let tilt: [number, number] | null = null;
+  let baseBeta: number | null = null;
+  const onOrientation = (e: any) => {
+    const beta = Number(e?.beta);
+    const gamma = Number(e?.gamma);
+    // Desktop browsers fire one event of nulls: that is "no sensor", not a reading.
+    if (!Number.isFinite(beta) || !Number.isFinite(gamma) || (e.beta === null && e.gamma === null)) return;
+    if (baseBeta === null) baseBeta = beta; // "level" is however the phone was held at first
+    const x = Math.min(1, Math.max(0, 0.5 + gamma / (2 * TILT_RANGE_DEG)));
+    const y = Math.min(1, Math.max(0, 0.5 + (baseBeta - beta) / (2 * TILT_RANGE_DEG)));
+    tilt = tilt ? [tilt[0] + (x - tilt[0]) * SENSOR_SMOOTHING, tilt[1] + (y - tilt[1]) * SENSOR_SMOOTHING] : [x, y];
+    if (state.tilt.state !== "live") set("tilt", { state: "live" });
+    feed("tilt", tilt);
+  };
+  const listenOrientation = (on: boolean) => {
+    if (on === orientationOn) return;
+    orientationOn = on;
+    if (on) w.addEventListener?.("deviceorientation", onOrientation);
+    else {
+      w.removeEventListener?.("deviceorientation", onOrientation);
+      tilt = null;
+      baseBeta = null;
+    }
+  };
+  const tiltNeedsPermission = () => typeof w.DeviceOrientationEvent?.requestPermission === "function";
+  let tiltAsked = false;
+
+  // ── mic ──
+  let micStream: any = null;
+  let micTimer: unknown = null;
+  let micNodes: any[] = [];
+  let micAsked = false;
+  let micLevel = 0;
+  const stopMic = () => {
+    if (micTimer !== null) w.clearInterval?.(micTimer);
+    micTimer = null;
+    for (const n of micNodes) {
+      try {
+        n.disconnect();
+      } catch { /* already gone */ }
+    }
+    micNodes = [];
+    micStream?.getTracks?.().forEach((t: any) => t.stop());
+    micStream = null;
+    micAsked = false;
+    micLevel = 0;
+  };
+  const startMic = () => {
+    micAsked = true;
+    set("mic", { state: "listening" });
+    Promise.resolve()
+      .then(() =>
+        w.navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        }),
+      )
+      .then((stream: any) => {
+        if (!want.mic) {
+          stream.getTracks().forEach((t: any) => t.stop());
+          return;
+        }
+        micStream = stream;
+        const ctx =
+          (typeof w.getAudioContext === "function" ? w.getAudioContext() : null) ??
+          new (w.AudioContext ?? w.webkitAudioContext)();
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 1024;
+        // Analysed only: never connected to the speakers, never recorded.
+        source.connect(analyser);
+        micNodes = [source, analyser];
+        const buf = new Float32Array(analyser.fftSize);
+        micTimer = w.setInterval(() => {
+          analyser.getFloatTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+          const target = Math.min(1, Math.sqrt(sum / buf.length) * MIC_GAIN);
+          micLevel += (target - micLevel) * SENSOR_SMOOTHING;
+          feed("mic", micLevel);
+        }, 50);
+        set("mic", { state: "live" });
+      })
+      .catch((err: any) => {
+        // Not asked again in this frame: a host that blocks the mic blocks it
+        // on every tap, and a person who said no meant it.
+        set("mic", { state: "denied", detail: String(err?.name ?? err?.message ?? err) });
+      });
+  };
+
+  // ── permission on a gesture ──
+  // Capture phase, synchronous: iOS honours requestPermission() only inside
+  // the gesture's own task.
+  let gestureOn = false;
+  const onGesture = () => {
+    if (want.tilt && tiltNeedsPermission() && !tiltAsked) {
+      tiltAsked = true;
+      set("tilt", { state: "listening" });
+      try {
+        Promise.resolve(w.DeviceOrientationEvent.requestPermission()).then(
+          (answer: string) => {
+            if (answer === "granted") listenOrientation(want.tilt);
+            else set("tilt", { state: "denied", detail: answer });
+          },
+          (err: any) => set("tilt", { state: "denied", detail: String(err?.name ?? err) }),
+        );
+      } catch (err: any) {
+        set("tilt", { state: "denied", detail: String(err?.name ?? err) });
+      }
+    }
+    if (want.mic && !micAsked && !micStream && w.navigator?.mediaDevices?.getUserMedia) startMic();
+  };
+  const listenGestures = (on: boolean) => {
+    if (on === gestureOn) return;
+    gestureOn = on;
+    for (const type of ["pointerup", "keydown", "touchend"]) {
+      if (on) w.addEventListener?.(type, onGesture, true);
+      else w.removeEventListener?.(type, onGesture, true);
+    }
+  };
+
+  return {
+    sync(next: Record<SensorKind, boolean>, nextFeed: SensorFeed, nextReport: SensorStatus) {
+      want = { ...next };
+      feed = nextFeed;
+      report = nextReport;
+      // tilt
+      if (!want.tilt) {
+        listenOrientation(false);
+        tiltAsked = false;
+        set("tilt", { state: "off" });
+      } else if (!w.DeviceOrientationEvent) {
+        set("tilt", { state: "unsupported" });
+      } else if (tiltNeedsPermission() && !tiltAsked) {
+        set("tilt", { state: "waiting" });
+      } else if (state.tilt.state !== "live" && state.tilt.state !== "denied") {
+        listenOrientation(true);
+        set("tilt", { state: "listening" });
+      }
+      // mic
+      if (!want.mic) {
+        stopMic();
+        set("mic", { state: "off" });
+      } else if (!w.navigator?.mediaDevices?.getUserMedia) {
+        set("mic", { state: "unsupported" });
+      } else if (!micStream && !micAsked && state.mic.state !== "denied") {
+        set("mic", { state: "waiting" });
+      }
+      listenGestures(want.tilt || want.mic);
+    },
+    states: () => ({ tilt: { ...state.tilt }, mic: { ...state.mic } }),
+  };
 }

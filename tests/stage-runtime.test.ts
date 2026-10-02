@@ -468,3 +468,216 @@ it("a double-quoted control name (a mini-notation pattern) still names the contr
   expect(h.stage.controls().map((c) => c.spec.name)).toEqual(["rain"]);
   expect(rain.value).toBe(0.4);
 });
+
+describe("sensors — tilt() and mic()", () => {
+  const withSensors = () => {
+    let feed: ((s: "tilt" | "mic", v: any) => void) | null = null;
+    let status: ((s: "tilt" | "mic", st: any) => void) | null = null;
+    const wants: Array<Record<string, boolean>> = [];
+    const rendered: any[][] = [];
+    const observed: any[] = [];
+    const shown: Array<[string, unknown]> = [];
+    let clock = 0;
+    let input: any = null;
+    const h = harness({
+      signal: (read) => signal(() => read()),
+      renderControls: (specs, _v, set) => {
+        rendered.push(specs.map((sp) => ({ name: sp.name, sensor: sp.sensor, source: sp.source })));
+        input = set;
+      },
+      observeControl: (c) => void observed.push(c),
+      showControlValue: (n, v) => void shown.push([n, v]),
+      now: () => clock,
+      sensors: (want, f, st) => {
+        wants.push({ ...want });
+        feed = f;
+        status = st;
+      },
+    });
+    return {
+      h, wants, rendered, observed, shown,
+      feed: (s: "tilt" | "mic", v: any) => feed?.(s, v),
+      status: (s: "tilt" | "mic", st: any) => status?.(s, st),
+      tick: (ms: number) => (clock += ms),
+      move: (n: string, v: any) => input?.(n, v, true),
+    };
+  };
+
+  it("asks the env only for the sensors the committed piece declares", () => {
+    const t = withSensors();
+    let tok = t.h.stage.begin();
+    t.h.stage.globals.tilt();
+    t.h.stage.globals.fader("x");
+    t.h.stage.commit(tok);
+    expect(t.wants.at(-1)).toEqual({ tilt: true, mic: false });
+    tok = t.h.stage.begin();
+    t.h.stage.globals.mic();
+    t.h.stage.commit(tok);
+    expect(t.wants.at(-1)).toEqual({ tilt: false, mic: true });
+    t.h.stage.stop();
+    expect(t.wants.at(-1)).toEqual({ tilt: false, mic: false });
+  });
+
+  it("is played by hand until the sensor is live, then the sensor takes it", () => {
+    const t = withSensors();
+    const tok = t.h.stage.begin();
+    const lean = t.h.stage.globals.tilt();
+    const room = t.h.stage.globals.mic("room");
+    t.h.stage.commit(tok);
+    expect(t.rendered.at(-1)).toEqual([
+      { name: "tilt", sensor: "tilt", source: "manual" },
+      { name: "room", sensor: "mic", source: "manual" },
+    ]);
+    // By hand: the strip moves it, readings are ignored.
+    t.move("tilt", [0.2, 0.9]);
+    t.feed("tilt", [0.8, 0.1]);
+    expect(lean.value).toEqual([0.2, 0.9]);
+    // Live: readings move it, the hand doesn't.
+    t.status("tilt", { state: "live" });
+    expect(t.rendered.at(-1)?.[0]).toEqual({ name: "tilt", sensor: "tilt", source: "sensor" });
+    t.feed("tilt", [0.7, 0.3]);
+    expect(lean.value).toEqual([0.7, 0.3]);
+    t.move("tilt", [0, 0]);
+    expect(lean.value).toEqual([0.7, 0.3]);
+    expect(t.shown.at(-1)).toEqual(["tilt", [0.7, 0.3]]);
+    // The mic is still by hand.
+    expect(room.value).toBe(0);
+    expect(t.h.stage.sensorStates().tilt.state).toBe("live");
+  });
+
+  it("logs sensor moves at most twice a second, and only real changes", () => {
+    const t = withSensors();
+    const tok = t.h.stage.begin();
+    t.h.stage.globals.mic();
+    t.h.stage.commit(tok);
+    t.status("mic", { state: "live" });
+    for (let i = 0; i < 30; i++) {
+      t.tick(50);
+      t.feed("mic", 0.5 + (i % 2) * 0.001); // noise, then held
+    }
+    expect(t.observed).toHaveLength(1);
+    expect(t.observed[0]).toMatchObject({ name: "mic", kind: "fader", value: 0.5, source: "sensor" });
+    t.tick(600);
+    t.feed("mic", 0.9);
+    expect(t.observed).toHaveLength(2);
+  });
+
+  it("keeps its value across re-evaluation, like any control", () => {
+    const t = withSensors();
+    let tok = t.h.stage.begin();
+    t.h.stage.globals.tilt("lean");
+    t.h.stage.commit(tok);
+    t.move("lean", [0.1, 0.1]);
+    tok = t.h.stage.begin();
+    const again = t.h.stage.globals.tilt("lean");
+    t.h.stage.commit(tok);
+    expect(again.value).toEqual([0.1, 0.1]);
+  });
+});
+
+describe("createBrowserSensors (fake window)", () => {
+  const fakeWindow = (opts: { gum?: "ok" | "deny" | "none"; iosTilt?: "granted" | "denied" | null } = {}) => {
+    const listeners = new Map<string, Set<(e: any) => void>>();
+    const intervals: Array<() => void> = [];
+    const stopped: string[] = [];
+    const w: any = {
+      addEventListener: (type: string, fn: any) => {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type)!.add(fn);
+      },
+      removeEventListener: (type: string, fn: any) => listeners.get(type)?.delete(fn),
+      setInterval: (fn: () => void) => (intervals.push(fn), intervals.length),
+      clearInterval: () => undefined,
+      DeviceOrientationEvent: opts.iosTilt === undefined ? function () {} : Object.assign(function () {}, {
+        requestPermission: () => Promise.resolve(opts.iosTilt ?? "denied"),
+      }),
+      navigator: {
+        mediaDevices:
+          opts.gum === "none"
+            ? undefined
+            : {
+                getUserMedia: () =>
+                  opts.gum === "deny"
+                    ? Promise.reject(Object.assign(new Error("no"), { name: "NotAllowedError" }))
+                    : Promise.resolve({ getTracks: () => [{ stop: () => stopped.push("track") }] }),
+              },
+      },
+      AudioContext: function () {
+        return {
+          createMediaStreamSource: () => ({ connect: () => undefined, disconnect: () => undefined }),
+          createAnalyser: () => ({
+            fftSize: 1024,
+            disconnect: () => undefined,
+            getFloatTimeDomainData: (buf: Float32Array) => buf.fill(0.1),
+          }),
+        };
+      },
+    };
+    const fire = (type: string, e: any = {}) => listeners.get(type)?.forEach((fn) => fn(e));
+    return { w, fire, intervals, stopped, listeners };
+  };
+
+  it("never opens the mic before a tap, then reads its loudness", async () => {
+    const { createBrowserSensors } = await import("../src/shared/stage-runtime");
+    const f = fakeWindow();
+    const states: any[] = [];
+    const fed: any[] = [];
+    const sensors = createBrowserSensors(f.w);
+    sensors.sync({ tilt: false, mic: true }, (s, v) => fed.push([s, v]), (s, st) => states.push([s, st.state]));
+    expect(states).toEqual([["mic", "waiting"]]);
+    f.fire("pointerup");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(states.at(-1)).toEqual(["mic", "live"]);
+    f.intervals[0]();
+    expect(fed.at(-1)[0]).toBe("mic");
+    expect(fed.at(-1)[1]).toBeGreaterThan(0);
+    sensors.sync({ tilt: false, mic: false }, () => undefined, () => undefined);
+    expect(f.stopped).toEqual(["track"]);
+  });
+
+  it("reports a refused mic and doesn't ask again on every tap", async () => {
+    const { createBrowserSensors } = await import("../src/shared/stage-runtime");
+    const f = fakeWindow({ gum: "deny" });
+    const states: any[] = [];
+    const sensors = createBrowserSensors(f.w);
+    let asks = 0;
+    const gum = f.w.navigator.mediaDevices.getUserMedia;
+    f.w.navigator.mediaDevices.getUserMedia = (...a: any[]) => (asks++, gum(...a));
+    sensors.sync({ tilt: false, mic: true }, () => undefined, (s, st) => states.push([s, st.state, st.detail]));
+    f.fire("pointerup");
+    await new Promise((r) => setTimeout(r, 0));
+    f.fire("pointerup");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(states.at(-1)).toEqual(["mic", "denied", "NotAllowedError"]);
+    expect(asks).toBe(1);
+  });
+
+  it("tilt: iOS asks inside the tap; readings go live, relative to how it was first held", async () => {
+    const { createBrowserSensors } = await import("../src/shared/stage-runtime");
+    const f = fakeWindow({ iosTilt: "granted" });
+    const states: any[] = [];
+    const fed: any[] = [];
+    const sensors = createBrowserSensors(f.w);
+    sensors.sync({ tilt: true, mic: false }, (s, v) => fed.push(v), (s, st) => states.push(st.state));
+    expect(states).toEqual(["waiting"]);
+    expect(f.listeners.get("deviceorientation")?.size ?? 0).toBe(0);
+    f.fire("touchend");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(f.listeners.get("deviceorientation")?.size).toBe(1);
+    f.fire("deviceorientation", { beta: 40, gamma: 0 });
+    expect(states.at(-1)).toBe("live");
+    expect(fed.at(-1)).toEqual([0.5, 0.5]);
+    f.fire("deviceorientation", { beta: 40, gamma: 35 });
+    expect(fed.at(-1)[0]).toBeGreaterThan(0.5);
+  });
+
+  it("a desktop's all-null orientation event is not a reading", async () => {
+    const { createBrowserSensors } = await import("../src/shared/stage-runtime");
+    const f = fakeWindow({});
+    const states: any[] = [];
+    const sensors = createBrowserSensors(f.w);
+    sensors.sync({ tilt: true, mic: false }, () => undefined, (s, st) => states.push(st.state));
+    f.fire("deviceorientation", { beta: null, gamma: null });
+    expect(states).toEqual(["listening"]);
+  });
+});

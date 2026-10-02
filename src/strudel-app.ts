@@ -434,6 +434,12 @@ const {
   observeControl(change) {
     session?.log({ t: "control", ...change });
   },
+  observeSurface() {
+    logControlSurface();
+  },
+  observeSensor(sensor, state) {
+    reportSensor(sensor, state);
+  },
   reportError(api, error) {
     const msg = (error as Error)?.message ?? String(error);
     console.error(`[stage] ${api} callback threw:`, error);
@@ -2021,6 +2027,8 @@ function stageCapabilityNote(code: string): string {
         "put on the beat — use say(text) instead, which returns a pattern",
     );
   }
+  const sensorParts = sensorNotes(code);
+  if (sensorParts) parts.push(sensorParts);
   if (taps) {
     parts.push(
       stageMode
@@ -2073,6 +2081,56 @@ function ensureWorklets(): Promise<void> {
     new Promise<void>((resolve) => setTimeout(resolve, 3000)),
   ]).then(() => undefined);
   return workletsReady;
+}
+
+/** What tilt()/mic() can do in THIS frame, measured — not assumed. */
+function describeSensor(sensor: "tilt" | "mic", state: { state: string; detail?: string }): string {
+  const what = sensor === "tilt" ? "tilt (motion sensor)" : "mic (microphone loudness)";
+  switch (state.state) {
+    case "live":
+      return `${what}: LIVE — readings are arriving from the device`;
+    case "waiting":
+      return `${what}: waiting for the user's first tap to ask permission; until then it is played by hand on the strip`;
+    case "listening":
+      return `${what}: asked, but no readings have arrived — in a chat widget the host's frame usually blocks it; the performer plays it by hand on the strip`;
+    case "denied":
+      return `${what}: refused here (${state.detail ?? "denied"}) — the host's frame or the user blocked it; it is played by hand on the strip. A share link opens a page where it may be allowed`;
+    case "unsupported":
+      return `${what}: this browser has no such sensor — played by hand on the strip`;
+    default:
+      return `${what}: not in use`;
+  }
+}
+
+function sensorNotes(code: string): string {
+  const states = stage.sensorStates();
+  const parts: string[] = [];
+  if (/tilt\s*\(/.test(code)) parts.push(describeSensor("tilt", states.tilt));
+  if (/mic\s*\(/.test(code)) parts.push(describeSensor("mic", states.mic));
+  return parts.join("; ");
+}
+
+/** Tell the model when a sensor's state CHANGES (a tap granted it, a host refused it) — once per state. */
+const reportedSensor: Record<string, string> = {};
+const sensorSilenceTimer: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
+/** "Asked but nothing arrived" is only news if it stays that way this long. */
+const SENSOR_SILENCE_MS = 3000;
+function reportSensor(sensor: "tilt" | "mic", state: { state: string; detail?: string }): void {
+  clearTimeout(sensorSilenceTimer[sensor]);
+  if (state.state === "off" || state.state === "waiting") return;
+  if (state.state === "listening") {
+    sensorSilenceTimer[sensor] = setTimeout(() => {
+      if (stage.sensorStates()[sensor].state === "listening") sayOnce(sensor, state);
+    }, SENSOR_SILENCE_MS);
+    return;
+  }
+  sayOnce(sensor, state);
+}
+function sayOnce(sensor: "tilt" | "mic", state: { state: string; detail?: string }): void {
+  const key = `${state.state}:${state.detail ?? ""}`;
+  if (reportedSensor[sensor] === key) return;
+  reportedSensor[sensor] = key;
+  reportToModel(`Strudel widget: ${describeSensor(sensor, state)}.`);
 }
 
 /** Bumped by every evaluation, so a stale one can tell if a newer one began. */
@@ -3120,8 +3178,9 @@ function logControlSurface(): void {
     kind: spec.kind,
     value,
     ...(spec.kind === "fader" ? { min: spec.min, max: spec.max } : {}),
+    ...(spec.sensor ? { sensor: spec.sensor, source: spec.source } : {}),
   }));
-  const key = JSON.stringify(list.map(({ name, kind }) => [name, kind]));
+  const key = JSON.stringify(list.map(({ name, kind, source }) => [name, kind, source]));
   if (key === lastControlSurface) return;
   lastControlSurface = key;
   session?.log({ t: "controls", list }, true);

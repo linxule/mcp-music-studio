@@ -444,6 +444,15 @@ const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknow
       requireName("xy", name);
       return { x: control(0.5), y: control(0.5), value: [0.5, 0.5] };
     },
+    // Sensors start level / silent; the name is optional.
+    tilt(name: unknown = "tilt") {
+      requireName("tilt", name);
+      return { x: control(0.5), y: control(0.5), value: [0.5, 0.5] };
+    },
+    mic(name: unknown = "mic") {
+      requireName("mic", name);
+      return control(0);
+    },
   };
 };
 
