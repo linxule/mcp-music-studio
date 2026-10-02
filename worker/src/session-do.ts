@@ -57,6 +57,12 @@ export interface SessionState {
 }
 
 export const POLL_WAIT_MS = 20_000;
+/**
+ * A stopped player answers "loaded, not playing" (cycle null). When a second
+ * screen joins a session, a stopped page must not win the race against the
+ * player that is actually playing: its answer waits this long for a better one.
+ */
+export const STOPPED_ACK_GRACE_MS = 1500;
 /** Polls a session holds open at once; an older one is answered 204 to make room. */
 export const MAX_POLL_WAITERS = 4;
 export const ACK_WAIT_MS = 9_000;
@@ -136,9 +142,12 @@ export class JamSession {
       const added = appendEvents(data, coerceEvents(events), now);
       for (const e of added) {
         if (e.t !== "applied") continue;
-        const waiters = this.ackWaiters.get(e.rev);
-        this.ackWaiters.delete(e.rev);
-        waiters?.forEach((w) => w(e));
+        if (e.ok && e.cycle === null) {
+          // A stopped player's answer: give a playing one a moment to beat it.
+          void this.sleep(STOPPED_ACK_GRACE_MS).then(() => this.resolveAck(e));
+          continue;
+        }
+        this.resolveAck(e);
       }
       await this.save();
       return json({ ok: true, seq: data.seq });
@@ -175,6 +184,18 @@ export class JamSession {
         return () => this.pollWaiters.delete(resolve);
       }, wait, request.signal);
       return pattern ? json(pattern) : new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+    }
+
+    // Read-only: the pattern a newly joining page should load — the model's
+    // newest update, or else the code the human last ran. Writes nothing.
+    if (op === "current" && request.method === "GET") {
+      const edit = [...data.events]
+        .reverse()
+        .find((e): e is Extract<SessionEvent, { t: "edit" }> => e.t === "edit" && e.code !== null);
+      const fromUpdate = data.pattern ? { code: data.pattern.code, at: data.pattern.at, source: "update" } : null;
+      const fromEdit = edit?.code ? { code: edit.code, at: edit.at, source: "edit" } : null;
+      const pick = fromUpdate && fromEdit ? (fromEdit.at > fromUpdate.at ? fromEdit : fromUpdate) : fromUpdate ?? fromEdit;
+      return pick ? json({ ...pick, rev: data.pattern?.rev ?? 0 }) : new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
     }
 
     if (op === "state" && request.method === "GET") {
@@ -246,6 +267,12 @@ export class JamSession {
     }
 
     return json({ error: "not found" }, 404);
+  }
+
+  private resolveAck(e: Applied): void {
+    const waiters = this.ackWaiters.get(e.rev);
+    this.ackWaiters.delete(e.rev);
+    waiters?.forEach((w) => w(e));
   }
 
   /**

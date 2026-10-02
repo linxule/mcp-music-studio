@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Music Studio — shared pattern</title>
+  <style>
+    :root { --bg: #0d1117; --fg: #e6edf3; --muted: #8b949e; --line: #30363d; }
+    @media (prefers-color-scheme: light) { :root { --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; } }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    body { display: flex; flex-direction: column; height: 100dvh; }
+    header { display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+      padding-top: max(8px, env(safe-area-inset-top)); border-bottom: 1px solid var(--line); min-height: 40px; }
+    header h1 { font-size: 14px; font-weight: 600; margin: 0; flex: 1; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    header a { color: var(--muted); text-decoration: none; white-space: nowrap; }
+    header a:hover { color: var(--fg); }
+    #stage { flex: 1; min-height: 0; position: relative; }
+    #stage:fullscreen { background: #000; }
+    iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+    #note { position: absolute; inset: auto 16px 16px; color: var(--muted); text-align: center; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">Shared pattern</h1>
+    <a id="classic" href="#" hidden>Simple player</a>
+    <a href="/" target="_blank" rel="noopener">Music Studio</a>
+  </header>
+  <div id="stage"><div id="note">Loading the player…</div></div>
+  <!-- Filled by the Worker: { code, title?, bpm?, session?, widget, classic? } -->
+  <script type="application/json" id="init-data">__SHARE_INIT__</script>
+  <script type="module" src="./src/share-host.ts"></script>
+</body>
+</html>

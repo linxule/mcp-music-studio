@@ -199,15 +199,34 @@ describe("landing page", () => {
 describe("GET /play", () => {
   const CODE = 'stack(\n  s("bd*2 sd"),\n  note("c e g").s("gm_flute")\n) // & <hi>';
 
-  it("renders the Strudel page with the code round-tripped into its init script", async () => {
+  it("renders the full player — the real widget, hosted — with the code round-tripped", async () => {
     const res = await get(`/play?${playQuery(CODE)}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
 
     const html = await res.text();
-    expect(html).toContain("<strudel-editor");
+    const init = strudelInit(html) as { code: string; widget?: string; classic?: string };
     // The whole point: the pattern arrives byte for byte, quotes/newlines/& and all.
+    expect(init.code).toBe(CODE);
+    expect(init.widget).toBe("/widget/strudel");
+    expect(init.classic).toMatch(/^\/play\?.*classic=1/);
+    expect(html).not.toContain("__SHARE_INIT__");
+  });
+
+  it("keeps the standalone page behind ?classic=1", async () => {
+    const html = await (await get(`/play?${playQuery(CODE)}&classic=1`)).text();
+    expect(html).toContain("<strudel-editor");
     expect(strudelInit(html).code).toBe(CODE);
+  });
+
+  it("serves the widget for the full player, framable only by this origin", async () => {
+    const res = await get("/widget/strudel");
+    expect(res.status).toBe(200);
+    const csp = res.headers.get("content-security-policy")!;
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(csp).toContain("https://unpkg.com");
+    expect(csp).toMatch(/script-src[^;]*data:/);
+    expect(await res.text()).toContain("strudel");
   });
 
   it("applies bpm through the shared tempo policy", async () => {
@@ -217,8 +236,13 @@ describe("GET /play", () => {
   });
 
   it("requires intentional Play with or without legacy autoplay parameters", async () => {
-    const on = await get(`/play?${playQuery('s("bd")')}`);
-    const off = await get(`/play?${playQuery('s("bd")', { autoplay: "0" })}`);
+    // The full player never carries autoplay; its host sends the widget
+    // autoplay: false (src/share-host.ts, pinned below).
+    for (const q of [playQuery('s("bd")'), playQuery('s("bd")', { autoplay: "1" })]) {
+      expect((strudelInit(await (await get(`/play?${q}`)).text()) as Record<string, unknown>).autoplay).toBeUndefined();
+    }
+    const on = await get(`/play?${playQuery('s("bd")')}&classic=1`);
+    const off = await get(`/play?${playQuery('s("bd")', { autoplay: "0" })}&classic=1`);
     for (const response of [on, off]) {
       const html = await response.text();
       expect(strudelInit(html).autoplay).toBeUndefined();
@@ -227,8 +251,16 @@ describe("GET /play", () => {
     }
   });
 
+  it("the full player page frames only our widget and loads nothing else", async () => {
+    const csp = (await get(`/play?${playQuery('s("bd")')}`)).headers.get("content-security-policy")!;
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("frame-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).not.toContain("unpkg");
+  });
+
   it("carries a CSP that names the same origins the widget declares", async () => {
-    const csp = (await get(`/play?${playQuery('s("bd")')}`)).headers.get(
+    const csp = (await get(`/play?${playQuery('s("bd")')}&classic=1`)).headers.get(
       "content-security-policy",
     )!;
     expect(csp).toBeTruthy();

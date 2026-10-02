@@ -36,6 +36,7 @@
     "main.ts",
     "mcp-app.html",
     "strudel-app.html",
+    "share-host.html",
     "privacy.html",
     "LICENSES",
     "SOURCE.md",
@@ -54,7 +55,7 @@
     "worker/wrangler.jsonc"
   ],
   "scripts": {
-    "build": "bun scripts/sync-version.mjs && bun scripts/build-stage-runtime.mjs && tsc --noEmit && cross-env INPUT=mcp-app.html vite build && cross-env INPUT=strudel-app.html vite build && tsc -p tsconfig.server.json && bun build server.ts --outdir dist --target node && bun build src/shared/strudel-validate-child.ts --outdir dist --target node && bun build main.ts --outfile dist/index.js --target node --external \"./server.js\" --banner \"#!/usr/bin/env node\" && bun scripts/collect-licenses.mjs",
+    "build": "bun scripts/sync-version.mjs && bun scripts/build-stage-runtime.mjs && tsc --noEmit && cross-env INPUT=mcp-app.html vite build && cross-env INPUT=strudel-app.html vite build && cross-env INPUT=share-host.html vite build && tsc -p tsconfig.server.json && bun build server.ts --outdir dist --target node && bun build src/shared/strudel-validate-child.ts --outdir dist --target node && bun build main.ts --outfile dist/index.js --target node --external \"./server.js\" --banner \"#!/usr/bin/env node\" && bun scripts/collect-licenses.mjs",
     "test": "bunx vitest run",
     "test:watch": "bunx vitest",
     "watch": "cross-env INPUT=mcp-app.html vite build --watch",
