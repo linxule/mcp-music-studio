@@ -302,7 +302,16 @@ export function installStrudelCompanion(options: CompanionOptions) {
   });
   statusObserver.observe(status, { childList: true, characterData: true, subtree: true });
   tip.textContent = errorSuggestion('');
-  window.addEventListener('pagehide', () => { stop(); unsubscribe?.(); draftObserver.disconnect(); statusObserver.disconnect(); clearTimeout(syntaxTimer); clearTimeout(registryTimer); });
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    stop(); unsubscribe?.(); draftObserver.disconnect(); statusObserver.disconnect();
+    clearTimeout(syntaxTimer); clearTimeout(registryTimer);
+    container.removeEventListener('input', checkDraft);
+    window.removeEventListener('pagehide', dispose);
+  };
+  window.addEventListener('pagehide', dispose);
   refresh();
-  return { stop, refresh };
+  return { stop, refresh: () => { if (!disposed) refresh(); }, dispose };
 }

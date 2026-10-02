@@ -84,10 +84,32 @@ export function findModelContext(
   return undefined;
 }
 
-/** Register one tool; the returned function unregisters it (idempotent, never throws). */
-export async function registerWebMcpTool(context: WebMcpContext, tool: WebMcpTool): Promise<() => void> {
+/** How long a browser's registerTool may take before the relay gives up on that tool. */
+export const REGISTER_TOOL_TIMEOUT_MS = 5_000;
+
+/**
+ * Register one tool; the returned function unregisters it (idempotent, never
+ * throws). A registerTool that never settles is abandoned after `ceilingMs`
+ * (and aborted, so a late registration is withdrawn) instead of stalling every
+ * later sync (Kimi review).
+ */
+export async function registerWebMcpTool(
+  context: WebMcpContext,
+  tool: WebMcpTool,
+  ceilingMs = REGISTER_TOOL_TIMEOUT_MS,
+): Promise<() => void> {
   const controller = new AbortController();
-  const handle = await context.registerTool(tool, { signal: controller.signal });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const handle = await Promise.race([
+    Promise.resolve(context.registerTool(tool, { signal: controller.signal })),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        try { context.unregisterTool?.(tool.name); } catch { /* never registered */ }
+        reject(new Error(`registerTool("${tool.name}") did not settle within ${ceilingMs} ms`));
+      }, ceilingMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
   let removed = false;
   return () => {
     if (removed) return;
@@ -103,8 +125,12 @@ export interface RelayOptions {
   bridge: WidgetToolBridge;
   /** Defaults to the page's own (`findModelContext()`); without one nothing happens. */
   modelContext?: WebMcpContext;
-  /** Widget tools to keep off WebMCP (e.g. those that need a human review panel). */
-  exclude?: Iterable<string>;
+  /**
+   * Widget tools to keep off WebMCP (e.g. those that need a human review
+   * panel). A function is asked on every sync, so a page can open a tool
+   * later (then call refresh()).
+   */
+  exclude?: Iterable<string> | ((name: string) => boolean);
   /** Appended on its own line to every description. */
   descriptionSuffix?: string;
   /** Extra WebMCP annotations per tool, merged over the widget's own. */
@@ -120,6 +146,8 @@ export interface RelayOptions {
 export interface WebMcpRelay {
   /** Names currently registered with WebMCP. */
   tools(): string[];
+  /** The annotations each registered tool went to WebMCP with (diagnostics). */
+  annotations(): Record<string, Record<string, unknown> | undefined>;
   /** Re-list the widget's tools and bring WebMCP in line; calls coalesce. */
   refresh(): Promise<void>;
   /** Unregister everything; later refreshes do nothing. */
@@ -165,10 +193,12 @@ export function createWidgetToolRelay(options: RelayOptions): WebMcpRelay | unde
   if (!found) return undefined;
   const context: WebMcpContext = found;
   const { bridge } = options;
-  const excluded = new Set(options.exclude ?? []);
+  const exclude = options.exclude;
+  const excludedSet = typeof exclude === "function" ? null : new Set(exclude ?? []);
+  const isExcluded = (name: string) => (typeof exclude === "function" ? exclude(name) : excludedSet!.has(name));
   const timeout = options.callTimeoutMs ?? 30_000;
   const report = options.onError ?? (() => {});
-  const registered = new Map<string, { key: string; remove: () => void }>();
+  const registered = new Map<string, { key: string; remove: () => void; annotations?: Record<string, unknown> }>();
   let disposed = false;
   let running: Promise<void> | undefined;
   let again = false;
@@ -213,7 +243,7 @@ export function createWidgetToolRelay(options: RelayOptions): WebMcpRelay | unde
   async function sync(): Promise<void> {
     const wanted = new Map<string, { tool: WidgetTool; key: string }>();
     for (const tool of await listAll()) {
-      if (excluded.has(tool.name) || wanted.has(tool.name)) continue;
+      if (isExcluded(tool.name) || wanted.has(tool.name)) continue;
       wanted.set(tool.name, { tool, key: JSON.stringify([tool.title, tool.description, tool.inputSchema, tool.annotations]) });
     }
     if (disposed) return;
@@ -225,9 +255,10 @@ export function createWidgetToolRelay(options: RelayOptions): WebMcpRelay | unde
     for (const [name, { tool, key }] of wanted) {
       if (registered.has(name)) continue;
       try {
-        const remove = await registerWebMcpTool(context, mirror(tool));
+        const mirrored = mirror(tool);
+        const remove = await registerWebMcpTool(context, mirrored);
         if (disposed) { remove(); return; }
-        registered.set(name, { key, remove });
+        registered.set(name, { key, remove, annotations: mirrored.annotations });
       } catch (error) {
         report(error, name);
       }
@@ -236,6 +267,7 @@ export function createWidgetToolRelay(options: RelayOptions): WebMcpRelay | unde
 
   return {
     tools: () => [...registered.keys()],
+    annotations: () => Object.fromEntries([...registered].map(([name, entry]) => [name, entry.annotations])),
     refresh() {
       if (disposed) return Promise.resolve();
       if (running) { again = true; return running; }

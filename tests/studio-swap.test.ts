@@ -4,7 +4,8 @@ import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { registerStudioAppTools } from "../src/studio-app-tools";
 import {
-  createStudioSession, STUDIO_SWAP_DEFAULT_QUANTIZE, type StudioSnapshot, type StudioState, type StudioSwapOutcome,
+  createStudioSession, STUDIO_SWAP_DEFAULT_QUANTIZE, type StudioSnapshot, type StudioState, type StudioSwapHooks,
+  type StudioSwapOutcome,
 } from "../src/studio-session";
 
 const cleanup: Array<() => Promise<unknown>> = [];
@@ -17,24 +18,28 @@ afterEach(async () => {
  * the editor at once, and the call resolves when its "bar" comes (release()),
  * when it is cancelled, or when the player stops.
  */
-async function liveWidget(playback = "playing") {
+async function liveWidget(playback = "playing", swapAnswerMs = 10_000) {
   const state: StudioSnapshot = { args: { code: 's("bd*4")', title: "First" }, playback, status: "Playing", error: null };
   const waiting: Array<{ resolve: (o: StudioSwapOutcome) => void; isCancelled: () => boolean; quantize: number }> = [];
-  const swap = vi.fn((code: string, quantize: number, isCancelled: () => boolean) => {
+  const swap = vi.fn((code: string, quantize: number, isCancelled: () => boolean, hooks?: StudioSwapHooks) => {
     if (state.playback !== "playing") return Promise.reject(new Error("The player is stopped: swap-pattern changes a PLAYING pattern on the bar. Use set-pattern, then play-current-music."));
+    // As quantizedSwap: undo target first, then the code goes into the editor, then the bar is known.
+    hooks?.beforeLoad?.();
     state.args = { ...state.args, code };
+    hooks?.onQueued?.(8, 6);
     return new Promise<StudioSwapOutcome>((resolve) => waiting.push({ resolve, isCancelled, quantize }));
   });
-  const apply = vi.fn(async (args: Record<string, unknown>) => {
+  const apply = vi.fn(async (args: Record<string, unknown>, _settings?: unknown, _isCancelled?: unknown, onCommit?: () => void) => {
     state.args = args;
     state.playback = "stopped";
+    onCommit?.();
   });
   const stop = vi.fn(() => {
     state.playback = "stopped";
   });
   const session = createStudioSession(
     { read: () => structuredClone(state), apply, play: vi.fn(async () => void (state.playback = "playing")), stop, swap },
-    { mode: "live" },
+    { mode: "live", swapAnswerMs },
   );
   const app = new App({ name: "Test widget", version: "1" }, { tools: { listChanged: true } }, { autoResize: false });
   registerStudioAppTools(app, session);
@@ -53,7 +58,7 @@ async function liveWidget(playback = "playing") {
   /** Let the oldest waiting swap reach its bar (or notice it was cancelled). */
   const release = (cycle = 8) => {
     const next = waiting.shift()!;
-    next.resolve(next.isCancelled() ? { ok: false, cycle: null, error: "superseded by a newer studio action before it played" } : { ok: true, cycle });
+    next.resolve(next.isCancelled() ? { ok: false, cycle: null, error: "replaced before it played by a newer edit, swap, play, undo or stop" } : { ok: true, cycle });
   };
   return { state, session, host, read, call, release, waiting, swap, apply, stop };
 }
@@ -120,7 +125,7 @@ describe("swap-pattern (bar-quantized swap through the studio controller)", () =
     w.release();
     const old = await first;
     expect(old.isError).toBe(true);
-    expect((old.structuredContent as any).swap).toMatchObject({ ok: false, error: expect.stringContaining("superseded") });
+    expect((old.structuredContent as any).swap).toMatchObject({ ok: false, error: expect.stringContaining("replaced") });
     w.release(12);
     const fresh = (await second).structuredContent as unknown as StudioState;
     expect(fresh.swap).toMatchObject({ ok: true, cycle: 12 });
@@ -147,7 +152,8 @@ describe("swap-pattern (bar-quantized swap through the studio controller)", () =
 
   it("a swap that fails to play keeps its state, reports the error and stays undoable", async () => {
     const w = await liveWidget();
-    w.swap.mockImplementationOnce(async (code: string) => {
+    w.swap.mockImplementationOnce(async (code: string, _q: number, _c: () => boolean, hooks?: StudioSwapHooks) => {
+      hooks?.beforeLoad?.();
       w.state.args = { ...w.state.args, code };
       return { ok: false, cycle: null, error: "Unexpected token (1:3)" };
     });
@@ -157,6 +163,110 @@ describe("swap-pattern (bar-quantized swap through the studio controller)", () =
     const state = result.structuredContent as unknown as StudioState;
     expect(state.error).toBe("Unexpected token (1:3)");
     expect(state.canUndo).toBe(true);
+  });
+
+  it("Codex's sequence: A → pending swap B → set C → B finishes: undo gives B's draft, then A", async () => {
+    const w = await liveWidget();
+    const a = await w.read();
+    const swapB = w.call({ instanceId: a.instanceId, expectedRevision: a.revision, code: 's("B")' });
+    await vi.waitFor(() => expect(w.waiting).toHaveLength(1));
+    const mid = await w.read();
+    const setC = await w.host.callTool({ name: "set-pattern", arguments: { instanceId: a.instanceId, expectedRevision: mid.revision, code: 's("C")' } });
+    expect(setC.isError).toBeUndefined();
+    w.release(); // B reaches its bar after C replaced it
+    const b = await swapB;
+    expect(b.isError).toBe(true);
+    expect((b.structuredContent as any).swap).toMatchObject({ ok: false, error: expect.stringContaining("replaced") });
+    let s = await w.read();
+    expect(s.args.code).toBe('s("C")');
+    await w.host.callTool({ name: "undo-studio-edit", arguments: { instanceId: a.instanceId, expectedRevision: s.revision } });
+    s = await w.read();
+    expect(s.args.code).toBe('s("B")');
+    await w.host.callTool({ name: "undo-studio-edit", arguments: { instanceId: a.instanceId, expectedRevision: s.revision } });
+    s = await w.read();
+    expect(s.args.code).toBe('s("bd*4")');
+    expect(s.canUndo).toBe(false);
+  });
+
+  it.each([
+    ["set-pattern", (id: string, rev: number) => ({ instanceId: id, expectedRevision: rev, code: 's("X")' })],
+    ["undo-studio-edit", (id: string, rev: number) => ({ instanceId: id, expectedRevision: rev })],
+    ["play-current-music", (id: string, rev: number) => ({ instanceId: id, expectedRevision: rev })],
+    ["stop-music", (id: string) => ({ instanceId: id })],
+  ] as const)("Kimi: %s cancels a pending swap, which answers 'replaced'", async (tool, args) => {
+    const w = await liveWidget();
+    const a = await w.read();
+    const pending = w.call({ instanceId: a.instanceId, expectedRevision: a.revision, code: 's("B")' });
+    await vi.waitFor(() => expect(w.waiting).toHaveLength(1));
+    const mid = await w.read();
+    const other = await w.host.callTool({ name: tool, arguments: args(a.instanceId, mid.revision) });
+    expect(other.isError).toBeUndefined();
+    w.release();
+    const answer = await pending;
+    expect((answer.structuredContent as any).swap).toMatchObject({ ok: false, error: expect.stringContaining("replaced") });
+  });
+
+  it("review-apply cancels a pending swap too", async () => {
+    const w = await liveWidget();
+    const a = await w.read();
+    const pending = w.call({ instanceId: a.instanceId, expectedRevision: a.revision, code: 's("B")' });
+    await vi.waitFor(() => expect(w.waiting).toHaveLength(1));
+    const mid = await w.read();
+    const source = String(mid.args.code);
+    const passage = { instanceId: a.instanceId, mode: "live" as const, revision: mid.revision, from: 0, to: source.length, text: source };
+    const started = await w.session({ action: "review-start", instanceId: a.instanceId, expectedRevision: mid.revision, question: "?", passage });
+    const requestId = started.sharedReview!.requestId;
+    await w.session({ action: "review-stage", instanceId: a.instanceId, requestId, passage, explanation: "e", replacement: 's("R")' });
+    await w.session({ action: "review-apply", instanceId: a.instanceId, requestId, expectedRevision: mid.revision });
+    w.release();
+    expect(((await pending).structuredContent as any).swap).toMatchObject({ ok: false });
+  });
+
+  it("racing swaps record one undo entry each, in order — none late, none twice", async () => {
+    const w = await liveWidget();
+    const a = await w.read();
+    const one = w.call({ instanceId: a.instanceId, expectedRevision: a.revision, code: 's("one")' });
+    await vi.waitFor(() => expect(w.waiting).toHaveLength(1));
+    const mid = await w.read();
+    const two = w.call({ instanceId: a.instanceId, expectedRevision: mid.revision, code: 's("two")' });
+    await vi.waitFor(() => expect(w.waiting).toHaveLength(2));
+    w.release();
+    w.release(12);
+    await Promise.all([one, two]);
+    let s = await w.read();
+    expect(s.args.code).toBe('s("two")');
+    await w.host.callTool({ name: "undo-studio-edit", arguments: { instanceId: a.instanceId, expectedRevision: s.revision } });
+    s = await w.read();
+    expect(s.args.code).toBe('s("one")');
+    await w.host.callTool({ name: "undo-studio-edit", arguments: { instanceId: a.instanceId, expectedRevision: s.revision } });
+    s = await w.read();
+    expect(s.args.code).toBe('s("bd*4")');
+    expect(s.canUndo).toBe(false);
+  });
+
+  it("a swap still waiting after the answer window answers 'queued' and stays readable until it lands", async () => {
+    const w = await liveWidget("playing", 30);
+    const a = await w.read();
+    const answer = await w.call({ instanceId: a.instanceId, expectedRevision: a.revision, code: 's("late")', quantize: 32 });
+    expect(answer.isError).toBeUndefined();
+    const queued = answer.structuredContent as unknown as StudioState;
+    expect(queued.swap).toEqual({ queued: true, quantize: 32, boundary: 8, etaSeconds: 6 });
+    expect(queued.pendingSwap).toMatchObject({ quantize: 32, boundary: 8, etaSeconds: 6 });
+    w.release(32);
+    await vi.waitFor(async () => expect((await w.read()).pendingSwap).toBeNull());
+    expect((await w.read()).lastSwap).toEqual({ ok: true, cycle: 32, quantize: 32 });
+  });
+
+  it("undo never pins the measured runtime tempo as an explicit bpm", async () => {
+    const w = await liveWidget();
+    w.state.args = { ...w.state.args, bpm: 120 }; // read() reports the measured tempo
+    const a = await w.read();
+    await w.host.callTool({ name: "set-pattern", arguments: { instanceId: a.instanceId, expectedRevision: a.revision, code: 's("X")' } });
+    expect(w.apply.mock.calls[0][0]).not.toHaveProperty("bpm");
+    const s = await w.read();
+    await w.host.callTool({ name: "undo-studio-edit", arguments: { instanceId: a.instanceId, expectedRevision: s.revision } });
+    expect(w.apply.mock.calls[1][0]).not.toHaveProperty("bpm");
+    expect(w.apply.mock.calls[1][0]).toMatchObject({ code: 's("bd*4")' });
   });
 
   it("is not offered by score widgets", async () => {

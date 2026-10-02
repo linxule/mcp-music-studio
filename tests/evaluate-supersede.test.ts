@@ -97,6 +97,8 @@ async function loadHook() {
   vm.runInContext(
     `
     const companion = { stop: () => { log.previewStops++; } };
+    let humanEvalIntent = false;
+    let humanPlayed = false;
     let renderGeneration = 0;
     let isPlaying = false;
     let audioBlocked = false;

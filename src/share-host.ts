@@ -25,6 +25,7 @@
 
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { createWidgetToolRelay } from "./webmcp-relay";
+import { shareRelayAnnotations, shareRelayExclude } from "./share-relay-policy";
 
 interface ShareInit {
   code: string;
@@ -39,8 +40,6 @@ interface ShareInit {
 }
 
 /** Widget tools that need the human review panel, which this page does not have. */
-export const RELAY_EXCLUDED_TOOLS = ["explain-selection", "suggest-edit"];
-
 /** What the frame may use — the reason this page exists. */
 export const FRAME_ALLOW = "autoplay; microphone; accelerometer; gyroscope; magnetometer; midi; fullscreen; clipboard-write";
 
@@ -142,13 +141,15 @@ async function mount(): Promise<void> {
     { hostContext: hostContext() },
   );
 
-  // Anyone can craft a /play link, so what a read tool returns is third-party
-  // content: say so to the agent (WebMCP's untrustedContentHint).
+  // Anyone can craft a /play link: everything a tool returns is third-party
+  // content, and nothing plays until a person has pressed Play here.
+  let humanPlayed = false;
   const relay = createWidgetToolRelay({
     bridge,
-    exclude: RELAY_EXCLUDED_TOOLS,
-    descriptionSuffix: "This controls the music player on this page.",
-    annotate: (tool) => (tool.annotations?.readOnlyHint ? { untrustedContentHint: true } : undefined),
+    exclude: shareRelayExclude(() => humanPlayed),
+    descriptionSuffix:
+      "This controls the music player on this page. Playing and swapping are offered once the listener has pressed Play here.",
+    annotate: shareRelayAnnotations,
     onError: (error, what) => console.warn(`WebMCP relay: ${what}:`, error),
   });
   const syncRelay = () => void relay?.refresh().catch((error) => console.warn("WebMCP relay: listing the player's tools failed:", error));
@@ -177,7 +178,34 @@ async function mount(): Promise<void> {
     // Tools appear once the pattern is in, so an agent's first read sees it.
     if (relay) void patternApplied(bridge, init.code).then(syncRelay);
   };
-  bridge.onupdatemodelcontext = async () => ({});
+  // The widget reports after every evaluation; after the first one a person
+  // started, its state says humanPlayed — then the play tools appear.
+  let checking = false;
+  let recheck = false;
+  const checkHumanPlayed = async () => {
+    if (humanPlayed || !relay) return;
+    // A report during a check (which may read the state from before it) asks again after.
+    if (checking) { recheck = true; return; }
+    checking = true;
+    try {
+      do {
+        recheck = false;
+        const result = await bridge.callTool({ name: "get-studio-state", arguments: {} }, { timeout: 5_000 });
+        if ((result.structuredContent as { humanPlayed?: unknown } | undefined)?.humanPlayed === true) {
+          humanPlayed = true;
+          syncRelay();
+        }
+      } while (recheck && !humanPlayed);
+    } catch {
+      /* no answer: the next report asks again */
+    } finally {
+      checking = false;
+    }
+  };
+  bridge.onupdatemodelcontext = async () => {
+    void checkHumanPlayed();
+    return {};
+  };
   bridge.onsizechange = () => {};
   bridge.ondownloadfile = async ({ contents }) => {
     for (const item of contents as Array<{ type: string; resource?: Record<string, string> }>) {
@@ -214,7 +242,7 @@ async function mount(): Promise<void> {
   // initialize request can never arrive before our listener (dev/host.ts).
   await bridge.connect(new PostMessageTransport(frame.contentWindow!, frame.contentWindow!));
   frame.src = init.widget;
-  (window as unknown as { __share: unknown }).__share = { bridge, frame, init, relay };
+  (window as unknown as { __share: unknown }).__share = { bridge, frame, init, relay, relayAnnotations: () => relay?.annotations() };
 }
 
 void mount().catch((err) => {

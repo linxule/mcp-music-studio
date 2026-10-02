@@ -36,6 +36,8 @@ export interface StudioSnapshot {
   error: string | null;
   settings?: Record<string, unknown>;
   selection?: { from: number; to: number; text: string };
+  /** Live widgets: a person has pressed Play (an evaluation they started succeeded). */
+  humanPlayed?: boolean;
 }
 
 /** What a quantized swap did: the cycle the new code took over at, or why it didn't. */
@@ -48,6 +50,28 @@ export interface StudioSwapOutcome {
 
 /** Default phrase for swap-pattern: one 4-cycle phrase (quantize = phrase length). */
 export const STUDIO_SWAP_DEFAULT_QUANTIZE = 4;
+/**
+ * A swap still waiting for its bar after this long answers "queued" and keeps
+ * going (q=32 at 120 bpm is ~64 s — past any caller's timeout). Its progress
+ * stays readable in get-studio-state (pendingSwap, then lastSwap).
+ */
+export const STUDIO_SWAP_ANSWER_MS = 12_000;
+
+/** Hooks a swap calls so the controller can keep undo and progress honest. */
+export interface StudioSwapHooks {
+  /** Right before the swap's code replaces the editor's (once, never after a supersede). */
+  beforeLoad?(): void;
+  /** Once the boundary is known. */
+  onQueued?(boundary: number, etaSeconds: number): void;
+}
+
+/** A swap the widget is still waiting to land. */
+export interface StudioPendingSwap {
+  quantize: number;
+  boundary: number | null;
+  etaSeconds: number | null;
+  chars: number;
+}
 
 export interface StudioAdapter {
   read(): StudioSnapshot;
@@ -56,7 +80,7 @@ export interface StudioAdapter {
    * boundary (old until the bar, new from it). Rejects, changing nothing, when
    * the player is stopped. Resolves when the new code took over or failed.
    */
-  swap?(code: string, quantize: number, isCancelled: () => boolean): Promise<StudioSwapOutcome>;
+  swap?(code: string, quantize: number, isCancelled: () => boolean, hooks?: StudioSwapHooks): Promise<StudioSwapOutcome>;
   apply(args: Record<string, unknown>, settings?: Record<string, unknown>, isCancelled?: () => boolean, onCommit?: () => void): Promise<void>;
   play(isCancelled: () => boolean): Promise<void>;
   stop(): void;
@@ -85,8 +109,12 @@ export interface StudioState extends StudioSnapshot {
   busy: boolean;
   canUndo: boolean;
   sharedReview: SharedReview | null;
-  /** Present on a swap's answer. */
-  swap?: StudioSwapOutcome & { quantize: number };
+  /** Present on a swap's answer: its outcome, or `queued` while it still waits for its bar. */
+  swap?: (StudioSwapOutcome & { quantize: number }) | { queued: true; quantize: number; boundary: number | null; etaSeconds: number | null };
+  /** Live widgets: a swap still waiting for its bar, else null. */
+  pendingSwap?: StudioPendingSwap | null;
+  /** Live widgets: how the most recent swap ended. */
+  lastSwap?: (StudioSwapOutcome & { quantize: number }) | null;
 }
 export interface StudioSession {
   (command: StudioCommand): Promise<StudioState>;
@@ -97,8 +125,9 @@ export interface StudioSession {
   dispose(): void;
 }
 
-export function createStudioSession(adapter: StudioAdapter, options: { mode: StudioMode }): StudioSession {
+export function createStudioSession(adapter: StudioAdapter, options: { mode: StudioMode; swapAnswerMs?: number }): StudioSession {
   const { mode } = options;
+  const swapAnswerMs = options.swapAnswerMs ?? STUDIO_SWAP_ANSWER_MS;
   const instanceId = crypto.randomUUID();
   let disposed = false;
   const cleanups = new Set<() => void>();
@@ -116,8 +145,23 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
   const fingerprint = (s: StudioSnapshot) => JSON.stringify([s.args, s.settings]);
   let signature = fingerprint(adapter.read());
   let busy = false;
+  // Every action that changes or plays the music bumps this; a waiting swap
+  // that sees it move stands down ("replaced"). Get never bumps it.
   let playbackIntent = 0;
+  let pendingSwap: StudioPendingSwap | null = null;
+  let lastSwap: (StudioSwapOutcome & { quantize: number }) | null = null;
   const history: StudioSnapshot[] = [];
+  /**
+   * An undo target. A live snapshot's `bpm` is the MEASURED runtime tempo
+   * (feedback), not the author's: replaying it would pin it as an explicit
+   * setcps (Kimi review), so it never goes into history.
+   */
+  const remember = (snapshot: StudioSnapshot) => {
+    const copy = structuredClone(snapshot);
+    if (mode === "live") delete copy.args.bpm;
+    history.push(copy);
+    if (history.length > 10) history.shift();
+  };
   function read() {
     const snapshot = adapter.read();
     const next = fingerprint(snapshot);
@@ -125,7 +169,10 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
       signature = next; revision++;
       if (sharedReview && !sharedReview.stale) { sharedReview.stale = true; notifyReview(); }
     }
-    return { ...snapshot, instanceId, mode, revision, busy, canUndo: history.length > 0, sharedReview: cloneReview() };
+    return {
+      ...snapshot, instanceId, mode, revision, busy, canUndo: history.length > 0, sharedReview: cloneReview(),
+      ...(mode === "live" ? { pendingSwap: pendingSwap ? { ...pendingSwap } : null, lastSwap: lastSwap ? { ...lastSwap } : null } : {}),
+    };
   }
   const requireReview = (requestId: string | undefined, current: StudioState, allowStale = false) => {
     if (!requestId || !sharedReview || sharedReview.requestId !== requestId) throw new Error("Review request superseded or cleared. Request a fresh review of the passage.");
@@ -176,30 +223,45 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
       throw new Error(`Revision conflict: expected ${command.expectedRevision}, current ${before.revision}. Read the current session before editing.`);
     }
     if (command.action === "swap") {
-      // A swap waits for its bar without holding `busy`: a newer swap (or a
-      // stop) must be able to supersede it, and it answers then.
+      // A swap waits for its bar without holding `busy`: a newer swap, edit,
+      // undo, play or stop must be able to supersede it, and it answers then.
       if (mode !== "live" || !adapter.swap) throw new Error("swap-pattern is only available in a live (Strudel) widget.");
       const code = command.args?.code;
       if (typeof code !== "string" || !code.trim()) throw new Error("swap needs non-empty code.");
       studioPatternArgsSchema.shape.code.parse(code);
       const quantize = command.quantize ?? STUDIO_SWAP_DEFAULT_QUANTIZE;
       const intent = ++playbackIntent;
-      const draft = fingerprint(adapter.read());
-      let outcome: StudioSwapOutcome;
-      try {
-        outcome = await adapter.swap(code, quantize, () => disposed || intent !== playbackIntent);
-      } finally {
-        // Undo restores the source before the swap whenever the editor changed,
-        // even if the new code then failed to play.
-        if (!disposed && fingerprint(adapter.read()) !== draft) {
-          history.push(structuredClone(before));
-          if (history.length > 10) history.shift();
-        }
-      }
+      const pending: StudioPendingSwap = { quantize, boundary: null, etaSeconds: null, chars: code.length };
+      pendingSwap = pending;
+      const running = adapter.swap(code, quantize, () => disposed || intent !== playbackIntent, {
+        // Undo goes back to the draft this swap replaced, recorded once, in
+        // order, when the swap actually replaces it — a swap superseded before
+        // it touched the editor records nothing (Codex review).
+        beforeLoad: () => { if (!disposed) remember(adapter.read()); },
+        onQueued: (boundary, etaSeconds) => { pending.boundary = boundary; pending.etaSeconds = etaSeconds; },
+      }).then((outcome) => {
+        if (pendingSwap === pending) pendingSwap = null;
+        lastSwap = { ...outcome, quantize };
+        if (!disposed) { read(); notifyReview(); }
+        return outcome;
+      }, (error) => {
+        if (pendingSwap === pending) pendingSwap = null;
+        throw error;
+      });
+      running.catch(() => { /* answered below, or after a "queued" answer nobody awaits */ });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const answer = await Promise.race([
+        running.then((outcome) => ({ outcome })),
+        new Promise<{ outcome?: undefined }>((resolve) => { timer = setTimeout(() => resolve({}), swapAnswerMs); }),
+      ]).finally(() => clearTimeout(timer));
       if (disposed) throw new Error("Studio session has been disposed.");
       const notifications = reviewNotifications;
       const after = read();
       if (notifications === reviewNotifications) notifyReview();
+      if (!answer.outcome) {
+        return { ...after, swap: { queued: true, quantize, boundary: pending.boundary, etaSeconds: pending.etaSeconds } };
+      }
+      const outcome = answer.outcome;
       return { ...after, ...(outcome.ok ? {} : { error: outcome.error ?? "The swap did not play." }), swap: { ...outcome, quantize } };
     }
     if (command.action === "review-start") {
@@ -218,10 +280,8 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
         let committed = false;
         const isCancelled = () => disposed || sharedReview?.requestId !== review.requestId
           || sharedReview.stale || fingerprint(adapter.read()) !== draftSignature;
-        const recordRecovery = () => {
-          history.push(structuredClone(current));
-          if (history.length > 10) history.shift();
-        };
+        const recordRecovery = () => remember(current);
+        playbackIntent++;
         try {
           await adapter.apply(args, current.settings, isCancelled, () => { committed = true; });
         } catch (error) {
@@ -252,12 +312,13 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
         // A measured runtime tempo is feedback, not an override for new source.
         const retained: Record<string, unknown> = command.replace ? {} : { ...before.args };
         if (mode === "live") delete retained.bpm;
-        if (before.revision > 0 || before.args.code || before.args.abcNotation) history.push(structuredClone(before));
-        if (history.length > 10) history.shift();
+        playbackIntent++;
+        if (before.revision > 0 || before.args.code || before.args.abcNotation) remember(before);
         await adapter.apply({ ...retained, ...args }, settings);
       } else if (command.action === "undo") {
         const previous = history.at(-1);
         if (!previous) throw new Error("No agent edit to undo.");
+        playbackIntent++;
         await adapter.apply(previous.args, previous.settings);
         // Widget renderers may report failures in their status instead of
         // rejecting. Keep the recovery target until it actually renders.

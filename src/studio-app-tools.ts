@@ -2,7 +2,7 @@ import type { App } from "@modelcontextprotocol/ext-apps";
 import { z } from "zod";
 import { reviewResponseSchema } from "./studio-review";
 import {
-  STUDIO_SWAP_DEFAULT_QUANTIZE, studioLiveSettingsSchema, studioPatternArgsSchema, studioScoreArgsSchema,
+  STUDIO_SWAP_ANSWER_MS, STUDIO_SWAP_DEFAULT_QUANTIZE, studioLiveSettingsSchema, studioPatternArgsSchema, studioScoreArgsSchema,
   studioScoreSettingsSchema, type StudioCommand, type StudioSession,
 } from "./studio-session";
 
@@ -41,7 +41,7 @@ export function registerStudioAppTools(app: App, session: StudioSession): void {
       annotations,
     }, ({ instanceId, mode, expectedRevision, settings, replace, ...args }) => execute({ action: "set", instanceId, mode, expectedRevision, settings, replace, args }));
     app.registerTool("swap-pattern", {
-      description: `Change the music WHILE IT PLAYS: the current pattern keeps playing until the next boundary of \`quantize\` cycles (default ${STUDIO_SWAP_DEFAULT_QUANTIZE}), and the new code plays from that boundary, in time. Patterns run on the player's clock, so set quantize to the phrase length (an 8-bar phrase → 8). 0 swaps at once. Answers once the new code has taken over (swap.cycle) or failed (error; the previous pattern keeps playing). Only for a PLAYING widget — when stopped it changes nothing and says so; use set-pattern and play-current-music instead. Supply instanceId and expectedRevision. undo-studio-edit restores the previous source, stopped. Strudel executes JavaScript.`,
+      description: `Change the music WHILE IT PLAYS: the current pattern keeps playing until the next boundary of \`quantize\` cycles (default ${STUDIO_SWAP_DEFAULT_QUANTIZE}), and the new code plays from that boundary, in time. Patterns run on the player's clock, so set quantize to the phrase length (an 8-bar phrase → 8). 0 swaps at once. Answers once the new code has taken over (swap.cycle) or failed (error; the previous pattern keeps playing). If the bar is more than ~${Math.round(STUDIO_SWAP_ANSWER_MS / 1000)} s away it answers swap.queued {boundary, etaSeconds} and keeps going: read get-studio-state (pendingSwap while it waits, then lastSwap) to confirm. Any edit, undo, play, stop or newer swap before the bar replaces it; so does editing the code in the player. Only for a PLAYING widget — when stopped it changes nothing and says so; use set-pattern and play-current-music instead. Supply instanceId and expectedRevision. undo-studio-edit restores the previous source, stopped. Strudel executes JavaScript.`,
       inputSchema: z.object({
         ...identity,
         expectedRevision: revision,

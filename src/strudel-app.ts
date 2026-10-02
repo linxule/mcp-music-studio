@@ -1,5 +1,5 @@
 import { bindSourceLink } from "./source-link.js";
-import { createStudioSession, installStudioBridge } from "./studio-session";
+import { createStudioSession, installStudioBridge, type StudioSwapHooks } from "./studio-session";
 import { registerStudioAppTools } from "./studio-app-tools";
 import { installStudioReviewPanel } from "./studio-review-panel";
 import { installStrudelCompanion } from "./studio-strudel-companion";
@@ -89,6 +89,13 @@ const statusEl = document.getElementById("status")!;
 const container = document.getElementById("strudel-container")!;
 
 let companion: ReturnType<typeof installStrudelCompanion> | undefined;
+/**
+ * A person pressed Play (or Ctrl/Alt+Enter in the editor) and that evaluation
+ * succeeded. Share pages relay play/swap tools only after it: on a link
+ * anyone can craft, nothing runs without a deliberate human press.
+ */
+let humanEvalIntent = false;
+let humanPlayed = false;
 let editorEl: HTMLElement | null = null;
 let currentCode = "";
 /** The code exactly as the tool call sent it — before bpm/visuals added lines. */
@@ -2201,6 +2208,8 @@ function installEvaluateHook(editor: any): void {
   const original = editor.evaluate.bind(editor);
   editor.evaluate = async (shouldPlay?: unknown) => {
     companion?.stop();
+    const byHuman = humanEvalIntent;
+    humanEvalIntent = false;
     // Checked after every await below (evaluationSuperseded).
     const generation = renderGeneration;
     // One evaluation at a time. repl.evaluate() installs its pattern only when
@@ -2224,13 +2233,13 @@ function installEvaluateHook(editor: any): void {
       clearTimeout(timer);
       // Cancelled (or replaced by a newer tool call) while queued: never start.
       if (generation !== renderGeneration) return;
-      await evaluateNow(shouldPlay, generation);
+      await evaluateNow(shouldPlay, generation, byHuman);
     } finally {
       finished();
     }
   };
 
-  async function evaluateNow(shouldPlay: unknown, generation: number): Promise<void> {
+  async function evaluateNow(shouldPlay: unknown, generation: number, byHuman = false): Promise<void> {
     const seq = ++evaluationSeq;
     // Idempotent, and cheap once it has taken. It must run here rather than at
     // CDN load: initHydra/H only land on globalThis when the REPL's eval scope
@@ -2291,6 +2300,8 @@ function installEvaluateHook(editor: any): void {
       noteHumanEdit(code);
       pruneDrawLayers(code);
       stage.commit(stageToken);
+      // Before the report below goes out: the share page reads it on that report.
+      if (byHuman && shouldPlay !== false) humanPlayed = true;
       logControlSurface();
       stageErrorReported = false;
       if (holdForVoice) {
@@ -2875,7 +2886,7 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
  */
 let playPresses = 0;
 
-playBtn.addEventListener("click", async () => {
+playBtn.addEventListener("click", async (event) => {
   const editor = getEditor();
   if (!editor) return;
   playPresses++;
@@ -2903,12 +2914,22 @@ playBtn.addEventListener("click", async () => {
       // user edited in the REPL is what plays. The hook stages its visuals and
       // reports the outcome, so there is no optimistic state to set here.
       setStatus("Evaluating...");
+      if (event.isTrusted) humanEvalIntent = true;
       await editor.evaluate(true);
     }
   } catch (err) {
     setStatus(`Playback error: ${(err as Error).message}`, "error");
   }
 });
+
+// The editor's own evaluate keys (Ctrl/Cmd/Alt+Enter), pressed by a person.
+container.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.isTrusted && event.key === "Enter" && (event.ctrlKey || event.metaKey || event.altKey)) humanEvalIntent = true;
+  },
+  { capture: true },
+);
 
 recordBtn.addEventListener("click", () => {
   if (isRecording) {
@@ -3179,12 +3200,22 @@ function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome> {
  * either kind wins and an older one answers "replaced". `cancelled` returns a
  * reason when the caller has gone away.
  */
-async function quantizedSwap(code: string, quantize: number, cancelled: () => string | null): Promise<ApplyOutcome> {
+async function quantizedSwap(
+  code: string,
+  quantize: number,
+  cancelled: () => string | null,
+  hooks: StudioSwapHooks = {},
+): Promise<ApplyOutcome> {
   const mine = ++sessionApplySeq;
-  const replaced = { ok: false, cycle: null, error: "replaced by a newer swap or update before it played" } as const;
+  const replaced = {
+    ok: false,
+    cycle: null,
+    error: "replaced before it played by a newer edit, swap, update, play, undo or stop",
+  } as const;
   const editor = await prepareEditor().catch(() => null);
   if (!editor?.repl) return { ok: false, cycle: null, error: "the player could not load Strudel" };
   if (mine !== sessionApplySeq) return replaced;
+  hooks.beforeLoad?.();
   lastProgrammaticCode = code;
   sentCode = code;
   currentCode = code;
@@ -3201,10 +3232,13 @@ async function quantizedSwap(code: string, quantize: number, cancelled: () => st
   let boundary: number | null = null;
   if (quantize > 0) {
     boundary = nextBoundary(stageEnv.audibleCycle() ?? 0, quantize, SESSION_SWAP_LEAD_S * cps);
+    hooks.onQueued?.(boundary, Math.max(0, (boundary - (stageEnv.audibleCycle() ?? 0)) / cps));
     setStatus(`Next pattern lands at bar ${Math.round(boundary)}`, "playing");
     const giveUpAt = Date.now() + ((boundary - (stageEnv.audibleCycle() ?? 0)) / cps) * 1000 + 5000;
     for (;;) {
       if (mine !== sessionApplySeq) return replaced;
+      const gone = cancelled();
+      if (gone) return { ok: false, cycle: null, error: gone };
       // Stopped while waiting: the boundary will never come (Codex review).
       if (!isSchedulerStarted()) {
         return {
@@ -3213,15 +3247,22 @@ async function quantizedSwap(code: string, quantize: number, cancelled: () => st
           report: "Loaded into the editor, but someone stopped the player before the bar — it plays when Play is pressed.",
         };
       }
-      const gone = cancelled();
-      if (gone) return { ok: false, cycle: null, error: gone };
       const scheduled = Number(scheduler.now?.());
       const remaining = (boundary - SESSION_EVAL_LEAD_S * cps - scheduled) / cps;
       if (!Number.isFinite(remaining) || remaining <= 0 || Date.now() > giveUpAt) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(remaining * 1000, 250)));
     }
-    pendingSplice = { boundary, code: editor.code ?? code };
   }
+  // Takeover: still ours, still wanted, and the editor still holds OUR code —
+  // a human edit (or anything else) during the wait must not be evaluated
+  // under this swap's name (Codex + Kimi review).
+  if (mine !== sessionApplySeq) return replaced;
+  const gone = cancelled();
+  if (gone) return { ok: false, cycle: null, error: gone };
+  if (typeof editor.code === "string" && editor.code !== code) {
+    return { ok: false, cycle: null, error: "the code was edited before the bar; not swapped" };
+  }
+  if (boundary !== null) pendingSplice = { boundary, code };
   lastReportText = "";
   const ranBefore = evaluationSeq;
   await editor.evaluate(true);
@@ -3493,9 +3534,12 @@ const studioSession = createStudioSession({
     playback: currentPlaybackState(),
     status: statusEl.textContent ?? "",
     error: statusEl.classList.contains("error") ? statusEl.textContent : null,
+    humanPlayed,
   }),
   apply: async (args, _settings, isCancelled, onCommit) => {
     if (isCancelled?.()) throw new Error("The review request changed. Review the current question before applying.");
+    // Any waiting swap or session update stands down (it answers "replaced").
+    sessionApplySeq++;
     // A replacement is staged stopped; Play is a separate, explicit action.
     if (isRecording) stopRecording();
     getEditor()?.stop?.();
@@ -3514,14 +3558,18 @@ const studioSession = createStudioSession({
     }
     await renderPattern({ ...args, autoplay: false }, undefined, () => !isCancelled?.() && getLiveCode() === before, onCommit);
   },
-  swap: async (code, quantize, isCancelled) => {
+  swap: async (code, quantize, isCancelled, hooks) => {
     // Edits stage stopped and Play is explicit (studio rule): a swap only
     // changes music that is already playing.
     if (!isSchedulerStarted()) {
       throw new Error("The player is stopped: swap-pattern changes a PLAYING pattern on the bar. Use set-pattern, then play-current-music.");
     }
-    const outcome = await quantizedSwap(code, quantize, () =>
-      isCancelled() ? "superseded by a newer studio action before it played" : null);
+    const outcome = await quantizedSwap(
+      code,
+      quantize,
+      () => (isCancelled() ? "replaced before it played by a newer edit, swap, play, undo or stop" : null),
+      hooks,
+    );
     if (outcome.ok && session) {
       // The booth's other side sees it like a human edit (it came from the
       // user's page — e.g. their browser agent), and /s/<id> follows it.
@@ -3537,12 +3585,14 @@ const studioSession = createStudioSession({
   play: async () => {
     const editor = getEditor();
     if (!editor) throw new Error("The editor has not loaded yet.");
+    sessionApplySeq++;
     playPresses++;
     void ensureAudioRunning();
     await editor.evaluate(true);
   },
   stop: () => {
     companion?.stop();
+    sessionApplySeq++;
     renderGeneration++;
     playPresses++;
     if (isRecording) stopRecording();
@@ -3590,5 +3640,7 @@ if (document.documentElement.dataset.studio === "true" && !document.documentElem
     container, stage: replSection, status: statusEl, editor: getEditor,
     playing: isSchedulerStarted, recording: () => isRecording,
   });
+  // Host teardown, not only pagehide: a host can unmount the frame without one (Kimi review).
+  studioSession.onDispose(() => companion?.dispose());
   playBtn.addEventListener("click", () => companion?.stop(), { capture: true });
 }

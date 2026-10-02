@@ -4,8 +4,10 @@
 //     (measured: the old, silent pattern until the bar; sound from it);
 //   - the answer names the boundary cycle, on a multiple of quantize;
 //   - a stale revision is rejected; a newer swap supersedes a waiting one
-//     (which answers); stop during the wait answers; a stopped player
-//     changes nothing; undo restores the previous source, stopped.
+//     (which answers); a human edit during the wait is not swapped in; a long
+//     quantize answers "queued" and is readable until it lands; stop during
+//     the wait answers; a stopped player changes nothing; undo restores the
+//     previous source, stopped.
 //
 //   bun run build && bunx vite --config dev/vite.config.ts --host 127.0.0.1 --port 5188
 //   BASE=http://127.0.0.1:5188 bun scripts/verify-swap.mjs
@@ -132,6 +134,51 @@ const second = call("swap-pattern", { instanceId: mid.instanceId, expectedRevisi
 const [a, b] = await Promise.all([first, second]);
 a.isError && /superseded|replaced/.test(a.state?.swap?.error ?? a.text) ? ok(`the waiting swap answered: ${a.state?.swap?.error}`) : fail(`first: ${a.text.slice(0, 200)}`);
 !b.isError && b.state?.swap?.ok ? ok(`the newer swap took over at cycle ${b.state.swap.cycle}`) : fail(`second: ${b.text.slice(0, 200)}`);
+
+// F3: a person edits the code while the swap waits — it must not be evaluated under the swap's name.
+s = await read();
+const edited = call("swap-pattern", { instanceId: s.instanceId, expectedRevision: s.revision, code: SILENT, quantize: 4 });
+await sleep(500);
+await w.click(".cm-content");
+await page.keyboard.press("End");
+await page.keyboard.type(" // edited");
+let e = await edited;
+// Answered "queued" if the bar was past the answer window: the outcome is then lastSwap.
+let editOutcome = e.state?.swap?.queued ? null : e.state?.swap;
+for (let i = 0; i < 40 && !editOutcome; i++) {
+  const st = await read();
+  if (!st.pendingSwap && st.lastSwap) editOutcome = st.lastSwap;
+  else await sleep(500);
+}
+editOutcome && !editOutcome.ok && /edited before the bar/.test(editOutcome.error ?? "")
+  ? ok(`an edit during the wait is not swapped in: ${editOutcome.error}`)
+  : fail(`edit during wait: ${JSON.stringify(editOutcome ?? e).slice(0, 240)}`);
+const afterEdit = await w.evaluate(() => document.querySelector("strudel-editor")?.editor?.code ?? "");
+afterEdit.includes("// edited") ? ok("the person's edit stays in the editor") : fail(`editor after: ${afterEdit}`);
+
+// F4: a long quantize answers "queued" inside the answer window and stays readable until it lands.
+s = await read();
+const t1 = Date.now();
+const q = await call("swap-pattern", { instanceId: s.instanceId, expectedRevision: s.revision, code: LOUD.replace("0.9", "0.8"), quantize: 32 });
+const answeredIn = Date.now() - t1;
+const queued = q.state?.swap;
+if (queued?.queued) {
+  answeredIn < 15000 && Number.isFinite(queued.boundary) && queued.boundary % 32 === 0
+    ? ok(`q=32 answered "queued" in ${answeredIn} ms (boundary ${queued.boundary}, eta ${queued.etaSeconds?.toFixed(1)} s)`)
+    : fail(`queued answer: ${JSON.stringify(queued)} in ${answeredIn} ms`);
+  const pendingNow = (await read()).pendingSwap;
+  pendingNow && pendingNow.boundary === queued.boundary ? ok("get-studio-state shows the pending swap") : fail(`pendingSwap: ${JSON.stringify(pendingNow)}`);
+  let last = null;
+  for (let i = 0; i < 160 && !last; i++) {
+    const st = await read();
+    if (!st.pendingSwap && st.lastSwap) last = st.lastSwap;
+    else await sleep(500);
+  }
+  last?.ok && last.cycle === queued.boundary ? ok(`…and then lastSwap: took over at cycle ${last.cycle}`) : fail(`lastSwap: ${JSON.stringify(last)}`);
+} else {
+  // Landed inside the window (the boundary happened to be near): still a valid answer.
+  q.state?.swap?.ok && answeredIn < 15000 ? ok(`q=32 landed inside the answer window (cycle ${q.state.swap.cycle})`) : fail(`q=32: ${JSON.stringify(q).slice(0, 240)}`);
+}
 
 // Stop during the wait answers (no hang), and the source stays in the editor.
 s = await read();

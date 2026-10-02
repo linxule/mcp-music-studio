@@ -9,6 +9,7 @@ import {
 } from "../src/webmcp-relay";
 import { registerStudioAppTools } from "../src/studio-app-tools";
 import { createStudioSession, type StudioSnapshot, type StudioState } from "../src/studio-session";
+import { RELAY_AFTER_HUMAN_PLAY, shareRelayAnnotations, shareRelayExclude } from "../src/share-relay-policy";
 
 /** document.modelContext as the spec and Chromium 153 behave: abort unregisters, a duplicate name rejects. */
 function fakeContext() {
@@ -427,5 +428,56 @@ describe("relaying the real studio app tools over App/AppBridge", () => {
 
     swap.remove();
     await vi.waitFor(() => expect(web.names()).not.toContain("late-tool"));
+  });
+});
+
+describe("review fixes (0.10 gauntlet)", () => {
+  it("F8: a registerTool that never settles is abandoned after the ceiling, and a later sync still registers the rest", async () => {
+    const ctx = fakeContext();
+    let hang = true;
+    ctx.registerTool.mockImplementation(async (tool: WebMcpTool, options?: { signal?: AbortSignal }) => {
+      if (tool.name === "get-studio-state" && hang) return new Promise<void>(() => {});
+      ctx.tools.set(tool.name, tool);
+      options?.signal?.addEventListener("abort", () => ctx.tools.delete(tool.name));
+    });
+    await expect(registerWebMcpTool(ctx.context, { name: "get-studio-state", description: "x", execute: async () => null }, 20))
+      .rejects.toThrow("did not settle within 20 ms");
+    hang = false;
+    const remove = await registerWebMcpTool(ctx.context, { name: "get-studio-state", description: "x", execute: async () => null }, 20);
+    expect(ctx.names()).toEqual(["get-studio-state"]);
+    remove();
+  });
+
+  it("F5: a function exclude is asked on every sync, so a tool can open later", async () => {
+    const ctx = fakeContext();
+    const { bridge } = fakeBridge([getTool, setTool]);
+    let open = false;
+    const relay = createWidgetToolRelay({ bridge, modelContext: ctx.context, exclude: (name) => name === "set-pattern" && !open })!;
+    await relay.refresh();
+    expect(ctx.names()).toEqual(["get-studio-state"]);
+    open = true;
+    await relay.refresh();
+    expect(ctx.names()).toEqual(["get-studio-state", "set-pattern"]);
+  });
+
+  it("F1 + F5: the share page's policy — every tool is untrusted content; play/swap only after a human Play", () => {
+    expect(shareRelayAnnotations()).toEqual({ untrustedContentHint: true });
+    let played = false;
+    const exclude = shareRelayExclude(() => played);
+    const offered = (names: string[]) => names.filter((n) => !exclude(n));
+    const all = ["get-studio-state", "set-pattern", "play-current-music", "stop-music", "undo-studio-edit", "swap-pattern", "explain-selection", "suggest-edit"];
+    expect(offered(all)).toEqual(["get-studio-state", "set-pattern", "stop-music", "undo-studio-edit"]);
+    played = true;
+    expect(offered(all)).toEqual(["get-studio-state", "set-pattern", "play-current-music", "stop-music", "undo-studio-edit", "swap-pattern"]);
+    expect(RELAY_AFTER_HUMAN_PLAY).toEqual(["play-current-music", "swap-pattern"]);
+  });
+
+  it("F1: with the share policy, write tools carry untrustedContentHint too", async () => {
+    const ctx = fakeContext();
+    const { bridge } = fakeBridge([getTool, setTool]);
+    const relay = createWidgetToolRelay({ bridge, modelContext: ctx.context, annotate: shareRelayAnnotations })!;
+    await relay.refresh();
+    expect(ctx.tools.get("set-pattern")!.annotations).toMatchObject({ untrustedContentHint: true, destructiveHint: false });
+    expect(ctx.tools.get("get-studio-state")!.annotations).toMatchObject({ untrustedContentHint: true, readOnlyHint: true });
   });
 });

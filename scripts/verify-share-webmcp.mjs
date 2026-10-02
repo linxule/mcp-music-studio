@@ -3,9 +3,13 @@
 //   - /play hosts the widget AND offers its MCP Apps tools on the TOP-LEVEL
 //     document.modelContext (the only place a browser agent looks);
 //   - the review tools stay off, descriptions say what they control;
+//   - nothing runs without a human press: play-current-music and
+//     swap-pattern are NOT offered until a person pressed Play in the player
+//     (a real, trusted click); then they appear;
 //   - an agent's get-studio-state -> set-pattern (instanceId + revision) ->
 //     play-current-music -> stop-music works, audibly (measured), and a stale
 //     revision comes back as a readable result;
+//   - every relayed tool, writes included, carries untrustedContentHint;
 //   - dispose() takes the tools off the page again.
 //
 //   bun run build
@@ -105,16 +109,26 @@ for (let i = 0; i < 90 && !(await tools()).some((t) => t.name === "get-studio-st
 const listed = await tools();
 const names = listed.map((t) => t.name).sort();
 console.log(`  tools: ${names.join(", ")}`);
-for (const want of ["get-studio-state", "set-pattern", "play-current-music", "stop-music", "undo-studio-edit"]) {
+for (const want of ["get-studio-state", "set-pattern", "stop-music", "undo-studio-edit"]) {
   check(names.includes(want), `relayed: ${want}`, `missing: ${want}`);
 }
+check(
+  !names.includes("play-current-music") && !names.includes("swap-pattern"),
+  "before a human Play: play-current-music and swap-pattern are NOT offered",
+  `offered before a human Play: ${names.filter((n) => n === "play-current-music" || n === "swap-pattern").join(", ")}`,
+);
 check(!names.includes("explain-selection") && !names.includes("suggest-edit"), "the review tools are not offered (no review panel here)");
 const set = listed.find((t) => t.name === "set-pattern");
-check(set?.description?.endsWith("This controls the music player on this page."), "descriptions end with the 'controls the player on this page' line", `description: ${set?.description}`);
+check(set?.description?.includes("This controls the music player on this page."), "descriptions carry the 'controls the player on this page' line", `description: ${set?.description}`);
 check(set?.schema?.properties?.expectedRevision && set?.schema?.properties?.instanceId, "the widget's input schema came through (instanceId, expectedRevision)", `schema: ${JSON.stringify(set?.schema)}`);
 const get = listed.find((t) => t.name === "get-studio-state");
 check(get?.annotations?.readOnlyHint === true, "read-only annotation preserved", `annotations: ${JSON.stringify(get?.annotations)}`);
-console.log(`  untrustedContentHint on get-studio-state: ${JSON.stringify(get?.annotations?.untrustedContentHint)} (this Chromium may not surface it)`);
+console.log(
+  `  untrustedContentHint: get-studio-state ${JSON.stringify(get?.annotations?.untrustedContentHint)}, set-pattern ${JSON.stringify(set?.annotations?.untrustedContentHint)} (this Chromium may not surface annotations)`,
+);
+// What the relay itself registered (the page's own handle), independent of what Chromium surfaces.
+const hints = await page.evaluate(() => window.__share?.relayAnnotations?.() ?? null);
+if (hints) check(Object.values(hints).every((a) => a?.untrustedContentHint === true), `every relayed tool is marked untrustedContentHint (${Object.keys(hints).length})`, `annotations: ${JSON.stringify(hints)}`);
 
 let state = await run("get-studio-state");
 check(typeof state?.instanceId === "string" && Number.isInteger(state?.revision) && state?.mode === "live", `get-studio-state -> ${state?.mode} rev ${state?.revision}`, `state: ${JSON.stringify(state).slice(0, 200)}`);
@@ -128,8 +142,28 @@ const staged = await run("set-pattern", { instanceId: state.instanceId, expected
 check(staged?.args?.code?.includes("hh*8") && staged.revision > state.revision, `set-pattern staged it (rev ${staged?.revision}), still stopped: ${staged?.playback}`, `staged: ${JSON.stringify(staged).slice(0, 200)}`);
 
 const frame = page.frames().find((f) => f.url().includes("/widget/strudel"));
+// The listener presses Play — a real click inside the player, after Strudel loaded.
+await frame.waitForSelector(".cm-content", { timeout: 30000 });
+await frame.waitForFunction(() => typeof globalThis.getAudioContext === "function", null, { timeout: 30000 });
+await sleep(800);
+await frame.click("#play-btn");
+let opened = [];
+for (let i = 0; i < 40; i++) {
+  opened = (await tools()).map((t) => t.name);
+  if (opened.includes("play-current-music") && opened.includes("swap-pattern")) break;
+  await sleep(250);
+}
+check(
+  opened.includes("play-current-music") && opened.includes("swap-pattern"),
+  "after the listener pressed Play: play-current-music and swap-pattern appear",
+  `after a human Play: ${opened.join(", ")}`,
+);
+const humanState = await run("get-studio-state");
+check(humanState?.humanPlayed === true && humanState?.playback === "playing", "the widget says humanPlayed and is playing", `state: ${JSON.stringify(humanState).slice(0, 160)}`);
+await run("stop-music", { instanceId: humanState.instanceId });
+const ready = await run("get-studio-state");
 await frame.evaluate(() => { globalThis.__peak = 0; });
-const played = await run("play-current-music", { instanceId: staged.instanceId, expectedRevision: staged.revision });
+const played = await run("play-current-music", { instanceId: ready.instanceId, expectedRevision: ready.revision });
 console.log(`  play-current-music -> playback ${played?.playback}${played?.error ? `, error ${played.error}` : ""}`);
 await sleep(3000);
 const peak = await frame.evaluate(() => globalThis.__peak ?? 0);
