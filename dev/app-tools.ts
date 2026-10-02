@@ -60,7 +60,7 @@ function errorText(error: unknown): string {
 
 function seedSource(id: "A" | "B"): string {
   return mode === "live"
-    ? `// Stopped seed ${id}\nnote('${id === "A" ? "c3 e3 g3" : "d3 f3 a3"}').s('sine')`
+    ? `// Stopped seed ${id}\nnote("${id === "A" ? "c3 e3 g3" : "d3 f3 a3"}").s('sine')`
     : `X:1\nT:Stopped seed ${id}\nM:4/4\nL:1/4\nK:C\n${id === "A" ? "C E G c" : "D F A d"}|`;
 }
 
