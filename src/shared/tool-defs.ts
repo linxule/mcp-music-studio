@@ -461,7 +461,8 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "(teletext chiptune, sonicPink synthwave, nord ambient, gruvboxDark lofi). " +
   "Beyond music: the code is real browser JavaScript — cycle(), onFrame, onEvent(pattern, fn), onTap and " +
   "say(text) (a spoken line as a sample) build music videos, short films and interactive pieces, and " +
-  "fader('name') / pad('name') / xy('name') put controls on the player that the user performs (each is a pattern, e.g. .gain(fader('rain'))); " +
+  "fader('name') / pad('name') / xy('name') put controls on the player that the user performs (each is a pattern, e.g. .gain(fader('rain'))), " +
+  "and tilt() / mic() follow the device's motion and microphone where allowed (played by hand where not); " +
   "see topics 'stage', 'film', 'interactive' and 'gallery'. " +
   "Each call creates a NEW player. To keep one player going — iterating on a piece, or playing back-to-back with the user — pass session: true, then change it with update-session (it swaps on the next bar) and read what happened with get-session (runtime errors, the user's taps and edits). " +
   "Use get-strudel-guide for genre templates, sound references, and advanced features " +

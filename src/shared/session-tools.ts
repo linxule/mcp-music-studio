@@ -106,9 +106,9 @@ export function sessionNote(id: string): string {
   return (
     `Live session: ${id}. This player stays open as one performance. ` +
     `update-session(session: "${id}", code) swaps in a new pattern on the next bar — no new player — and ` +
-    `get-session(session: "${id}", wait: "pass") listens until the user presses Pass; ` +
     `says whether it ran; get-session(session: "${id}") reads what happened: runtime errors, what is playing, ` +
-    "and the human's taps, code edits and when they hand the turn to you. The session closes after 2 hours idle."
+    "and the human's taps, control moves, code edits and when they hand the turn to you — with wait: \"pass\" it " +
+    "listens until they press Pass. The session closes after 2 hours idle."
   );
 }
 
