@@ -3,8 +3,8 @@
 //   - /play hosts the widget AND offers its MCP Apps tools on the TOP-LEVEL
 //     document.modelContext (the only place a browser agent looks);
 //   - the review tools stay off, descriptions say what they control;
-//   - nothing runs without a human press: play-current-music and
-//     swap-pattern are NOT offered until a person pressed Play in the player
+//   - nothing runs until Play is pressed on the page: play-current-music and
+//     swap-pattern are NOT offered until Play was pressed in the player
 //     (a real, trusted click); then they appear;
 //   - an agent's get-studio-state -> set-pattern (instanceId + revision) ->
 //     play-current-music -> stop-music works, audibly (measured), and a stale
@@ -114,8 +114,8 @@ for (const want of ["get-studio-state", "set-pattern", "stop-music", "undo-studi
 }
 check(
   !names.includes("play-current-music") && !names.includes("swap-pattern"),
-  "before a human Play: play-current-music and swap-pattern are NOT offered",
-  `offered before a human Play: ${names.filter((n) => n === "play-current-music" || n === "swap-pattern").join(", ")}`,
+  "before a press of Play: play-current-music and swap-pattern are NOT offered",
+  `offered before a press of Play: ${names.filter((n) => n === "play-current-music" || n === "swap-pattern").join(", ")}`,
 );
 check(!names.includes("explain-selection") && !names.includes("suggest-edit"), "the review tools are not offered (no review panel here)");
 const set = listed.find((t) => t.name === "set-pattern");
@@ -142,7 +142,7 @@ const staged = await run("set-pattern", { instanceId: state.instanceId, expected
 check(staged?.args?.code?.includes("hh*8") && staged.revision > state.revision, `set-pattern staged it (rev ${staged?.revision}), still stopped: ${staged?.playback}`, `staged: ${JSON.stringify(staged).slice(0, 200)}`);
 
 const frame = page.frames().find((f) => f.url().includes("/widget/strudel"));
-// The listener presses Play — a real click inside the player, after Strudel loaded.
+// Play is pressed — a real click inside the player, after Strudel loaded.
 await frame.waitForSelector(".cm-content", { timeout: 30000 });
 await frame.waitForFunction(() => typeof globalThis.getAudioContext === "function", null, { timeout: 30000 });
 await sleep(800);
@@ -155,12 +155,12 @@ for (let i = 0; i < 40; i++) {
 }
 check(
   opened.includes("play-current-music") && opened.includes("swap-pattern"),
-  "after the listener pressed Play: play-current-music and swap-pattern appear",
-  `after a human Play: ${opened.join(", ")}`,
+  "after a press of Play: play-current-music and swap-pattern appear",
+  `after a press of Play: ${opened.join(", ")}`,
 );
-const humanState = await run("get-studio-state");
-check(humanState?.humanPlayed === true && humanState?.playback === "playing", "the widget says humanPlayed and is playing", `state: ${JSON.stringify(humanState).slice(0, 160)}`);
-await run("stop-music", { instanceId: humanState.instanceId });
+const pressedState = await run("get-studio-state");
+check(pressedState?.playPressed === true && pressedState?.playback === "playing", "the widget says playPressed and is playing", `state: ${JSON.stringify(pressedState).slice(0, 160)}`);
+await run("stop-music", { instanceId: pressedState.instanceId });
 const ready = await run("get-studio-state");
 await frame.evaluate(() => { globalThis.__peak = 0; });
 const played = await run("play-current-music", { instanceId: ready.instanceId, expectedRevision: ready.revision });

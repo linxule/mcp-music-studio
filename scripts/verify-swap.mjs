@@ -85,11 +85,19 @@ await w.waitForSelector(".cm-content", { timeout: 30000 });
 await w.waitForFunction(() => typeof globalThis.getAudioContext === "function", null, { timeout: 30000 });
 await sleep(1000);
 await w.click(".cm-content");
+// R4: a stray, trusted Ctrl+Enter OUTSIDE the editor must not arm a press that a
+// later programmatic evaluation (this tool play, the swaps below) could claim.
+await w.click("#status");
+await page.keyboard.press("Control+Enter");
 s = await read();
 r = await call("play-current-music", { mode: "live", instanceId: s.instanceId, expectedRevision: s.revision });
 for (let i = 0; i < 40 && (await read()).playback !== "playing"; i++) await sleep(250);
 (await read()).playback === "playing" ? ok("playing the silent pattern") : fail(`playback: ${(await read()).playback}`);
 await sleep(1500);
+
+(await read()).playPressed === false
+  ? ok("a tool's play after a stray Ctrl+Enter outside the editor: playPressed stays false")
+  : fail(`playPressed after a tool play: ${(await read()).playPressed}`);
 
 // Stale revision: rejected, nothing swapped.
 s = await read();
@@ -197,6 +205,19 @@ const u = await read();
 !r.isError && u.args.code.includes("gain(0.8)") && u.playback === "stopped"
   ? ok("undo restored the previous source, stopped")
   : fail(`undo: ${r.text.slice(0, 200)} code=${u.args.code} playback=${u.playback}`);
+
+(await read()).playPressed === false
+  ? ok("after every swap and tool evaluation: playPressed still false")
+  : fail(`playPressed after swaps: ${(await read()).playPressed}`);
+// A real press of Play inside the player sets it.
+await w.click("#play-btn");
+let pressed = false;
+for (let i = 0; i < 40 && !pressed; i++) {
+  pressed = (await read()).playPressed === true;
+  if (!pressed) await sleep(250);
+}
+pressed ? ok("a press of the Play button sets playPressed") : fail("Play click did not set playPressed");
+await call("stop-music", { instanceId: (await read()).instanceId });
 
 errors.length ? fail(`page errors: ${errors.join(" | ").slice(0, 300)}`) : ok("no page errors");
 await browser.close();

@@ -276,7 +276,7 @@ Tools on the player itself.
   player's tools to an assistant built into the browser (Chromium's WebMCP;
   Codex desktop's built-in browser) — ask it to change the music on the page.
   A shared page still never runs on its own: the assistant can read, stage,
-  stop and undo, but Play and swap appear only after you press Play there.
+  stop and undo, but Play and swap appear only after Play is pressed on the page.
   Every result is marked untrusted: a shared page's code is the link author's.
 - **The local studio** (`bun run studio`, `dev/`): both widgets side by side
   with shared review — select a passage, ask, and the agent explains or

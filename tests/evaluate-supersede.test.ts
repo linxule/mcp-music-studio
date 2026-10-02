@@ -76,6 +76,7 @@ async function loadHook() {
     hydraStruck: 0,
     stateReports: 0,
     previewStops: 0,
+    splices: [] as number[],
   };
   // `pattern` is what the scheduler would play: repl.evaluate() sets it when
   // it FINISHES, so the last evaluation to finish is the one you hear.
@@ -97,8 +98,11 @@ async function loadHook() {
   vm.runInContext(
     `
     const companion = { stop: () => { log.previewStops++; } };
-    let humanEvalIntent = false;
-    let humanPlayed = false;
+    let playPressIntent = false;
+    let playPressed = false;
+    let sessionApplySeq = 0;
+    let swapEvaluation = null;
+    const applySplice = (_editor, _previous, boundary) => { log.splices.push(boundary); };
     let renderGeneration = 0;
     let isPlaying = false;
     let audioBlocked = false;
@@ -113,7 +117,6 @@ async function loadHook() {
     const stageVisuals = () => {};
     const readEvalError = () => null;
     const pruneDrawLayers = () => {};
-    let pendingSplice = null;
     const installSplice = () => () => {};
     const noteHumanEdit = () => {};
     const logControlSurface = () => {};
@@ -134,6 +137,11 @@ async function loadHook() {
     };
     ${js}
     globalThis.api = {
+      markSwap: (mark) => { swapEvaluation = mark; },
+      bumpSeq: () => { sessionApplySeq++; },
+      seq: () => sessionApplySeq,
+      press: () => { playPressIntent = true; },
+      playPressed: () => playPressed,
       installEvaluateHook,
       cancel: () => { renderGeneration++; },
       isPlaying: () => isPlaying,
@@ -253,5 +261,78 @@ describe("an evaluation superseded while in flight", () => {
     expect(pending).toHaveLength(1); // the queued one never reached repl.evaluate()
     expect(scheduler.started).toBe(false);
     expect(log.reports).toEqual([]);
+  });
+});
+
+describe("a swap's evaluation runs exactly its own code (Codex review, round 3)", () => {
+  it("Codex's sequence: swap A queued behind a run, swap B writes the editor → A is refused, never evaluates B", async () => {
+    const { api, editor, log, scheduler, pending } = await loadHook();
+    const first = editor.evaluate(true); // something already in flight
+    await flush();
+    editor.code = "A";
+    const markA = { code: "A", seq: api.seq(), boundary: 4, refused: false };
+    api.markSwap(markA);
+    const runA = editor.evaluate(true); // queued behind `first`
+    api.bumpSeq(); // swap B takes over…
+    editor.code = "B"; // …and loads its code
+    pending[0].resolve();
+    await first;
+    await runA;
+    expect(markA.refused).toBe(true);
+    expect(pending).toHaveLength(1); // A never reached repl.evaluate()
+    expect(scheduler.pattern).not.toBe("B");
+    expect(log.splices).toEqual([]);
+  });
+
+  it("a buffer edited while the swap's evaluation was queued is refused too", async () => {
+    const { api, editor, pending } = await loadHook();
+    const first = editor.evaluate(true);
+    await flush();
+    editor.code = "A";
+    const mark = { code: "A", seq: api.seq(), boundary: 8, refused: false };
+    api.markSwap(mark);
+    const run = editor.evaluate(true);
+    editor.code = "A // a person's edit";
+    pending[0].resolve();
+    await first;
+    await run;
+    expect(mark.refused).toBe(true);
+    expect(pending).toHaveLength(1);
+  });
+
+  it("control: an unchanged swap evaluates its own code and splices at its boundary", async () => {
+    const { api, editor, log, scheduler, pending } = await loadHook();
+    editor.code = "A";
+    const mark = { code: "A", seq: api.seq(), boundary: 4, refused: false };
+    api.markSwap(mark);
+    const run = editor.evaluate(true);
+    await flush();
+    pending[0].resolve();
+    await run;
+    expect(mark.refused).toBe(false);
+    expect(scheduler.pattern).toBe("A");
+    expect(log.splices).toEqual([4]);
+  });
+
+  it("only the evaluation a press started consumes the press; it also replaces a waiting swap", async () => {
+    const { api, editor, pending } = await loadHook();
+    // The swap is waiting for its bar (its seq is current)…
+    const waiting = { code: "W", seq: api.seq(), boundary: 16, refused: false };
+    api.press();
+    const pressed = editor.evaluate(true); // takes the press on entry
+    expect(api.seq()).toBe(waiting.seq + 1); // …and the press superseded it
+    await flush();
+    pending[0].resolve();
+    await pressed;
+    expect(api.playPressed()).toBe(true);
+  });
+
+  it("a programmatic evaluation never claims a press it didn't start", async () => {
+    const { api, editor, pending } = await loadHook();
+    const programmatic = editor.evaluate(true); // no press armed
+    await flush();
+    pending[0].resolve();
+    await programmatic;
+    expect(api.playPressed()).toBe(false);
   });
 });

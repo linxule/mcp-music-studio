@@ -39,7 +39,6 @@ interface ShareInit {
   classic?: string;
 }
 
-/** Widget tools that need the human review panel, which this page does not have. */
 /** What the frame may use — the reason this page exists. */
 export const FRAME_ALLOW = "autoplay; microphone; accelerometer; gyroscope; magnetometer; midi; fullscreen; clipboard-write";
 
@@ -142,13 +141,13 @@ async function mount(): Promise<void> {
   );
 
   // Anyone can craft a /play link: everything a tool returns is third-party
-  // content, and nothing plays until a person has pressed Play here.
-  let humanPlayed = false;
+  // content, and nothing plays until Play has been pressed on this page.
+  let playPressed = false;
   const relay = createWidgetToolRelay({
     bridge,
-    exclude: shareRelayExclude(() => humanPlayed),
+    exclude: shareRelayExclude(() => playPressed),
     descriptionSuffix:
-      "This controls the music player on this page. Playing and swapping are offered once the listener has pressed Play here.",
+      "This controls the music player on this page. Playing and swapping are offered once Play has been pressed on this page.",
     annotate: shareRelayAnnotations,
     onError: (error, what) => console.warn(`WebMCP relay: ${what}:`, error),
   });
@@ -178,12 +177,12 @@ async function mount(): Promise<void> {
     // Tools appear once the pattern is in, so an agent's first read sees it.
     if (relay) void patternApplied(bridge, init.code).then(syncRelay);
   };
-  // The widget reports after every evaluation; after the first one a person
-  // started, its state says humanPlayed — then the play tools appear.
+  // The widget reports after every evaluation; after the first one a press of
+  // Play started, its state says playPressed — then the play tools appear.
   let checking = false;
   let recheck = false;
-  const checkHumanPlayed = async () => {
-    if (humanPlayed || !relay) return;
+  const checkPlayPressed = async () => {
+    if (playPressed || !relay) return;
     // A report during a check (which may read the state from before it) asks again after.
     if (checking) { recheck = true; return; }
     checking = true;
@@ -191,11 +190,11 @@ async function mount(): Promise<void> {
       do {
         recheck = false;
         const result = await bridge.callTool({ name: "get-studio-state", arguments: {} }, { timeout: 5_000 });
-        if ((result.structuredContent as { humanPlayed?: unknown } | undefined)?.humanPlayed === true) {
-          humanPlayed = true;
+        if ((result.structuredContent as { playPressed?: unknown } | undefined)?.playPressed === true) {
+          playPressed = true;
           syncRelay();
         }
-      } while (recheck && !humanPlayed);
+      } while (recheck && !playPressed);
     } catch {
       /* no answer: the next report asks again */
     } finally {
@@ -203,7 +202,7 @@ async function mount(): Promise<void> {
     }
   };
   bridge.onupdatemodelcontext = async () => {
-    void checkHumanPlayed();
+    void checkPlayPressed();
     return {};
   };
   bridge.onsizechange = () => {};

@@ -36,8 +36,8 @@ export interface StudioSnapshot {
   error: string | null;
   settings?: Record<string, unknown>;
   selection?: { from: number; to: number; text: string };
-  /** Live widgets: a person has pressed Play (an evaluation they started succeeded). */
-  humanPlayed?: boolean;
+  /** Live widgets: Play was pressed on the page (the Play button or the editor's evaluate keys) and that evaluation succeeded. */
+  playPressed?: boolean;
 }
 
 /** What a quantized swap did: the cycle the new code took over at, or why it didn't. */
@@ -150,6 +150,14 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
   let playbackIntent = 0;
   let pendingSwap: StudioPendingSwap | null = null;
   let lastSwap: (StudioSwapOutcome & { quantize: number }) | null = null;
+  /** Swaps are numbered; lastSwap only ever moves forward (an older swap's late "replaced" can't overwrite a newer result). */
+  let swapCount = 0;
+  let lastSwapId = 0;
+  const recordSwap = (id: number, outcome: StudioSwapOutcome & { quantize: number }) => {
+    if (id < lastSwapId) return;
+    lastSwapId = id;
+    lastSwap = outcome;
+  };
   const history: StudioSnapshot[] = [];
   /**
    * An undo target. A live snapshot's `bpm` is the MEASURED runtime tempo
@@ -231,6 +239,7 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
       studioPatternArgsSchema.shape.code.parse(code);
       const quantize = command.quantize ?? STUDIO_SWAP_DEFAULT_QUANTIZE;
       const intent = ++playbackIntent;
+      const swapId = ++swapCount;
       const pending: StudioPendingSwap = { quantize, boundary: null, etaSeconds: null, chars: code.length };
       pendingSwap = pending;
       const running = adapter.swap(code, quantize, () => disposed || intent !== playbackIntent, {
@@ -241,11 +250,13 @@ export function createStudioSession(adapter: StudioAdapter, options: { mode: Stu
         onQueued: (boundary, etaSeconds) => { pending.boundary = boundary; pending.etaSeconds = etaSeconds; },
       }).then((outcome) => {
         if (pendingSwap === pending) pendingSwap = null;
-        lastSwap = { ...outcome, quantize };
+        recordSwap(swapId, { ...outcome, quantize });
         if (!disposed) { read(); notifyReview(); }
         return outcome;
       }, (error) => {
         if (pendingSwap === pending) pendingSwap = null;
+        // A queued swap's caller has already been answered: its failure must still be readable.
+        recordSwap(swapId, { ok: false, cycle: null, error: String((error as Error)?.message ?? error), quantize });
         throw error;
       });
       running.catch(() => { /* answered below, or after a "queued" answer nobody awaits */ });

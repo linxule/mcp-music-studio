@@ -100,12 +100,23 @@ export async function registerWebMcpTool(
 ): Promise<() => void> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let abandoned = false;
+  /** Withdraw a registration by every means a browser might offer. */
+  const withdraw = (late: unknown) => {
+    controller.abort();
+    try { (late as { unregister?: () => void } | undefined)?.unregister?.(); } catch { /* already gone */ }
+    try { context.unregisterTool?.(tool.name); } catch { /* never registered */ }
+  };
+  const registration = Promise.resolve(context.registerTool(tool, { signal: controller.signal }));
+  // Settled AFTER we gave up (a provider that ignores the signal, or returns a
+  // handle): unregister it at once instead of leaking an untracked tool (Codex + Kimi review).
+  registration.then((late) => { if (abandoned) withdraw(late); }, () => { /* nothing registered */ });
   const handle = await Promise.race([
-    Promise.resolve(context.registerTool(tool, { signal: controller.signal })),
+    registration,
     new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        controller.abort();
-        try { context.unregisterTool?.(tool.name); } catch { /* never registered */ }
+        abandoned = true;
+        withdraw(undefined);
         reject(new Error(`registerTool("${tool.name}") did not settle within ${ceilingMs} ms`));
       }, ceilingMs);
     }),

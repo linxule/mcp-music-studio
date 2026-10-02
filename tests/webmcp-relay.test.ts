@@ -9,7 +9,7 @@ import {
 } from "../src/webmcp-relay";
 import { registerStudioAppTools } from "../src/studio-app-tools";
 import { createStudioSession, type StudioSnapshot, type StudioState } from "../src/studio-session";
-import { RELAY_AFTER_HUMAN_PLAY, shareRelayAnnotations, shareRelayExclude } from "../src/share-relay-policy";
+import { RELAY_AFTER_PLAY_PRESS, shareRelayAnnotations, shareRelayExclude } from "../src/share-relay-policy";
 
 /** document.modelContext as the spec and Chromium 153 behave: abort unregisters, a duplicate name rejects. */
 function fakeContext() {
@@ -448,6 +448,24 @@ describe("review fixes (0.10 gauntlet)", () => {
     remove();
   });
 
+  it("R3: a registration that settles AFTER the ceiling is withdrawn at once (handle and unregisterTool)", async () => {
+    let finish!: (handle: unknown) => void;
+    const registered = new Set<string>();
+    const handle = { unregister: vi.fn(() => registered.delete("late")) };
+    const unregisterTool = vi.fn((name: string) => registered.delete(name));
+    const context: WebMcpContext = {
+      // A provider that ignores the abort signal and hands back a handle later.
+      registerTool: vi.fn((tool: WebMcpTool) => new Promise((resolve) => { finish = (h) => { registered.add(tool.name); resolve(h); }; })),
+      unregisterTool,
+    };
+    await expect(registerWebMcpTool(context, { name: "late", description: "x", execute: async () => null }, 15)).rejects.toThrow("did not settle");
+    unregisterTool.mockClear();
+    finish(handle);
+    await vi.waitFor(() => expect(handle.unregister).toHaveBeenCalled());
+    expect(unregisterTool).toHaveBeenCalledWith("late");
+    expect(registered.has("late")).toBe(false);
+  });
+
   it("F5: a function exclude is asked on every sync, so a tool can open later", async () => {
     const ctx = fakeContext();
     const { bridge } = fakeBridge([getTool, setTool]);
@@ -460,7 +478,7 @@ describe("review fixes (0.10 gauntlet)", () => {
     expect(ctx.names()).toEqual(["get-studio-state", "set-pattern"]);
   });
 
-  it("F1 + F5: the share page's policy — every tool is untrusted content; play/swap only after a human Play", () => {
+  it("F1 + F5: the share page's policy — every tool is untrusted content; play/swap only after a press of Play", () => {
     expect(shareRelayAnnotations()).toEqual({ untrustedContentHint: true });
     let played = false;
     const exclude = shareRelayExclude(() => played);
@@ -469,7 +487,7 @@ describe("review fixes (0.10 gauntlet)", () => {
     expect(offered(all)).toEqual(["get-studio-state", "set-pattern", "stop-music", "undo-studio-edit"]);
     played = true;
     expect(offered(all)).toEqual(["get-studio-state", "set-pattern", "play-current-music", "stop-music", "undo-studio-edit", "swap-pattern"]);
-    expect(RELAY_AFTER_HUMAN_PLAY).toEqual(["play-current-music", "swap-pattern"]);
+    expect(RELAY_AFTER_PLAY_PRESS).toEqual(["play-current-music", "swap-pattern"]);
   });
 
   it("F1: with the share policy, write tools carry untrustedContentHint too", async () => {

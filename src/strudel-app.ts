@@ -90,12 +90,15 @@ const container = document.getElementById("strudel-container")!;
 
 let companion: ReturnType<typeof installStrudelCompanion> | undefined;
 /**
- * A person pressed Play (or Ctrl/Alt+Enter in the editor) and that evaluation
- * succeeded. Share pages relay play/swap tools only after it: on a link
- * anyone can craft, nothing runs without a deliberate human press.
+ * Play was pressed on the page (the Play button, or the editor's own
+ * Ctrl/Cmd/Alt+Enter inside the editor) and that evaluation succeeded. Share
+ * pages relay play/swap tools only after a press of Play: on a link anyone can
+ * craft, nothing runs until Play is pressed there. The intent is armed only on
+ * the paths that start an evaluation, and only the evaluation they start
+ * consumes it (taken synchronously on entry; cleared after the event).
  */
-let humanEvalIntent = false;
-let humanPlayed = false;
+let playPressIntent = false;
+let playPressed = false;
 let editorEl: HTMLElement | null = null;
 let currentCode = "";
 /** The code exactly as the tool call sent it — before bpm/visuals added lines. */
@@ -154,7 +157,22 @@ let lastReportText = "";
 let lastProgrammaticCode = "";
 let lastLoggedEdit = "";
 /** Set by a session update just before it evaluates: the cycle its audio takes over. */
-let pendingSplice: { boundary: number; code: string } | null = null;
+/**
+ * The evaluation a quantized swap (swap-pattern or a session update) asked
+ * for: the hook takes it SYNCHRONOUSLY on entry, so it belongs to exactly that
+ * evaluate() call, and refuses to run it unless the buffer still holds the
+ * swap's own code and no newer swap/edit/press superseded it — checked right
+ * before the editor reads its buffer (Codex review: a queued swap evaluation
+ * ran the NEXT swap's code under its own name).
+ */
+interface SwapEvaluation {
+  code: string;
+  /** sessionApplySeq when the swap took over. */
+  seq: number;
+  boundary: number | null;
+  refused: boolean;
+}
+let swapEvaluation: SwapEvaluation | null = null;
 let sessionApplySeq = 0;
 // Last args from renderPattern, so a CDN retry can re-run the same pattern
 let lastRenderArgs: Record<string, unknown> | null = null;
@@ -2208,8 +2226,14 @@ function installEvaluateHook(editor: any): void {
   const original = editor.evaluate.bind(editor);
   editor.evaluate = async (shouldPlay?: unknown) => {
     companion?.stop();
-    const byHuman = humanEvalIntent;
-    humanEvalIntent = false;
+    const byPress = playPressIntent;
+    playPressIntent = false;
+    // Taken synchronously: it belongs to this call and no other.
+    const forSwap = swapEvaluation;
+    swapEvaluation = null;
+    // A press of Play / Ctrl+Enter replaces any swap or update still waiting
+    // for its bar (it answers "replaced") — what the docs promise (Kimi review).
+    if (byPress) sessionApplySeq++;
     // Checked after every await below (evaluationSuperseded).
     const generation = renderGeneration;
     // One evaluation at a time. repl.evaluate() installs its pattern only when
@@ -2233,13 +2257,25 @@ function installEvaluateHook(editor: any): void {
       clearTimeout(timer);
       // Cancelled (or replaced by a newer tool call) while queued: never start.
       if (generation !== renderGeneration) return;
-      await evaluateNow(shouldPlay, generation, byHuman);
+      await evaluateNow(shouldPlay, generation, byPress, forSwap);
     } finally {
       finished();
     }
   };
 
-  async function evaluateNow(shouldPlay: unknown, generation: number, byHuman = false): Promise<void> {
+  async function evaluateNow(
+    shouldPlay: unknown,
+    generation: number,
+    byPress = false,
+    forSwap: SwapEvaluation | null = null,
+  ): Promise<void> {
+    /** A swap evaluation whose code is no longer the buffer, or that was superseded, must not run. */
+    const swapStale = () =>
+      !!forSwap && (forSwap.seq !== sessionApplySeq || (typeof editor.code === "string" && editor.code !== forSwap.code));
+    if (swapStale()) {
+      forSwap!.refused = true;
+      return;
+    }
     const seq = ++evaluationSeq;
     // Idempotent, and cheap once it has taken. It must run here rather than at
     // CDN load: initHydra/H only land on globalThis when the REPL's eval scope
@@ -2268,12 +2304,18 @@ function installEvaluateHook(editor: any): void {
     // not decoded by its start time, so a line in bar 0 used to be lost on the
     // first play. (A re-evaluation of a running piece keeps playing.)
     const holdForVoice = shouldPlay !== false && /\bsay\s*\(/.test(code) && !isSchedulerStarted();
-    // A live-session update lands on its bar: the scheduler gets the old
-    // pattern until the boundary and this one from it (src/shared/splice.ts).
-    // Only the evaluation it was set for: a human run that slips in first
-    // must not be spliced at the session's bar (Kimi review).
-    const splice = pendingSplice?.code === code ? pendingSplice : null;
-    if (splice) pendingSplice = null;
+    // A swap lands on its bar: the scheduler gets the old pattern until the
+    // boundary and this one from it (src/shared/splice.ts). Only the
+    // evaluation the swap asked for: another run that slips in first must not
+    // be spliced at its bar (Kimi review).
+    // Last check, right before the editor reads its buffer (synchronously, in
+    // original()): the awaits above are where a newer swap could write it.
+    if (swapStale()) {
+      forSwap!.refused = true;
+      stage.rollback(stageToken);
+      return;
+    }
+    const splice = forSwap && forSwap.boundary !== null ? { boundary: forSwap.boundary } : null;
     const previousPattern = splice ? editor.repl?.scheduler?.pattern : null;
     try {
       await original(holdForVoice ? false : shouldPlay !== false);
@@ -2301,7 +2343,7 @@ function installEvaluateHook(editor: any): void {
       pruneDrawLayers(code);
       stage.commit(stageToken);
       // Before the report below goes out: the share page reads it on that report.
-      if (byHuman && shouldPlay !== false) humanPlayed = true;
+      if (byPress && shouldPlay !== false) playPressed = true;
       logControlSurface();
       stageErrorReported = false;
       if (holdForVoice) {
@@ -2914,7 +2956,8 @@ playBtn.addEventListener("click", async (event) => {
       // user edited in the REPL is what plays. The hook stages its visuals and
       // reports the outcome, so there is no optimistic state to set here.
       setStatus("Evaluating...");
-      if (event.isTrusted) humanEvalIntent = true;
+      // Armed right before the call that consumes it (synchronously, on entry).
+      playPressIntent = event.isTrusted;
       await editor.evaluate(true);
     }
   } catch (err) {
@@ -2922,11 +2965,19 @@ playBtn.addEventListener("click", async (event) => {
   }
 });
 
-// The editor's own evaluate keys (Ctrl/Cmd/Alt+Enter), pressed by a person.
+// The editor's own evaluate keys (Ctrl/Cmd/Alt+Enter), pressed INSIDE the
+// editor: its keymap calls evaluate() synchronously during this same keydown,
+// which takes the intent on entry. Cleared after the event, so a press that
+// evaluated nothing can't be claimed by a later programmatic run (Kimi review).
 container.addEventListener(
   "keydown",
   (event) => {
-    if (event.isTrusted && event.key === "Enter" && (event.ctrlKey || event.metaKey || event.altKey)) humanEvalIntent = true;
+    if (!event.isTrusted || event.key !== "Enter" || !(event.ctrlKey || event.metaKey || event.altKey)) return;
+    if (!(event.target instanceof Element) || !event.target.closest(".cm-editor")) return;
+    playPressIntent = true;
+    setTimeout(() => {
+      playPressIntent = false;
+    }, 0);
   },
   { capture: true },
 );
@@ -3262,12 +3313,16 @@ async function quantizedSwap(
   if (typeof editor.code === "string" && editor.code !== code) {
     return { ok: false, cycle: null, error: "the code was edited before the bar; not swapped" };
   }
-  if (boundary !== null) pendingSplice = { boundary, code };
   lastReportText = "";
   const ranBefore = evaluationSeq;
-  await editor.evaluate(true);
-  // A splice its evaluation never consumed must not land on a later one.
-  pendingSplice = null;
+  const mark: SwapEvaluation = { code, seq: mine, boundary, refused: false };
+  swapEvaluation = mark;
+  const evaluating = editor.evaluate(true);
+  // The hook took it on entry; never leave it for another call.
+  if (swapEvaluation === mark) swapEvaluation = null;
+  await evaluating;
+  // Refused at the last moment: superseded, or the buffer no longer held our code.
+  if (mark.refused) return replaced;
   // Cancelled in the queue (a new tool call took the player): it never ran.
   if (evaluationSeq === ranBefore) {
     return { ok: false, cycle: null, error: "the player was taken over by a newer run before this one started" };
@@ -3534,7 +3589,7 @@ const studioSession = createStudioSession({
     playback: currentPlaybackState(),
     status: statusEl.textContent ?? "",
     error: statusEl.classList.contains("error") ? statusEl.textContent : null,
-    humanPlayed,
+    playPressed,
   }),
   apply: async (args, _settings, isCancelled, onCommit) => {
     if (isCancelled?.()) throw new Error("The review request changed. Review the current question before applying.");

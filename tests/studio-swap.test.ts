@@ -20,14 +20,14 @@ afterEach(async () => {
  */
 async function liveWidget(playback = "playing", swapAnswerMs = 10_000) {
   const state: StudioSnapshot = { args: { code: 's("bd*4")', title: "First" }, playback, status: "Playing", error: null };
-  const waiting: Array<{ resolve: (o: StudioSwapOutcome) => void; isCancelled: () => boolean; quantize: number }> = [];
+  const waiting: Array<{ resolve: (o: StudioSwapOutcome) => void; reject: (e: Error) => void; isCancelled: () => boolean; quantize: number }> = [];
   const swap = vi.fn((code: string, quantize: number, isCancelled: () => boolean, hooks?: StudioSwapHooks) => {
     if (state.playback !== "playing") return Promise.reject(new Error("The player is stopped: swap-pattern changes a PLAYING pattern on the bar. Use set-pattern, then play-current-music."));
     // As quantizedSwap: undo target first, then the code goes into the editor, then the bar is known.
     hooks?.beforeLoad?.();
     state.args = { ...state.args, code };
     hooks?.onQueued?.(8, 6);
-    return new Promise<StudioSwapOutcome>((resolve) => waiting.push({ resolve, isCancelled, quantize }));
+    return new Promise<StudioSwapOutcome>((resolve, reject) => waiting.push({ resolve, reject, isCancelled, quantize }));
   });
   const apply = vi.fn(async (args: Record<string, unknown>, _settings?: unknown, _isCancelled?: unknown, onCommit?: () => void) => {
     state.args = args;
@@ -267,6 +267,31 @@ describe("swap-pattern (bar-quantized swap through the studio controller)", () =
     await w.host.callTool({ name: "undo-studio-edit", arguments: { instanceId: a.instanceId, expectedRevision: s.revision } });
     expect(w.apply.mock.calls[1][0]).not.toHaveProperty("bpm");
     expect(w.apply.mock.calls[1][0]).toMatchObject({ code: 's("bd*4")' });
+  });
+
+  it("R2: an older swap's late 'replaced' never overwrites a newer swap's lastSwap", async () => {
+    const w = await liveWidget("playing", 20);
+    const a = await w.read();
+    await w.call({ instanceId: a.instanceId, expectedRevision: a.revision, code: 's("old")', quantize: 32 }); // answers queued
+    const mid = await w.read();
+    await w.call({ instanceId: a.instanceId, expectedRevision: mid.revision, code: 's("new")', quantize: 4 }); // queued too
+    expect(w.waiting).toHaveLength(2);
+    const [older, newer] = w.waiting.splice(0, 2);
+    newer.resolve({ ok: true, cycle: 12 }); // the newer lands first…
+    await vi.waitFor(async () => expect((await w.read()).lastSwap).toMatchObject({ ok: true, cycle: 12 }));
+    older.resolve({ ok: false, cycle: null, error: "replaced before it played by a newer edit, swap, play, undo or stop" });
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await w.read()).lastSwap).toMatchObject({ ok: true, cycle: 12, quantize: 4 });
+  });
+
+  it("R2: a queued swap that later REJECTS records a failed lastSwap", async () => {
+    const w = await liveWidget("playing", 20);
+    const a = await w.read();
+    const answer = await w.call({ instanceId: a.instanceId, expectedRevision: a.revision, code: 's("x")', quantize: 32 });
+    expect((answer.structuredContent as any).swap).toMatchObject({ queued: true });
+    w.waiting.shift()!.reject(new Error("the player could not load Strudel"));
+    await vi.waitFor(async () => expect((await w.read()).pendingSwap).toBeNull());
+    expect((await w.read()).lastSwap).toMatchObject({ ok: false, cycle: null, error: "the player could not load Strudel", quantize: 32 });
   });
 
   it("is not offered by score widgets", async () => {
