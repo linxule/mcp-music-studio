@@ -69,12 +69,14 @@ export const SERVER_INSTRUCTIONS =
   "'hydra' topic has copy-ready recipes. Pattern code is real browser JavaScript, so a piece can also " +
   "draw its own canvases into Hydra, react to every note (onEvent), take taps (onTap) and speak on the beat " +
   "(say) — music videos, short films and duets: topics 'craft', 'stage', 'film', 'interactive', and finished " +
-  "pieces in 'gallery'. Use search-music-docs only " +
+  "pieces in 'gallery'. For a piece you will keep changing, or a back-to-back jam with the user, open a live session " +
+  "(play-live-pattern session: true → update-session / get-session) — the player keeps playing and tells you what happened. " +
+  "Use search-music-docs only " +
   "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
   '("C", "Am7") above the notes and set a style. ' +
   "If unsure about chord spelling or the key, call analyze-harmony; " +
   "convert-abc-to-strudel turns a scored melody into a live pattern. " +
-  "Playback never stores a composition. create-share-link uploads a piece for 30 days " +
+  "Playback never stores a composition (a live session keeps its log until 2 hours idle). create-share-link uploads a piece for 30 days " +
   "and is only for an explicit user request to share or store it online.";
 
 // -----------------------------------------------------------------------------
@@ -460,7 +462,7 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "Beyond music: the code is real browser JavaScript — cycle(), onFrame, onEvent(pattern, fn), onTap and " +
   "say(text) (a spoken line as a sample) build music videos, short films and interactive pieces; " +
   "see topics 'stage', 'film', 'interactive' and 'gallery'. " +
-  "Each call creates a NEW player rather than updating the last one — for a tweak, send the whole revised pattern and ask the user to stop the previous one. " +
+  "Each call creates a NEW player. To keep one player going — iterating on a piece, or playing back-to-back with the user — pass session: true, then change it with update-session (it swaps on the next bar) and read what happened with get-session (runtime errors, the user's taps and edits). " +
   "Use get-strudel-guide for genre templates, sound references, and advanced features " +
   "like arrangement and sample loading.";
 
@@ -511,6 +513,15 @@ export const playLiveInputSchema = z.object({
         "a 2D preset only if the code already has a draw method — so hydra-wash layers happily under your own .pianoroll(). " +
         "Hydra presets are dropped for viewers who prefer reduced motion. " +
         "Writing your own visual is still the better result (draw methods: topic 'visuals'; shaders: topic 'hydra').",
+    ),
+  session: z
+    .boolean()
+    .optional()
+    .describe(
+      "Open a LIVE SESSION: this player stays open as one performance. update-session swaps in new code on the next bar " +
+        "without a new player and says whether it ran; get-session reads the player's runtime reports and what the user did " +
+        "(taps, code edits, handing you the turn). Use it to iterate on a long piece, to check that a piece really played, or " +
+        "to jam back-to-back. Its log (reports, taps, edits, your updates) is kept on the server until 2 hours idle.",
     ),
   theme: z
     .enum(EDITOR_THEMES)

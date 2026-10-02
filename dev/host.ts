@@ -322,6 +322,8 @@ let lastDownload: unknown[] | null = null;
 
 /** The last call sent, so "Replay" can deliver it again to a rebuilt frame. */
 let lastCall: { args: Record<string, unknown>; viewUUID: string } | null = null;
+/** Extra tool-result _meta for scripts (e.g. a live session: { session: { id, origin } }). */
+let extraResultMeta: Record<string, unknown> = {};
 
 async function sendToolInput(replay = false): Promise<void> {
   const args = replay ? lastCall?.args : readArgs();
@@ -338,7 +340,7 @@ async function sendToolInput(replay = false): Promise<void> {
   await bridge.sendToolInput({ arguments: args });
   await bridge.sendToolResult({
     content: [{ type: "text", text: resultTextFor(args) }],
-    _meta: { viewUUID },
+    _meta: { ...extraResultMeta, viewUUID },
   });
   log("out", `ui/notifications/tool-result (viewUUID ${viewUUID.slice(0, 8)}…)`);
 }
@@ -419,6 +421,9 @@ void mountFrame();
   replay: replayLastCall,
   get lastDownload() { return lastDownload; },
   mount: mountFrame,
+  setResultMeta(meta: Record<string, unknown>) {
+    extraResultMeta = meta;
+  },
   setArgs(args: Record<string, unknown>) {
     argsTa.value = JSON.stringify(args, null, 2);
   },

@@ -109,6 +109,9 @@ async function loadHook() {
     const stageVisuals = () => {};
     const readEvalError = () => null;
     const pruneDrawLayers = () => {};
+    let pendingSplice = null;
+    const installSplice = () => () => {};
+    const noteHumanEdit = () => {};
     const applyRuntimeTempo = () => false;
     const isSchedulerStarted = () => scheduler.started;
     const ensureAudioRunning = () => getSettle()?.promise ?? Promise.resolve(true);

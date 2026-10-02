@@ -11,10 +11,12 @@ const EXPECTED_TOOLS = [
   "convert-abc-to-strudel",
   "create-share-link",
   "get-music-guide",
+  "get-session",
   "get-strudel-guide",
   "play-live-pattern",
   "play-sheet-music",
   "search-music-docs",
+  "update-session",
 ];
 
 describe("tool registration", () => {
@@ -39,7 +41,7 @@ describe("tool registration", () => {
     await cleanup();
   });
 
-  it("lists all eight tools", async () => {
+  it("lists all ten tools", async () => {
     const res = await client.listTools();
     expect(res.tools.map((t) => t.name).sort()).toEqual(EXPECTED_TOOLS);
   });

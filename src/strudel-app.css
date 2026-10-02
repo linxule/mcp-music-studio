@@ -195,6 +195,16 @@ html, body {
   max-width: 40%;
 }
 
+/* Live session: a small state chip next to the status line. */
+.session-badge {
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.session-badge[data-status="live"] {
+  color: #3fb950;
+}
+
 .status {
   font-size: 12px;
   color: var(--text-secondary);

@@ -74,6 +74,8 @@ import {
 } from "./src/shared/tool-defs.js";
 import { buildShareQueryUrl, toPlayShareArgs } from "./src/shared/share-url.js";
 import { validateStrudelCode } from "./src/shared/strudel-validate.js";
+import { attachSession, httpSessionBackend, registerSessionTools, type SessionBackend } from "./src/shared/session-tools.js";
+import { DEFAULT_SHARE_ORIGIN } from "./src/shared/share-url.js";
 import { CREATE_SHARE_ANNOTATIONS, CREATE_SHARE_DESCRIPTION, createShareInputSchema, createShareResult, uploadShare } from "./src/shared/share-tool.js";
 
 const DIST_DIR = import.meta.filename.endsWith(".ts")
@@ -147,6 +149,8 @@ export type RenderMode = "auto" | "html" | "browser";
 export interface ServerOptions {
   defaultRenderMode?: RenderMode;
   outputDir?: string;
+  /** Live sessions; defaults to the hosted Worker's routes (tests inject one). */
+  sessionBackend?: SessionBackend;
 }
 
 // =============================================================================
@@ -173,6 +177,16 @@ export function createServer(options?: ServerOptions): McpServer {
 
   // Slash-command prompts: compose-beat, harmonize-melody, arrange-tune.
   registerMusicPrompts(server);
+
+  // Live sessions live on the hosted Worker: the widget can only reach origins
+  // in its CSP, so the local server's widget joins the hosted session too.
+  const sessions =
+    options?.sessionBackend ??
+    httpSessionBackend((path, init) => fetch(`${DEFAULT_SHARE_ORIGIN}${path}`, init));
+  registerSessionTools(server, sessions, async (code) => {
+    const v = await validateStrudelCode(code);
+    return v.ok ? null : { message: v.error?.message ?? "unknown error", line: v.error?.line, column: v.error?.column };
+  });
 
   server.registerTool("create-share-link", {
     title: "Create Music Share Link",
@@ -392,13 +406,14 @@ export function createServer(options?: ServerOptions): McpServer {
       // editable REPL, which is where a fix happens.
       // toPlayShareArgs folds the `visuals` preset into the code, so the linked
       // page shows the same animation the widget would.
-      return withViewId(
+      const played = withViewId(
         attachPlayLink(
           result,
           buildShareQueryUrl({ kind: "play", args: toPlayShareArgs(args) }),
           { keepOnError: true },
         ),
       );
+      return args.session ? attachSession(played, sessions, DEFAULT_SHARE_ORIGIN) : played;
     }
 
     // The standalone page gets the SAME reduction the share link gets, so all

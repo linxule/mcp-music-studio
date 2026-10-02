@@ -28,6 +28,9 @@ import { createBrowserStageEnv, createStage } from "./shared/stage-runtime";
 import { installSampleUrlFix } from "./shared/sample-url-fix";
 import { sourceLineNote } from "./shared/line-map";
 import { DEFAULT_SHARE_ORIGIN } from "./shared/share-url";
+import { SessionClient, type ApplyOutcome } from "./session-client";
+import { nextBoundary, SESSION_ID_RE, type QueuedPattern } from "./shared/session";
+import { spliceAt } from "./shared/splice";
 import { applyVisualPreset } from "./shared/visual-presets";
 import {
   STRUDEL_INLINE_CAP,
@@ -70,6 +73,8 @@ const playBtn = document.getElementById("play-btn") as HTMLButtonElement;
 const recordBtn = document.getElementById("record-btn") as HTMLButtonElement;
 const downloadBtn = document.getElementById("download-btn") as HTMLButtonElement;
 const sendBtn = document.getElementById("send-btn") as HTMLButtonElement;
+const passBtn = document.getElementById("pass-btn") as HTMLButtonElement;
+const sessionBadge = document.getElementById("session-badge") as HTMLElement;
 const fullscreenBtn = document.getElementById("fullscreen-btn") as HTMLButtonElement;
 const vizBtn = document.getElementById("viz-btn") as HTMLButtonElement;
 const stageBtn = document.getElementById("stage-btn") as HTMLButtonElement;
@@ -127,6 +132,18 @@ const HYDRA_MAX_WIDTH = 960;
 // Host capabilities (populated after connect)
 let canDownload = false;
 let canUpdateModelContext = false;
+let canSendMessage = false;
+
+// Live session (src/session-client.ts) — set when the tool result names one.
+let session: SessionClient | null = null;
+/** The last report text, so an "applied" answer can carry this evaluation's. */
+let lastReportText = "";
+/** Code WE put in the editor (tool input, a session update); anything else the human ran is an edit. */
+let lastProgrammaticCode = "";
+let lastLoggedEdit = "";
+/** Set by a session update just before it evaluates: the cycle its audio takes over. */
+let pendingSplice: number | null = null;
+let sessionApplySeq = 0;
 // Last args from renderPattern, so a CDN retry can re-run the same pattern
 let lastRenderArgs: Record<string, unknown> | null = null;
 
@@ -245,6 +262,8 @@ function setStatus(text: string, type: StatusType = "normal") {
 }
 
 function updatePlayState(playing: boolean) {
+  // The session's heartbeat rides on its poll; re-poll so it hears this now.
+  if (playing !== isPlaying) session?.nudge();
   if (!playing) {
     clearDrawLayers();
     // Stop means quiet: a sentence from say() does not outlive the music.
@@ -409,6 +428,9 @@ const {
   getScheduler: () => getEditor()?.repl?.scheduler ?? null,
   isPlaying: () => isSchedulerStarted(),
   tapArea: replSection,
+  observeTap(tap) {
+    session?.log({ t: "tap", ...tap });
+  },
   reportError(api, error) {
     const msg = (error as Error)?.message ?? String(error);
     console.error(`[stage] ${api} callback threw:`, error);
@@ -1822,6 +1844,10 @@ function isSchedulerStarted(): boolean {
  * Exactly one call per evaluation — never per frame.
  */
 function reportToModel(text: string): void {
+  // A live session hears every report, whatever the host does with them —
+  // claude.ai had no tool to read widget context (2026-10-02 field test).
+  lastReportText = text;
+  session?.log({ t: "report", text }, true);
   if (!canUpdateModelContext) return;
   void app
     .updateModelContext({ content: [{ type: "text", text }] })
@@ -2106,14 +2132,21 @@ function installEvaluateHook(editor: any): void {
     // not decoded by its start time, so a line in bar 0 used to be lost on the
     // first play. (A re-evaluation of a running piece keeps playing.)
     const holdForVoice = shouldPlay !== false && /\bsay\s*\(/.test(code) && !isSchedulerStarted();
+    // A live-session update lands on its bar: the scheduler gets the old
+    // pattern until the boundary and this one from it (src/shared/splice.ts).
+    const splice = pendingSplice;
+    pendingSplice = null;
+    const unsplice = splice !== null ? installSplice(editor, splice) : null;
     try {
       await original(holdForVoice ? false : shouldPlay !== false);
     } catch (err) {
+      unsplice?.();
       stage.rollback(stageToken);
       if (evaluationSuperseded(editor, generation, seq)) return;
       reportEvaluation(code, err as Error);
       return;
     }
+    unsplice?.();
     if (evaluationSuperseded(editor, generation, seq)) {
       stage.rollback(stageToken);
       return;
@@ -2121,6 +2154,7 @@ function installEvaluateHook(editor: any): void {
     // A pattern that failed keeps the old one playing — and its layers, and
     // its stage loops.
     if (!readEvalError()) {
+      noteHumanEdit(code);
       pruneDrawLayers(code);
       stage.commit(stageToken);
       stageErrorReported = false;
@@ -2640,6 +2674,7 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
     if (superseded()) return;
 
     editor.setCode(finalCode);
+    lastProgrammaticCode = finalCode;
 
     // Enable recording once pattern is loaded
     recordBtn.disabled = false;
@@ -2858,6 +2893,172 @@ vizResizeObserver = new ResizeObserver(() => {
 vizResizeObserver.observe(replSection);
 
 // =============================================================================
+// Live session — one player the model keeps changing (src/shared/session.ts)
+// =============================================================================
+
+/** How long before its bar an update is evaluated (its audio still lands on the bar). */
+const SESSION_EVAL_LEAD_S = 0.6;
+
+function sessionClock() {
+  const scheduler = getEditor()?.repl?.scheduler;
+  const cps = Number(scheduler?.cps);
+  return {
+    cycle: stageEnv.audibleCycle(),
+    cps: Number.isFinite(cps) && cps > 0 ? cps : null,
+    state: currentPlaybackState(),
+  };
+}
+
+function setSessionBadge(status: "connecting" | "live" | "retrying" | "gone"): void {
+  sessionBadge.hidden = false;
+  sessionBadge.dataset.status = status;
+  sessionBadge.textContent =
+    status === "live" ? "● live" : status === "gone" ? "○ session ended" : status === "retrying" ? "◌ reconnecting" : "◌ joining";
+  sessionBadge.title =
+    status === "gone"
+      ? "This live session has ended (2 hours idle). The pattern keeps playing here."
+      : "Live session: Claude can change this pattern without opening a new player, and reads what you do.";
+  passBtn.hidden = status === "gone";
+}
+
+function startSession(id: string, origin: string): void {
+  if (session || !SESSION_ID_RE.test(id) || !/^https:\/\/|^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return;
+  session = new SessionClient(origin.replace(/\/+$/, ""), id, {
+    fetch: (url, init) => fetch(url, init),
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    clock: sessionClock,
+    apply: applySessionPattern,
+    onStatus: setSessionBadge,
+  });
+  const ctx = app.getHostContext() as { platform?: string } | undefined;
+  const host = (app as unknown as { getHostVersion?: () => { name?: string; version?: string } | undefined })
+    .getHostVersion?.();
+  session.start({
+    host: host?.name ? `${host.name}${host.version ? ` ${host.version}` : ""}` : undefined,
+    platform: ctx?.platform,
+    caps: Object.keys(app.getHostCapabilities() ?? {}),
+  });
+  // The first report this widget made may have come before the session existed.
+  if (lastReportText) session.log({ t: "report", text: lastReportText }, true);
+}
+
+/**
+ * Hand the scheduler the old pattern until `boundary` and the new one from it,
+ * for the one setPattern() call this evaluation makes. Returns an undo for an
+ * evaluation that never got that far.
+ */
+function installSplice(editor: any, boundary: number): () => void {
+  const scheduler = editor?.repl?.scheduler;
+  const previous = scheduler?.pattern;
+  const stack = (window as any).stack;
+  if (!scheduler || !previous || typeof stack !== "function") return () => undefined;
+  const hadOwn = Object.prototype.hasOwnProperty.call(scheduler, "setPattern");
+  const original = scheduler.setPattern;
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    if (hadOwn) scheduler.setPattern = original;
+    else delete scheduler.setPattern;
+  };
+  scheduler.setPattern = function (this: unknown, next: any, autostart?: boolean) {
+    restore();
+    let spliced = next;
+    try {
+      spliced = spliceAt(previous, next, boundary, stack);
+    } catch { /* an unspliceable pattern just swaps at once */ }
+    const result = original.call(this, spliced, autostart);
+    if (spliced !== next) {
+      // Past the boundary the old half only costs queries: drop it.
+      const cps = Number(scheduler.cps) || 0.5;
+      const wait = ((boundary - Number(scheduler.now?.() ?? boundary)) / cps + 2) * 1000;
+      setTimeout(() => {
+        if (scheduler.pattern === spliced) scheduler.pattern = next;
+      }, Math.max(0, wait));
+    }
+    return result;
+  };
+  return restore;
+}
+
+async function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome> {
+  const mine = ++sessionApplySeq;
+  const editor = await prepareEditor().catch(() => null);
+  if (!editor?.repl) return { ok: false, cycle: null, error: "the player could not load Strudel" };
+  if (mine !== sessionApplySeq) return { ok: false, cycle: null, error: "replaced by a newer update before it played" };
+  lastProgrammaticCode = pattern.code;
+  sentCode = pattern.code;
+  currentCode = pattern.code;
+  editor.setCode(pattern.code);
+  if (!isSchedulerStarted()) {
+    return {
+      ok: true,
+      cycle: null,
+      report: "Loaded into the editor, but the player is stopped — it plays when the user taps Play.",
+    };
+  }
+  const scheduler = editor.repl.scheduler;
+  const cps = Number(scheduler?.cps) || 0.5;
+  let boundary: number | null = null;
+  if (pattern.quantize > 0) {
+    boundary = nextBoundary(stageEnv.audibleCycle() ?? 0, pattern.quantize, (SESSION_EVAL_LEAD_S + 0.25) * cps);
+    setStatus(`Next pattern lands at bar ${Math.round(boundary)}`, "playing");
+    for (;;) {
+      if (mine !== sessionApplySeq) return { ok: false, cycle: null, error: "replaced by a newer update before it played" };
+      const scheduled = Number(scheduler.now?.());
+      const remaining = (boundary - SESSION_EVAL_LEAD_S * cps - scheduled) / cps;
+      if (!Number.isFinite(remaining) || remaining <= 0) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(remaining * 1000, 250)));
+    }
+    pendingSplice = boundary;
+  }
+  lastReportText = "";
+  await editor.evaluate(true);
+  const err = readEvalError();
+  if (err) {
+    const msg = err.message || String(err);
+    return { ok: false, cycle: null, error: msg + sourceLineNote(msg, pattern.code, pattern.code) };
+  }
+  return { ok: true, cycle: boundary ?? stageEnv.audibleCycle(), report: lastReportText || undefined };
+}
+
+/** A successful evaluation of code we did not put there is the human's edit. */
+function noteHumanEdit(code: string): void {
+  if (!session) return;
+  if (code.trim() === lastProgrammaticCode.trim() || code === lastLoggedEdit) return;
+  lastLoggedEdit = code;
+  session.log({ t: "edit", cycle: stageEnv.audibleCycle(), code, chars: code.length }, true);
+}
+
+passBtn.addEventListener("click", async () => {
+  if (!session) return;
+  session.log({ t: "pass", cycle: stageEnv.audibleCycle() }, true);
+  if (!canSendMessage) {
+    setStatus("Passed — tell Claude it's their turn", "playing");
+    return;
+  }
+  passBtn.disabled = true;
+  try {
+    await app.sendMessage({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text:
+            `Your turn (live session ${session.id}). Read what I just did with get-session, ` +
+            "then answer on the player with update-session.",
+        },
+      ],
+    });
+  } catch (err) {
+    setStatus(`Pass failed: ${(err as Error).message} — tell Claude in the chat`, "error");
+  } finally {
+    passBtn.disabled = false;
+  }
+});
+
+// =============================================================================
 // MCP ext-apps Integration
 // =============================================================================
 
@@ -2870,6 +3071,10 @@ const viewIds = new ViewIdChannel();
 
 app.ontoolresult = (result) => {
   viewIds.put(viewIdOf(result));
+  const meta = (result as { _meta?: { session?: { id?: unknown; origin?: unknown } } })._meta?.session;
+  if (meta && typeof meta.id === "string" && typeof meta.origin === "string") {
+    startSession(meta.id, meta.origin);
+  }
 };
 
 app.ontoolinput = (params) => {
@@ -2926,6 +3131,8 @@ app.ontoolcancelled = (params) => {
 // tears this instance down, so a discarded widget leaves nothing running.
 app.onteardown = () => {
   try {
+    session?.stop();
+    session = null;
     // Invalidate any in-flight render/boot so a late `await` can't repopulate
     // the DOM of a widget the host has already discarded.
     renderGeneration++;
@@ -3035,6 +3242,7 @@ app.connect().then(() => {
   // "Send to chat" needs the host to accept ui/message.
   if (caps?.message) {
     sendBtn.hidden = false;
+    canSendMessage = true;
   }
 
   const ctx = app.getHostContext();

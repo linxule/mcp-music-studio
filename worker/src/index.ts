@@ -25,6 +25,8 @@ import { VERSION } from "../../src/version.js";
 import { staticCheckStrudel } from "../../src/shared/strudel-static-check.js";
 import { TTS_MODEL, normalizeTts, type TtsRequest } from "../../src/shared/tts.js";
 import { parseClient } from "../../src/shared/parse-client.js";
+import { mintSessionId, SESSION_ID_RE } from "../../src/shared/session.js";
+import { attachSession, httpSessionBackend, registerSessionTools, type SessionBackend } from "../../src/shared/session-tools.js";
 import {
   SHEET_RESOURCE_URI,
   STRUDEL_RESOURCE_URI,
@@ -117,6 +119,10 @@ type Env = {
   /** Cloudflare rate-limit bindings for /tts misses (see wrangler.jsonc). */
   TTS_IP_LIMITER?: RateLimiterBinding;
   TTS_GLOBAL_LIMITER?: RateLimiterBinding;
+  /** Live sessions — one JamSession Durable Object per id (worker/src/session-do.ts). */
+  JAM?: DurableObjectNamespace;
+  SESSION_NEW_LIMITER?: RateLimiterBinding;
+  SESSION_EVENTS_LIMITER?: RateLimiterBinding;
 };
 
 type RateLimiterBinding = { limit(options: { key: string }): Promise<{ success: boolean }> };
@@ -585,6 +591,15 @@ export function createMusicServer(
   // Advertise ext-apps support so clients know to render UI widgets
   advertiseUiExtension(server.server);
 
+  // The tools reach sessions through the same routes the widget uses, with the
+  // caller's address passed on for the creation limit.
+  const sessions: SessionBackend = httpSessionBackend((path, init) => {
+    const headers = new Headers(init?.headers);
+    const ip = request?.headers.get("CF-Connecting-IP");
+    if (ip) headers.set("CF-Connecting-IP", ip);
+    return handleSessionRoute(new Request(new URL(path, origin), { ...init, headers }), env);
+  });
+
   // Slash-command prompts: compose-beat, harmonize-melody, arrange-tune.
   registerMusicPrompts(server);
 
@@ -632,7 +647,8 @@ export function createMusicServer(
           uri: STRUDEL_RESOURCE_URI,
           mimeType: EXT_APPS_MIME,
           text: strudelHtml,
-          _meta: { ui: { csp: { ...STRUDEL_CSP } } },
+          // A preview/lab deployment's widget joins sessions on ITS origin.
+          _meta: { ui: { csp: { ...STRUDEL_CSP, connectDomains: withOrigin(STRUDEL_CSP.connectDomains, origin) } } },
         },
       ],
     }),
@@ -698,7 +714,7 @@ export function createMusicServer(
       // error comes back with its line:column in the code the model sent.
       const syntaxError = staticCheckStrudel(args.code);
       if (syntaxError) return withViewId(buildPlayLiveResult(args, { ok: false, error: syntaxError }));
-      return withViewId(
+      const played = withViewId(
         attachPlayLink(
           buildPlayLiveResult(args, undefined, PLAY_LIVE_UNVALIDATED_REMOTE),
           // toPlayShareArgs folds the `visuals` preset into the code (and drops
@@ -710,8 +726,12 @@ export function createMusicServer(
           }, origin),
         ),
       );
+      return args.session ? attachSession(played, sessions, origin) : played;
     },
   );
+
+  // Live sessions: get-session / update-session (src/shared/session-tools.ts).
+  registerSessionTools(server, sessions, async (code) => staticCheckStrudel(code));
 
   // ===========================================================================
   // Tool: get-music-guide
@@ -1002,6 +1022,81 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
 }
 
 // =============================================================================
+// Live sessions — routes in front of the JamSession Durable Object
+// =============================================================================
+
+/** The widget's frame has an opaque origin; the id is the capability. */
+const SESSION_CORS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "content-type",
+  "access-control-max-age": "86400",
+};
+const SESSION_OPS = new Set(["events", "next", "state", "update"]);
+
+function sessionJson(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...SESSION_CORS },
+  });
+}
+
+/** connect-src plus this deployment's own origin (a lab or preview Worker). */
+export function withOrigin(domains: string[], origin: string): string[] {
+  return domains.includes(origin) ? [...domains] : [...domains, origin];
+}
+
+/**
+ * POST /session/new                → { id }
+ * POST /session/<id>/events        widget → log
+ * GET  /session/<id>/next          widget long-poll (also its heartbeat)
+ * GET  /session/<id>/state         model read
+ * POST /session/<id>/update        model write (waits for the widget's answer)
+ */
+export async function handleSessionRoute(request: Request, env: Env): Promise<Response> {
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: SESSION_CORS });
+  if (!env.JAM) return sessionJson({ error: "live sessions are not available on this deployment" }, 503);
+  const url = new URL(request.url);
+  const parts = url.pathname.split("/").filter(Boolean);
+  const ip = clientBucket(request.headers.get("CF-Connecting-IP") ?? "unknown");
+  const limit = async (binding: RateLimiterBinding | undefined): Promise<boolean> => {
+    if (!binding) return true;
+    try {
+      return (await binding.limit({ key: ip })).success;
+    } catch {
+      return true;
+    }
+  };
+
+  if (parts.length === 2 && parts[1] === "new") {
+    if (request.method !== "POST") return sessionJson({ error: "method not allowed" }, 405);
+    if (!(await limit(env.SESSION_NEW_LIMITER))) return sessionJson({ error: "too many new sessions" }, 429);
+    const id = mintSessionId();
+    const stub = env.JAM.get(env.JAM.idFromName(id));
+    const res = await stub.fetch(`https://session/init?id=${id}`, { method: "POST" });
+    if (!res.ok) return sessionJson({ error: "could not open a session" }, 502);
+    return sessionJson({ id });
+  }
+
+  const [, id, op] = parts;
+  if (parts.length !== 3 || !SESSION_ID_RE.test(id ?? "") || !SESSION_OPS.has(op ?? "")) {
+    return sessionJson({ error: "not found" }, 404);
+  }
+  if (op === "events" && !(await limit(env.SESSION_EVENTS_LIMITER))) {
+    return sessionJson({ error: "too many events" }, 429);
+  }
+  const stub = env.JAM.get(env.JAM.idFromName(id));
+  const forwarded = await stub.fetch(`https://session/${op}${url.search}`, {
+    method: request.method,
+    headers: { "content-length": request.headers.get("content-length") ?? "" },
+    body: request.method === "POST" ? await request.text() : undefined,
+  });
+  const headers = new Headers(forwarded.headers);
+  for (const [k, v] of Object.entries(SESSION_CORS)) headers.set(k, v);
+  return new Response(forwarded.body, { status: forwarded.status, headers });
+}
+
+// =============================================================================
 // Worker fetch handler — stateless createLegacyMcpHandler
 // =============================================================================
 
@@ -1121,6 +1216,10 @@ export default {
 
     if (url.pathname === "/tts") {
       return handleTts(request, env, ctx);
+    }
+
+    if (url.pathname.startsWith("/session/")) {
+      return handleSessionRoute(request, env);
     }
 
     if (url.pathname === "/mcp" || url.pathname === "/mcp/") {

@@ -74,6 +74,8 @@ export interface StageEnv {
   cps?(): number | null;
   /** A registered callback threw. Called once per registration, not per frame. */
   reportError(api: string, error: unknown): void;
+  /** Sees every tap delivered to the piece (a live session logs them). */
+  observeTap?(tap: { x: number; y: number; cycle: number }): void;
 }
 
 export interface StageFrame {
@@ -307,6 +309,9 @@ export function createStage(env: StageEnv): Stage {
 
   const deliverTap = (x: number, y: number): void => {
     const tap = { x, y, cycle: cycle(), next };
+    try {
+      env.observeTap?.({ x, y, cycle: tap.cycle });
+    } catch { /* an observer never stops the piece's own tap */ }
     for (const reg of [...active]) if (reg.kind === "tap") call(reg, "onTap", tap);
   };
 
@@ -465,6 +470,7 @@ export interface BrowserStageOptions {
   ttsOrigin: string;
   /** A say() clip could not be loaded — once per clip, with the server's reason. */
   reportSpeech?(url: string, reason: string): void;
+  observeTap?(tap: { x: number; y: number; cycle: number }): void;
 }
 
 /** The browser env plus what only a page needs: waiting for say() clips. */
@@ -597,6 +603,7 @@ export function createBrowserStageEnv(options: BrowserStageOptions): BrowserStag
     },
     toPattern: (value) => (typeof w.reify === "function" ? w.reify(value) : undefined),
     reportError: options.reportError,
+    observeTap: options.observeTap,
     ttsOrigin: options.ttsOrigin,
     registerSample(name, url) {
       // Registered when (and only if) the clip loads — see loadClip.

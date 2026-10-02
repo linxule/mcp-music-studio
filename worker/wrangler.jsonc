@@ -15,8 +15,16 @@
     {
       "tag": "v2",
       "deleted_classes": ["MusicStudioMCP"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["JamSession"]
     }
   ],
+  // Live sessions: one object per session id (worker/src/session-do.ts).
+  "durable_objects": {
+    "bindings": [{ "name": "JAM", "class_name": "JamSession" }]
+  },
   // Workers AI renders say() lines (GET /tts, src/shared/tts.ts).
   "ai": { "binding": "AI", "remote": true },
   // GET /tts spends money on every cache MISS. These gate misses before the
@@ -24,7 +32,11 @@
   // down): per address, and across everyone, per Cloudflare location.
   "ratelimits": [
     { "name": "TTS_IP_LIMITER", "namespace_id": "7101", "simple": { "limit": 12, "period": 60 } },
-    { "name": "TTS_GLOBAL_LIMITER", "namespace_id": "7102", "simple": { "limit": 240, "period": 60 } }
+    { "name": "TTS_GLOBAL_LIMITER", "namespace_id": "7102", "simple": { "limit": 240, "period": 60 } },
+    // Live sessions. New sessions are created by MCP calls, which arrive from
+    // the host's servers (one address for many users) — hence a loose limit.
+    { "name": "SESSION_NEW_LIMITER", "namespace_id": "7103", "simple": { "limit": 60, "period": 60 } },
+    { "name": "SESSION_EVENTS_LIMITER", "namespace_id": "7104", "simple": { "limit": 240, "period": 60 } }
   ],
   "kv_namespaces": [
     {
@@ -52,5 +64,32 @@
       "binding": "ANALYTICS",
       "dataset": "music_studio_usage"
     }
-  ]
+  ],
+  // `wrangler deploy --env lab` → mcp-music-studio-lab.<account>.workers.dev:
+  // a separate Worker (own Durable Objects) for trying features in claude.ai
+  // as a custom connector before they reach the production connector.
+  // Bindings are not inherited by an environment, so they are repeated here.
+  "env": {
+    "lab": {
+      "name": "mcp-music-studio-lab",
+      "workers_dev": true,
+      "routes": [],
+      "ai": { "binding": "AI", "remote": true },
+      "durable_objects": {
+        "bindings": [{ "name": "JAM", "class_name": "JamSession" }]
+      },
+      "ratelimits": [
+        { "name": "TTS_IP_LIMITER", "namespace_id": "7101", "simple": { "limit": 12, "period": 60 } },
+        { "name": "TTS_GLOBAL_LIMITER", "namespace_id": "7102", "simple": { "limit": 240, "period": 60 } },
+        { "name": "SESSION_NEW_LIMITER", "namespace_id": "7103", "simple": { "limit": 60, "period": 60 } },
+        { "name": "SESSION_EVENTS_LIMITER", "namespace_id": "7104", "simple": { "limit": 240, "period": 60 } }
+      ],
+      "kv_namespaces": [
+        { "binding": "DOCS_CACHE", "id": "6de1f566d9b241eb9ccd1285e14b812c" }
+      ],
+      "analytics_engine_datasets": [
+        { "binding": "ANALYTICS", "dataset": "music_studio_usage_lab" }
+      ]
+    }
+  }
 }
