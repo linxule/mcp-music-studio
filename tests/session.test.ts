@@ -606,3 +606,22 @@ describe("review fixes (live sessions, Codex)", () => {
     expect(fresh.queryArc(4, 5)[0].value).toBe("new");
   });
 });
+
+describe("sensors in the session log", () => {
+  it("says who is playing a sensor control, and folds device moves", () => {
+    const data = newSession(ID, 0);
+    appendEvents(
+      data,
+      coerceEvents([
+        { t: "controls", list: [{ name: "tilt", kind: "xy", value: [0.5, 0.5], sensor: "tilt", source: "sensor" }, { name: "mic", kind: "fader", value: 0, min: 0, max: 1, sensor: "mic", source: "manual" }] },
+        { t: "control", name: "tilt", kind: "xy", value: [0.8, 0.4], cycle: 2, source: "sensor" },
+        { t: "control", name: "tilt", kind: "xy", value: [0.9, 0.3], cycle: 3, source: "sensor" },
+      ]),
+      1,
+    );
+    const text = describeSession(data, 2);
+    expect(text).toContain("tilt (tilt: x left→right, y) x 0.90, y 0.30, played by the device");
+    expect(text).toContain("mic (mic loudness 0–1) 0, played by hand — the sensor isn't available");
+    expect(text).toContain("- the device moved xy 'tilt' 2 times, ending at x 0.90, y 0.30 (cycles 2.0–3.0).");
+  });
+});

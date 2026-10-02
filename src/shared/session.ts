@@ -77,7 +77,7 @@ export type SessionEvent =
       report?: string;
     }
   | { seq: number; at: number; t: "pass"; cycle: number | null }
-  | { seq: number; at: number; t: "control"; name: string; kind: string; value: number | [number, number]; cycle: number | null }
+  | { seq: number; at: number; t: "control"; name: string; kind: string; value: number | [number, number]; cycle: number | null; source?: string }
   | { seq: number; at: number; t: "controls"; list: ControlState[] }
   | { seq: number; at: number; t: "update"; rev: number; quantize: number };
 
@@ -88,6 +88,9 @@ export interface ControlState {
   value: number | [number, number];
   min?: number;
   max?: number;
+  /** tilt()/mic(): the sensor behind it, and whether it (or a hand) is playing it. */
+  sensor?: string;
+  source?: string;
 }
 
 /** An event before the log stamps it. */
@@ -231,7 +234,10 @@ export function coerceEvents(raw: unknown, max = 64): NewEvent[] {
       case "control": {
         const name = text(e.name, 32);
         const value = controlValue(e.value);
-        if (name && value !== null) out.push({ t: "control", name, kind: text(e.kind, 8) ?? "?", value, cycle: finite(e.cycle) });
+        const source = e.source === "sensor" || e.source === "manual" ? e.source : undefined;
+        if (name && value !== null) {
+          out.push({ t: "control", name, kind: text(e.kind, 8) ?? "?", value, cycle: finite(e.cycle), ...(source ? { source } : {}) });
+        }
         break;
       }
       case "controls": {
@@ -248,6 +254,8 @@ export function coerceEvents(raw: unknown, max = 64): NewEvent[] {
             value,
             min: finite(item.min) ?? undefined,
             max: finite(item.max) ?? undefined,
+            sensor: item.sensor === "tilt" || item.sensor === "mic" ? item.sensor : undefined,
+            source: item.source === "sensor" || item.source === "manual" ? item.source : undefined,
           });
         }
         out.push({ t: "controls", list });
@@ -409,14 +417,17 @@ export function describeSession(data: SessionData, now: number, since = data.rea
         "Controls on the player now: " +
           [...now.values()]
             .map((c) =>
-              c.kind === "pad"
-                ? `${c.name} (pad) ${c.value === 1 ? "on" : "off"}`
-                : c.kind === "fader"
-                  ? `${c.name} (fader ${c.min ?? 0}–${c.max ?? 1}) ${showValue(c.value)}`
-                  : `${c.name} (xy) ${showValue(c.value)}`,
+              c.sensor
+                ? `${c.name} (${c.sensor === "tilt" ? "tilt: x left→right, y" : "mic loudness 0–1"}) ${showValue(c.value)}, ` +
+                  (c.source === "sensor" ? "played by the device" : "played by hand — the sensor isn't available")
+                : c.kind === "pad"
+                  ? `${c.name} (pad) ${c.value === 1 ? "on" : "off"}`
+                  : c.kind === "fader"
+                    ? `${c.name} (fader ${c.min ?? 0}–${c.max ?? 1}) ${showValue(c.value)}`
+                    : `${c.name} (xy) ${showValue(c.value)}`,
             )
             .join("; ") +
-          ". Read them in code with fader('name') / pad('name') / xy('name') — same names keep their values across updates.",
+          ". Read them in code with fader('name') / pad('name') / xy('name') / tilt() / mic() — same names keep their values across updates.",
       );
     }
   }
@@ -443,7 +454,8 @@ export function describeSession(data: SessionData, now: number, since = data.rea
           `(${presses.map((m) => cyc(m.cycle)).join(", ") || span}); now ${last.value === 1 ? "on" : "off"}.`,
       );
     } else {
-      lines.push(`- the human moved ${first.kind} '${first.name}' ${moves.length === 1 ? "to" : `${moves.length} times, ending at`} ${showValue(last.value)} (${span}).`);
+      const who = first.source === "sensor" ? "the device moved" : "the human moved";
+      lines.push(`- ${who} ${first.kind} '${first.name}' ${moves.length === 1 ? "to" : `${moves.length} times, ending at`} ${showValue(last.value)} (${span}).`);
     }
     moves = [];
   };

@@ -343,6 +343,27 @@ stack(
 - Every move is logged for you in a live session (below).
 "weather-machine" in topic "gallery" is a complete instrument.
 
+## Sensors — tilt() and mic(), with a hand on the strip as backup
+tilt() follows how the phone is held; mic() follows how loud the room is. Both
+are controls like xy() and fader(): patterns, with .value for visuals.
+
+const lean = tilt()                     // lean.x left→right, lean.y, 0..1, 0.5 = level
+const room = mic()                      // 0..1 input loudness
+stack(
+  note("<c3 g3 a3 f3>").s("sawtooth").lpf(lean.y.fmap(y => 300 + y * 3000)).pan(lean.x).gain(0.3),
+  s("hh*16").gain(room.fmap(v => v * 0.6))
+)
+
+- Nothing is asked up front: the first tap asks for the sensor (iOS only
+  allows that inside a tap). Until readings arrive — and wherever they never
+  do, like inside a chat widget, whose frame blocks both — the control sits on
+  the strip, played by hand. A piece written once works everywhere.
+- The widget reports whether each sensor is live, waiting for a tap, or
+  refused, and a live session shows it in get-session.
+- The level the phone was held at first is "level" (0.5); about 35° either
+  way reaches the edge.
+- The mic is analysed for loudness only — never recorded or sent anywhere.
+
 ## Live sessions — playing back-to-back
 play-live-pattern with session: true keeps ONE player open, and you get two
 tools for it:
