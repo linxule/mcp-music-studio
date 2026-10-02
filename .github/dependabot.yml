@@ -8,6 +8,12 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 2
+    # tonal 6.5.0 ships main/types pointing at dist/index.js / index.d.ts, which
+    # are not in the package (only .cjs/.mjs/.d.cts/.d.mts): tsc can't resolve it.
+    # Our build bundles tonal, so the published server was never affected.
+    ignore:
+      - dependency-name: "tonal"
+        versions: ["6.5.0"]
     groups:
       root-deps:
         patterns: ["*"]
@@ -18,6 +24,9 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: "tonal"
+        versions: ["6.5.0"]
     groups:
       worker-deps:
         patterns: ["*"]

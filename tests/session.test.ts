@@ -20,7 +20,7 @@ import {
 } from "../src/shared/session";
 import { spliceAt, hapStart, settle, isSpliced } from "../src/shared/splice";
 import { JamSession, MAX_LISTENERS, MAX_POLL_WAITERS, type SessionStorage } from "../worker/src/session-do";
-import { SessionClient } from "../src/session-client";
+import { PASS_ANSWER_MS, SessionClient } from "../src/session-client";
 import {
   attachSession,
   buildUpdateSessionResult,
@@ -489,6 +489,79 @@ describe("SessionClient heartbeat", () => {
     state = "playing";
     await vi.waitFor(() => expect(urls.some((u) => u.includes("state=playing"))).toBe(true));
     client.stop();
+  });
+});
+
+describe("a heard Pass that gets no answer", () => {
+  function passHarness(listeningHeaders: string[], pattern?: () => Response) {
+    let timers: Array<{ fn: () => void; ms: number }> = [];
+    const unanswered = vi.fn();
+    let served = false;
+    const client = new SessionClient("https://example.test", ID, {
+      fetch: async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/events")) return new Response('{"ok":true,"listening":true}');
+        const header = listeningHeaders.shift();
+        if (header !== undefined) return new Response(null, { status: 204, headers: { "x-session-listening": header } });
+        if (pattern && !served) {
+          served = true;
+          return pattern();
+        }
+        return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("abort"))));
+      },
+      setTimeout: (fn, ms) => {
+        if (ms === PASS_ANSWER_MS) {
+          timers.push({ fn, ms });
+          return timers.length;
+        }
+        return setTimeout(fn, Math.min(ms, 5));
+      },
+      clearTimeout: (h) => (typeof h === "number" && h <= timers.length ? undefined : clearTimeout(h as any)),
+      clock: () => ({ cycle: 1, cps: 0.5, state: "playing" }),
+      apply: async () => ({ ok: true, cycle: 2 }),
+      onPassUnanswered: unanswered,
+    });
+    const fire = () => {
+      const due = timers;
+      timers = [];
+      for (const t of due) t.fn();
+    };
+    return { client, unanswered, fire };
+  }
+
+  it("says so after PASS_ANSWER_MS when nothing came back", async () => {
+    const h = passHarness([]);
+    expect(await h.client.pass(3)).toBe(true);
+    h.fire();
+    expect(h.unanswered).toHaveBeenCalledTimes(1);
+    h.client.stop();
+  });
+
+  it("an update counts as the answer", async () => {
+    const h = passHarness([], () => new Response(JSON.stringify({ rev: 1, code: "x", quantize: 1, at: 0 })));
+    expect(await h.client.pass(3)).toBe(true);
+    h.client.start({});
+    await vi.waitFor(() => expect((h.client as any).rev).toBe(1));
+    h.fire();
+    expect(h.unanswered).not.toHaveBeenCalled();
+    h.client.stop();
+  });
+
+  it("listening again counts, but only after the listen ended (a stale '1' does not)", async () => {
+    const stale = passHarness(["1"]);
+    expect(await stale.client.pass(3)).toBe(true);
+    stale.client.start({});
+    await new Promise((r) => setTimeout(r, 30));
+    stale.fire();
+    expect(stale.unanswered).toHaveBeenCalledTimes(1);
+    stale.client.stop();
+
+    const again = passHarness(["0", "1"]);
+    expect(await again.client.pass(3)).toBe(true);
+    again.client.start({});
+    await new Promise((r) => setTimeout(r, 30));
+    again.fire();
+    expect(again.unanswered).not.toHaveBeenCalled();
+    again.client.stop();
   });
 });
 

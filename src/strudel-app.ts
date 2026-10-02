@@ -3079,6 +3079,15 @@ function startSession(id: string, origin: string, startRev = 0): void {
       claudeListening = listening;
       setSessionBadge();
     },
+    onPassUnanswered: () => {
+      if (claudeListening) return;
+      setStatus(
+        canSendMessage
+          ? "No answer on the player yet — Pass again to send it to the chat"
+          : "No answer on the player yet — tell Claude in the chat it's their turn",
+        "playing",
+      );
+    },
   }, startRev);
   const ctx = app.getHostContext() as { platform?: string } | undefined;
   const host = (app as unknown as { getHostVersion?: () => { name?: string; version?: string } | undefined })

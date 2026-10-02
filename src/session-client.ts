@@ -39,6 +39,12 @@ export interface SessionClientEnv {
   onStatus?(status: "connecting" | "live" | "retrying" | "gone"): void;
   /** Whether the model is listening (get-session with wait) right now. */
   onListening?(listening: boolean): void;
+  /**
+   * A Pass a listening model "heard" got no answer on the player (no update,
+   * no new listen) within PASS_ANSWER_MS: its read may never have reached the
+   * model. The next Pass goes to the chat (the model is not listening).
+   */
+  onPassUnanswered?(): void;
 }
 
 /** Batch window for ordinary events (taps); reports and answers go at once. */
@@ -48,6 +54,8 @@ const BACKOFF_MS = [1000, 2000, 5000, 10_000, 30_000];
 const KEEPALIVE_MAX_CHARS = 20_000;
 /** How often the player's state is compared with what the server last heard. */
 export const STATE_WATCH_MS = 1000;
+/** How long a heard Pass may go without any answer on the player. */
+export const PASS_ANSWER_MS = 90_000;
 
 export class SessionClient {
   private queue: NewEvent[] = [];
@@ -58,6 +66,8 @@ export class SessionClient {
   private failures = 0;
   /** The play state the current poll told the server. */
   private sentState: string | null = null;
+  /** A heard Pass awaiting an answer: the rev it was sent at, and what listening did since. */
+  private passWatch: { timer: unknown; rev: number; quiet: boolean; relistened: boolean } | null = null;
 
   constructor(
     readonly origin: string,
@@ -98,6 +108,7 @@ export class SessionClient {
     this.poll?.abort();
     if (this.flushTimer !== null) this.env.clearTimeout(this.flushTimer);
     this.flushTimer = null;
+    this.clearPassWatch();
     void this.flush();
   }
 
@@ -123,12 +134,44 @@ export class SessionClient {
   async pass(cycle: number | null): Promise<boolean> {
     this.log({ t: "pass", cycle });
     const body = await this.flush();
-    return body?.listening === true;
+    const heard = body?.listening === true;
+    if (heard) this.watchPassAnswer();
+    return heard;
+  }
+
+  /**
+   * "Heard" only means a get-session(wait) was holding when the Pass landed;
+   * its reply can still be lost on the way to the model (a host timeout, a
+   * dropped turn). An answer shows up here as a new rev or as the model
+   * listening again after the listen ended — watch for one (Kimi review).
+   */
+  private watchPassAnswer(): void {
+    this.clearPassWatch();
+    const watch = { timer: null as unknown, rev: this.rev, quiet: false, relistened: false };
+    watch.timer = this.env.setTimeout(() => {
+      if (this.passWatch !== watch) return;
+      this.passWatch = null;
+      if (this.stopped || this.rev > watch.rev || watch.relistened) return;
+      this.env.onPassUnanswered?.();
+    }, PASS_ANSWER_MS);
+    this.passWatch = watch;
+  }
+
+  private clearPassWatch(): void {
+    if (this.passWatch) this.env.clearTimeout(this.passWatch.timer);
+    this.passWatch = null;
   }
 
   private noteListening(value: unknown): void {
-    if (value === "1" || value === true) this.env.onListening?.(true);
-    else if (value === "0" || value === false) this.env.onListening?.(false);
+    const listening = value === "1" || value === true ? true : value === "0" || value === false ? false : null;
+    if (listening === null) return;
+    // A "1" from a reply that left before the Pass woke the listener is not
+    // a new listen: count one only after a "0".
+    if (this.passWatch) {
+      if (!listening) this.passWatch.quiet = true;
+      else if (this.passWatch.quiet) this.passWatch.relistened = true;
+    }
+    this.env.onListening?.(listening);
   }
 
   async flush(): Promise<{ listening?: boolean } | null> {
