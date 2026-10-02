@@ -18,7 +18,7 @@ import {
   sessionBytes,
   type SessionData,
 } from "../src/shared/session";
-import { spliceAt, hapStart, settle, isSpliced } from "../src/shared/splice";
+import { spliceAt, hapStart, settle, isSpliced, swapOutcome } from "../src/shared/splice";
 import { JamSession, MAX_LISTENERS, MAX_POLL_WAITERS, type SessionStorage } from "../worker/src/session-do";
 import { IDLE_PARK_MS, PASS_ANSWER_MS, SessionClient } from "../src/session-client";
 import {
@@ -904,5 +904,22 @@ describe("review fixes (0.9, Codex + Kimi)", () => {
     client.start({});
     await vi.waitFor(() => expect(urls[0]).toContain("after=3"));
     client.stop();
+  });
+});
+
+describe("swapOutcome: a swap only succeeds if it actually took over", () => {
+  const replaced = { ok: false, cycle: null, error: "replaced" };
+  const base = { refused: false, ran: true, started: true, error: null, cancelled: null, cycle: 4, replaced };
+  it("a clean run took over at its boundary", () => {
+    expect(swapOutcome(base)).toEqual({ ok: true, cycle: 4, report: undefined });
+  });
+  it("stopped during its evaluation (a cancel stops what it started) is NOT a success (Codex review)", () => {
+    expect(swapOutcome({ ...base, started: false })).toEqual({ ok: false, cycle: null, error: "the player was stopped before this swap took over" });
+    expect(swapOutcome({ ...base, started: false, cancelled: "replaced by stop" }).error).toBe("replaced by stop");
+  });
+  it("refusal, a run that never started, and an eval error win in that order", () => {
+    expect(swapOutcome({ ...base, refused: true, ran: false, error: "x" })).toBe(replaced);
+    expect(swapOutcome({ ...base, ran: false, error: "x" }).error).toContain("taken over by a newer run");
+    expect(swapOutcome({ ...base, error: "boom", started: false }).error).toBe("boom");
   });
 });

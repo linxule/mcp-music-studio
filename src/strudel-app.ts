@@ -34,7 +34,7 @@ import { sourceLineNote } from "./shared/line-map";
 import { DEFAULT_SHARE_ORIGIN } from "./shared/share-url";
 import { SessionClient, type ApplyOutcome, type SessionStatus } from "./session-client";
 import { nextBoundary, SESSION_ID_RE, SESSION_SWAP_LEAD_S, type QueuedPattern } from "./shared/session";
-import { isSpliced, settle, spliceAt } from "./shared/splice";
+import { isSpliced, settle, spliceAt, swapOutcome } from "./shared/splice";
 import { applyVisualPreset } from "./shared/visual-presets";
 import {
   STRUDEL_INLINE_CAP,
@@ -3321,18 +3321,18 @@ async function quantizedSwap(
   // The hook took it on entry; never leave it for another call.
   if (swapEvaluation === mark) swapEvaluation = null;
   await evaluating;
-  // Refused at the last moment: superseded, or the buffer no longer held our code.
-  if (mark.refused) return replaced;
-  // Cancelled in the queue (a new tool call took the player): it never ran.
-  if (evaluationSeq === ranBefore) {
-    return { ok: false, cycle: null, error: "the player was taken over by a newer run before this one started" };
-  }
   const err = readEvalError();
-  if (err) {
-    const msg = err.message || String(err);
-    return { ok: false, cycle: null, error: msg + sourceLineNote(msg, code, code) };
-  }
-  return { ok: true, cycle: boundary ?? stageEnv.audibleCycle(), report: lastReportText || undefined };
+  const msg = err ? err.message || String(err) : null;
+  return swapOutcome({
+    refused: mark.refused,
+    ran: evaluationSeq !== ranBefore,
+    started: isSchedulerStarted(),
+    error: msg === null ? null : msg + sourceLineNote(msg, code, code),
+    cancelled: cancelled(),
+    cycle: boundary ?? stageEnv.audibleCycle(),
+    report: lastReportText || undefined,
+    replaced,
+  });
 }
 
 /** Tell the session which controls the player now shows (when that changes). */

@@ -466,6 +466,29 @@ describe("review fixes (0.10 gauntlet)", () => {
     expect(registered.has("late")).toBe(false);
   });
 
+  it("a late settle never withdraws a NEWER registration of the same name (Codex review)", async () => {
+    let finishA!: () => void;
+    const installed = new Map<string, number>();
+    let n = 0;
+    const context: WebMcpContext = {
+      registerTool: vi.fn((tool: WebMcpTool) => {
+        const id = ++n;
+        if (id === 1) return new Promise<void>((resolve) => { finishA = () => { installed.set(tool.name, id); resolve(); }; });
+        installed.set(tool.name, id);
+        return Promise.resolve();
+      }),
+      unregisterTool: vi.fn((name: string) => void installed.delete(name)),
+    };
+    const tool = { name: "play-current-music", description: "x", execute: async () => null };
+    await expect(registerWebMcpTool(context, tool, 15)).rejects.toThrow("did not settle");
+    await registerWebMcpTool(context, tool, 15); // B owns the name now
+    expect(installed.get("play-current-music")).toBe(2);
+    (context.unregisterTool as ReturnType<typeof vi.fn>).mockClear();
+    finishA(); // A settles late: it may not withdraw the name B owns
+    await new Promise((r) => setTimeout(r, 10));
+    expect(context.unregisterTool).not.toHaveBeenCalled();
+  });
+
   it("F5: a function exclude is asked on every sync, so a tool can open later", async () => {
     const ctx = fakeContext();
     const { bridge } = fakeBridge([getTool, setTool]);

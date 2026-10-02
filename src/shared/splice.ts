@@ -60,3 +60,33 @@ export function spliceAt<P extends PatternLike>(
   halves.set(spliced as object, { before, after: next, boundary });
   return spliced;
 }
+
+export interface SwapOutcome {
+  ok: boolean;
+  cycle: number | null;
+  error?: string;
+  report?: string;
+}
+
+/**
+ * How a quantized swap ended, once its evaluation settled. Order matters: a
+ * swap that was refused, never ran, or ran but was stopped before it could
+ * take over (a cancel stops what the evaluation started) did NOT play, even
+ * though its evaluation "finished" without an error (Codex review, 0.10).
+ */
+export function swapOutcome(o: {
+  refused: boolean;
+  ran: boolean;
+  started: boolean;
+  error: string | null;
+  cancelled: string | null;
+  cycle: number | null;
+  report?: string;
+  replaced: SwapOutcome;
+}): SwapOutcome {
+  if (o.refused) return o.replaced;
+  if (!o.ran) return { ok: false, cycle: null, error: "the player was taken over by a newer run before this one started" };
+  if (o.error) return { ok: false, cycle: null, error: o.error };
+  if (!o.started) return { ok: false, cycle: null, error: o.cancelled ?? "the player was stopped before this swap took over" };
+  return { ok: true, cycle: o.cycle, report: o.report };
+}

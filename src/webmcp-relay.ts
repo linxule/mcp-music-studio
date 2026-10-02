@@ -84,6 +84,19 @@ export function findModelContext(
   return undefined;
 }
 
+/**
+ * Which registration currently owns each tool name, per context. Withdrawing
+ * by name (unregisterTool) is only safe for the owner: a timed-out
+ * registration that settles late must not remove a newer one of the same
+ * name (Codex review, 0.10).
+ */
+const owners = new WeakMap<object, Map<string, symbol>>();
+function ownerMap(context: object): Map<string, symbol> {
+  let map = owners.get(context);
+  if (!map) owners.set(context, (map = new Map()));
+  return map;
+}
+
 /** How long a browser's registerTool may take before the relay gives up on that tool. */
 export const REGISTER_TOOL_TIMEOUT_MS = 5_000;
 
@@ -101,22 +114,31 @@ export async function registerWebMcpTool(
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abandoned = false;
+  const mine = Symbol(tool.name);
+  const names = ownerMap(context);
+  names.set(tool.name, mine);
+  /** `release`: this registration is finished with the name (a late settle may still need it otherwise). */
+  const unregisterByName = (release: boolean) => {
+    if (names.get(tool.name) !== mine) return; // a newer registration owns the name
+    if (release) names.delete(tool.name);
+    try { context.unregisterTool?.(tool.name); } catch { /* never registered */ }
+  };
   /** Withdraw a registration by every means a browser might offer. */
-  const withdraw = (late: unknown) => {
+  const withdraw = (late: unknown, release: boolean) => {
     controller.abort();
     try { (late as { unregister?: () => void } | undefined)?.unregister?.(); } catch { /* already gone */ }
-    try { context.unregisterTool?.(tool.name); } catch { /* never registered */ }
+    unregisterByName(release);
   };
   const registration = Promise.resolve(context.registerTool(tool, { signal: controller.signal }));
   // Settled AFTER we gave up (a provider that ignores the signal, or returns a
   // handle): unregister it at once instead of leaking an untracked tool (Codex + Kimi review).
-  registration.then((late) => { if (abandoned) withdraw(late); }, () => { /* nothing registered */ });
+  registration.then((late) => { if (abandoned) withdraw(late, true); }, () => { /* nothing registered */ });
   const handle = await Promise.race([
     registration,
     new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         abandoned = true;
-        withdraw(undefined);
+        withdraw(undefined, false);
         reject(new Error(`registerTool("${tool.name}") did not settle within ${ceilingMs} ms`));
       }, ceilingMs);
     }),
@@ -128,7 +150,7 @@ export async function registerWebMcpTool(
     controller.abort();
     // Previews without signal support: a handle, or unregisterTool(name).
     try { (handle as { unregister?: () => void } | undefined)?.unregister?.(); } catch { /* already gone */ }
-    try { context.unregisterTool?.(tool.name); } catch { /* already gone */ }
+    unregisterByName(true);
   };
 }
 
