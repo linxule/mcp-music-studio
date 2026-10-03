@@ -12,7 +12,7 @@
 // tests/session-client.test.ts drives it with a fake fetch and fake timers.
 // =============================================================================
 
-import { isHumanEvent, type NewEvent, type QueuedPattern } from "./shared/session.js";
+import { isHumanEvent, type NewEvent, type QueuedPattern, type RememberedEntry, type WidgetPost } from "./shared/session.js";
 
 export interface PlayerClock {
   cycle: number | null;
@@ -68,9 +68,30 @@ export const PASS_ANSWER_MS = 90_000;
  * Play, or any edit/tap/control/Pass, rejoins.
  */
 export const IDLE_PARK_MS = 30 * 60_000;
+/** Changes to one remembered name by one author within this window go as one event. */
+export const REMEMBER_COALESCE_MS = 400;
+/** The remembered state is sent at most this often (latest wins). */
+export const REMEMBER_STATE_MIN_MS = 2000;
+
+/** A remembered value changed (the stage runtime reports it; see remember() in the guide). */
+export interface RememberChange {
+  name: string;
+  by: "listener" | "ai";
+  text: string;
+  cycle: number | null;
+}
+
+type RememberEvent = Extract<NewEvent, { t: "remember" }>;
 
 export class SessionClient {
-  private queue: NewEvent[] = [];
+  private queue: WidgetPost[] = [];
+  /** Coalescing windows for remember events, per name + author. */
+  private rememberPending = new Map<string, { event: RememberEvent; timer: unknown }>();
+  /** The newest remembered state not yet acknowledged by the server. */
+  private statePending: RememberedEntry[] | null = null;
+  private stateTimer: unknown = null;
+  private stateSentAt = -Infinity;
+  private stateInFlight = false;
   private flushTimer: unknown = null;
   private stopped = false;
   private rev = 0;
@@ -139,12 +160,92 @@ export class SessionClient {
   }
 
   stop(): void {
+    this.drainRemembered();
     this.stopped = true;
     this.poll?.abort();
     if (this.flushTimer !== null) this.env.clearTimeout(this.flushTimer);
     this.flushTimer = null;
+    this.clearStateTimer();
+    this.statePending = null;
     this.clearPassWatch();
     void this.flush();
+  }
+
+  /**
+   * A remembered value changed. A listener's change is human activity (it
+   * wakes a model listening for activity, and keeps the player from parking);
+   * the model's own merge is logged so it reads its edits too. Changes to one
+   * name by one author within REMEMBER_COALESCE_MS go as one event (`count`,
+   * last label wins), so a hammered grid doesn't flood the 400-event log.
+   */
+  remembered(change: RememberChange): void {
+    if (this.stopped) return;
+    if (change.by === "listener") {
+      this.lastLively = this.now();
+      if (this.parked) this.unpark();
+    }
+    const key = `${change.by}\u0000${change.name}`;
+    const open = this.rememberPending.get(key);
+    if (open) {
+      open.event.count = (open.event.count ?? 1) + 1;
+      open.event.text = change.text;
+      open.event.cycle = change.cycle;
+      return;
+    }
+    const event: RememberEvent = { t: "remember", name: change.name, by: change.by, text: change.text, cycle: change.cycle };
+    const timer = this.env.setTimeout(() => {
+      if (this.rememberPending.get(key)?.event !== event) return;
+      this.rememberPending.delete(key);
+      this.log(event);
+    }, REMEMBER_COALESCE_MS);
+    this.rememberPending.set(key, { event, timer });
+  }
+
+  /** Close every coalescing window now (before a Pass, an end, a stop). */
+  private drainRemembered(): void {
+    for (const [key, { event, timer }] of [...this.rememberPending]) {
+      this.env.clearTimeout(timer);
+      this.rememberPending.delete(key);
+      if (!this.stopped) this.queue.push(event);
+    }
+  }
+
+  /**
+   * The piece's remembered state as it stands. Sent at most every
+   * REMEMBER_STATE_MIN_MS, the latest replacing anything unsent, and retried
+   * until the server takes it. Held while the player is parked: a piece that
+   * animates its state must not keep an idle session's Durable Object awake.
+   */
+  rememberedState(list: RememberedEntry[]): void {
+    if (this.stopped) return;
+    this.statePending = list;
+    this.scheduleState();
+  }
+
+  private clearStateTimer(): void {
+    if (this.stateTimer !== null) this.env.clearTimeout(this.stateTimer);
+    this.stateTimer = null;
+  }
+
+  private scheduleState(delay?: number): void {
+    if (this.stopped || this.parked || !this.statePending || this.stateTimer !== null || this.stateInFlight) return;
+    const wait = delay ?? Math.max(0, this.stateSentAt + REMEMBER_STATE_MIN_MS - this.now());
+    this.stateTimer = this.env.setTimeout(() => {
+      this.stateTimer = null;
+      void this.sendState();
+    }, wait);
+  }
+
+  private async sendState(): Promise<void> {
+    const list = this.statePending;
+    if (!list || this.stopped || this.parked || this.stateInFlight) return;
+    this.stateInFlight = true;
+    this.stateSentAt = this.now();
+    const ok = await this.post([{ t: "rememberState", list }]);
+    this.stateInFlight = false;
+    if (ok !== null && this.statePending === list) this.statePending = null;
+    // Unsent (failed, or newer state arrived meanwhile): try again after the window.
+    this.scheduleState(ok === null ? REMEMBER_STATE_MIN_MS : undefined);
   }
 
   /** Re-poll now, so the server hears a state change (stop/play) promptly. */
@@ -171,8 +272,21 @@ export class SessionClient {
 
   /** Send a Pass now; resolves whether a listening model will read it (no chat message needed). */
   async pass(cycle: number | null): Promise<boolean> {
+    // What the listener just did to the piece's state goes in the same batch,
+    // ahead of the Pass, so the model's read after it is current.
+    this.drainRemembered();
+    const state = this.statePending;
+    if (state && !this.stopped) {
+      this.clearStateTimer();
+      this.queue.push({ t: "rememberState", list: state });
+    }
     this.log({ t: "pass", cycle });
     const body = await this.flush();
+    if (state) {
+      if (body !== null && this.statePending === state) this.statePending = null;
+      this.stateSentAt = this.now();
+      this.scheduleState();
+    }
     const heard = body?.listening === true;
     if (heard) this.watchPassAnswer();
     return heard;
@@ -219,7 +333,11 @@ export class SessionClient {
       this.flushTimer = null;
     }
     if (!this.queue.length) return null;
-    const events = this.queue.splice(0, this.queue.length);
+    return this.post(this.queue.splice(0, this.queue.length));
+  }
+
+  /** POST a batch. Resolves the server's reply, or null if it was not taken. */
+  private async post(events: WidgetPost[]): Promise<{ listening?: boolean } | null> {
     const body = JSON.stringify({ events });
     try {
       const res = await this.env.fetch(`${this.base}/events`, {
@@ -238,8 +356,8 @@ export class SessionClient {
       }
       if (!res.ok) return null;
       if (!this.stopped && !this.parked) this.env.onStatus?.("live");
-      const reply = (await res.json().catch(() => null)) as { listening?: boolean } | null;
-      this.noteListening(reply?.listening);
+      const reply = ((await res.json().catch(() => null)) ?? {}) as { listening?: boolean };
+      this.noteListening(reply.listening);
       return reply;
     } catch {
       // Dropped: a report or tap is not worth a retry storm.
@@ -268,11 +386,16 @@ export class SessionClient {
     this.parked = false;
     this.lastLively = this.now();
     void this.loop(++this.loopGen);
+    this.scheduleState();
   }
 
   private gone(status: "gone" | "ended" = "gone"): void {
     if (this.stopped) return;
     this.stopped = true;
+    for (const { timer } of this.rememberPending.values()) this.env.clearTimeout(timer);
+    this.rememberPending.clear();
+    this.clearStateTimer();
+    this.statePending = null;
     this.poll?.abort();
     this.clearPassWatch();
     this.env.onStatus?.(status);
@@ -286,6 +409,9 @@ export class SessionClient {
    */
   async end(cycle: number | null): Promise<boolean> {
     if (this.stopped) return false;
+    this.drainRemembered();
+    this.clearStateTimer();
+    this.statePending = null;
     await this.flush();
     this.stopped = true;
     this.poll?.abort();

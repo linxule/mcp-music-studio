@@ -56,7 +56,8 @@ export interface CodeProblem {
 export const GET_SESSION_DESCRIPTION =
   "Read a live session opened by play-live-pattern(session: true): whether the player is up and what " +
   "it is playing, its runtime reports (errors, silence, missing sounds, a callback that threw), and what " +
-  "the human did since your last read — taps (cycle and position), code they edited and ran, and when " +
+  "the human did since your last read — taps (cycle and position), changes to the piece's remember() state " +
+  "(with its current values), code they edited and ran, and when " +
   "they passed the turn to you. Read it before assuming a piece played, and when the user says it's your turn. " +
   "With wait: 'pass' it LISTENS — holds until the listener presses Pass — so you can play a whole back-to-back " +
   "set in one turn: update-session, get-session(wait: 'pass'), answer, listen again. " +

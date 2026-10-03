@@ -30,8 +30,7 @@
 // =============================================================================
 
 import {
-  appendEvents,
-  coerceEvents,
+  ingestWidgetBatch,
   describeSession,
   endSession,
   estimatedCycle,
@@ -212,7 +211,8 @@ export class JamSession {
         return json({ error: "bad body" }, 400);
       }
       const events = (raw as { events?: unknown } | null)?.events;
-      const added = appendEvents(data, coerceEvents(events), now);
+      // Remembered state replaces its field (never the log); the rest are ring events.
+      const added = ingestWidgetBatch(data, events, now);
       // Asked before waking anyone: was a model there to hear this?
       const heard = this.listening;
       for (const listener of [...this.listeners]) {
