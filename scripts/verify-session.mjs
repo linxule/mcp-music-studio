@@ -221,7 +221,7 @@ let stopAnswer = stopped.applied ?? null;
 for (let i = 0; i < 10 && !stopAnswer; i++) {
   await sleep(500);
   const t = await state(id);
-  if (new RegExp(`rev ${stopped.pattern.rev} is loaded in the player, which is stopped`).test(t)) stopAnswer = { ok: true, report: "stopped the player before the bar" };
+  if (new RegExp(`rev ${stopped.pattern.rev} (is loaded in the player, which is stopped|arrived while the player was stopped)`).test(t)) stopAnswer = { ok: true, report: "stopped the player before the bar" };
 }
 stopAnswer?.ok && /stopped the player before the bar|is loaded in the player, which is stopped/.test(stopAnswer.report ?? "")
   ? ok(`stopping during a quantized wait answers (${stopped.scheduled ? `scheduled for ${stopped.scheduled.boundary}, then ` : ""}loaded, stopped)`)

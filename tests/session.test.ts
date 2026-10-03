@@ -17,6 +17,8 @@ import {
   SESSION_MAX_EDIT_BODIES,
   SESSION_MAX_EVENTS,
   SESSION_MAX_BYTES,
+  SESSION_HEARTBEAT_LATE_MS,
+  SESSION_WIDGET_STALE_MS,
   sessionBytes,
   type SessionData,
 } from "../src/shared/session";
@@ -1087,22 +1089,88 @@ describe("field report fixes (0.10.1)", () => {
     expect(outcome.applied).toMatchObject({ ok: true, cycle: 10 });
   });
 
+  it("the update outcome carries the state of the check-in before the swap", async () => {
+    const h = harness();
+    await h.call(`init?id=${ID}`, { method: "POST" });
+    await h.call("next?after=0&cycle=8&cps=0.5&state=playing&wait=0");
+    const update = h.call("update", { method: "POST", body: JSON.stringify({ code: "s('bd')", quantize: 8 }) });
+    await vi.waitFor(() => expect(h.sleeping()).toBe(1));
+    await h.call("events", { method: "POST", body: JSON.stringify({ events: [{ t: "applied", rev: 1, ok: true, cycle: null }] }) });
+    await h.advance(2000); // a stopped answer waits out STOPPED_ACK_GRACE_MS
+    const outcome = await (await update).json();
+    expect(outcome.widgetState).toBe("playing");
+    expect(outcome.applied).toMatchObject({ ok: true, cycle: null });
+  });
+
   it("a swap answered by a STOPPED player reads 'loaded', never 'cycle ?'", () => {
     const pattern = { rev: 2, code: "", quantize: 1, at: 0 };
     const res = buildUpdateSessionResult(ID, {
       pattern, applied: { seq: 1, at: 0, t: "applied", rev: 2, ok: true, cycle: null }, widgetSeenMsAgo: 1000, estCycle: 3, boundary: 4, cps: 0.5,
     });
     const text = (res.content[0] as any).text;
-    expect(text).toContain("Rev 2 is loaded in the player, which is stopped — it starts when Play is pressed");
+    expect(text).toContain("Rev 2 arrived while the player was stopped, so there is no landing bar: it is loaded in the player, which is stopped — it starts when Play is pressed");
     expect(text).not.toContain("?");
+    expect(text).not.toContain("had reported");
     const data = newSession(ID, 0);
     queuePattern(data, "x", 1, 0);
     data.pattern!.rev = 1;
     appendEvents(data, [{ t: "applied", rev: 1, ok: true, cycle: null }, { t: "pass", cycle: null }, { t: "edit", cycle: null, code: "y", chars: 1 }], 1);
     const desc = describeSession(data, 2, 0);
-    expect(desc).toContain("is loaded in the player, which is stopped");
+    expect(desc).toContain("Your latest update (rev 1) is loaded in the player, which is stopped");
+    expect(desc).toContain("- rev 1 arrived while the player was stopped, so no bar applied");
     expect(desc).toContain("while the player was stopped: the human passed the turn to you.");
     expect(desc).not.toMatch(/cycle \?/);
+  });
+
+  it("a stopped answer after a 'playing' check-in says the player stopped in between, and names no bar", () => {
+    const pattern = { rev: 2, code: "", quantize: 8, at: 0 };
+    const res = buildUpdateSessionResult(ID, {
+      pattern, applied: { seq: 1, at: 0, t: "applied", rev: 2, ok: true, cycle: null },
+      widgetSeenMsAgo: 6400, widgetState: "playing", estCycle: 12.8, boundary: 16, cps: 0.5,
+    });
+    const text = (res.content[0] as any).text;
+    expect(text).toContain("there is no landing bar");
+    expect(text).toContain('The player had reported "playing" 6 s before this update, so it stopped in between');
+    expect(text).toContain("the screen locked");
+    expect(text).not.toMatch(/cycle 16/);
+  });
+
+  it("a rev loaded while stopped reads as started once a later check-in says playing (field test 2026-10-03)", () => {
+    const data = newSession(ID, 0);
+    appendEvents(data, [{ t: "joined", host: "claude.ai" }], 1);
+    queuePattern(data, "x", 0, 2);
+    appendEvents(data, [{ t: "applied", rev: data.pattern!.rev, ok: true, cycle: null }], 1000);
+    // Still stopped: the present tense is right.
+    recordHeartbeat(data, { cycle: 0, cps: 0.5, state: "stopped" }, 1500);
+    expect(describeSession(data, 2000, 0)).toContain("is loaded in the player, which is stopped — it starts when Play is pressed");
+    // Play pressed: the header says playing, and the update line agrees.
+    recordHeartbeat(data, { cycle: 2, cps: 0.5, state: "playing" }, 9000);
+    let desc = describeSession(data, 10_000, 0);
+    expect(desc).toContain("playing, around cycle 2.5");
+    expect(desc).toContain("arrived while the player was stopped; Play has started it since — it is what is playing now.");
+    expect(desc).not.toContain("which is stopped — it starts when Play is pressed");
+    // A human edit after it: do not claim it is what is playing.
+    appendEvents(data, [{ t: "edit", cycle: 3, code: "y", chars: 1 }], 9500);
+    desc = describeSession(data, 10_000, 0);
+    expect(desc).toContain("Play has started it since, and the human has run their own edit since (below).");
+  });
+
+  it("a 'playing' check-in older than one poll is not extrapolated: the player is probably suspended", () => {
+    const data = newSession(ID, 0);
+    appendEvents(data, [{ t: "joined", host: "claude.ai", platform: "mobile" }], 1);
+    recordHeartbeat(data, { cycle: 10, cps: 0.5, state: "playing" }, 10_000);
+    const fresh = describeSession(data, 10_000 + SESSION_HEARTBEAT_LATE_MS, 0);
+    expect(fresh).toContain("playing, around cycle 25.0");
+    const late = describeSession(data, 10_000 + SESSION_HEARTBEAT_LATE_MS + 5000, 0);
+    expect(late).toContain("last reported playing 35 s ago (at cycle 10.0)");
+    expect(late).toContain("probably suspended or stopped now");
+    expect(late).not.toContain("around cycle");
+    // A late check-in does not count as "Play has started it since".
+    queuePattern(data, "x", 0, 2);
+    appendEvents(data, [{ t: "applied", rev: data.pattern!.rev, ok: true, cycle: null }], 5000);
+    expect(describeSession(data, 10_000 + SESSION_HEARTBEAT_LATE_MS + 5000, 0)).toContain("is loaded in the player, which is stopped");
+    // Past the stale mark it is the old wording.
+    expect(describeSession(data, 10_000 + SESSION_WIDGET_STALE_MS + 1, 0)).toContain("it may be closed, scrolled away or the app backgrounded");
   });
 
   it("names the widget version, warns when it is older than the service, and explains a missing function", () => {

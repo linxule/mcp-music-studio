@@ -19,6 +19,8 @@ export interface SessionUpdateOutcome {
   applied: Extract<SessionEvent, { t: "applied" }> | null;
   /** Milliseconds since a player last checked in; null if none ever did. */
   widgetSeenMsAgo: number | null;
+  /** The state that check-in reported, before this update reached the player (absent before 0.10.2). */
+  widgetState?: string | null;
   /** Where the player's clock is now, and the cycle the update lands on. */
   estCycle: number | null;
   boundary: number | null;
@@ -153,6 +155,23 @@ const endedSession = (): CallToolResult => ({
   ],
 });
 
+/**
+ * The player was stopped when the update reached it. A stopped player has no
+ * bar to land on — Play starts it — so name none. If its last check-in said
+ * "playing", say so, or the model reads get-session's "playing" and this
+ * answer as a contradiction (claude.ai field test, 2026-10-03).
+ */
+function loadedStoppedReply(rev: number, outcome: SessionUpdateOutcome): string {
+  const text =
+    `Rev ${rev} arrived while the player was stopped, so there is no landing bar: it ${LOADED_STOPPED}.`;
+  if (outcome.widgetState !== "playing" || outcome.widgetSeenMsAgo === null) return text;
+  return (
+    text +
+    ` The player had reported "playing" ${Math.max(1, Math.round(outcome.widgetSeenMsAgo / 1000))} s before this update, so it stopped in between: ` +
+    "the listener pressed Stop, or the player was suspended (on a phone: the app in the background or the screen locked)."
+  );
+}
+
 export function buildUpdateSessionResult(
   id: string,
   outcome: SessionUpdateOutcome | null | "ended",
@@ -181,7 +200,7 @@ export function buildUpdateSessionResult(
           type: "text",
           text:
             (applied.cycle === null
-              ? `Rev ${pattern.rev} ${LOADED_STOPPED}.`
+              ? loadedStoppedReply(pattern.rev, outcome)
               : `Rev ${pattern.rev} applied — it takes over at cycle ${cyc(applied.cycle)}.`) +
             (applied.report ? ` ${applied.report}` : "") +
             ` get-session(session: "${id}") shows what the human does next.`,

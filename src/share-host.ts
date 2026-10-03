@@ -26,6 +26,7 @@
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { createWidgetToolRelay } from "./webmcp-relay";
 import { shareRelayAnnotations, shareRelayExclude } from "./share-relay-policy";
+import { enterStageFullscreen, leaveStageFullscreen, stageIsFullscreen, VIEWPORT_FILL_CLASS } from "./share-fullscreen";
 
 interface ShareInit {
   code: string;
@@ -218,22 +219,28 @@ async function mount(): Promise<void> {
   };
   bridge.onrequestdisplaymode = async ({ mode }) => {
     if (mode === "fullscreen") {
-      try {
-        await stage.requestFullscreen?.();
-        displayMode = "fullscreen";
-      } catch {
-        displayMode = "inline"; // no activation, or the browser refused
-      }
+      // Native where the browser allows it; else the stage fills the viewport
+      // (iPhone Safari has no Element Fullscreen API).
+      await enterStageFullscreen(stage, document);
+      displayMode = "fullscreen";
     } else if (mode === "inline") {
-      if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined);
+      await leaveStageFullscreen(stage, document);
       displayMode = "inline";
     }
     bridge.setHostContext(hostContext());
     return { mode: displayMode };
   };
   document.addEventListener("fullscreenchange", () => {
-    displayMode = document.fullscreenElement ? "fullscreen" : "inline";
+    displayMode = stageIsFullscreen(stage, document) ? "fullscreen" : "inline";
     bridge.setHostContext(hostContext());
+  });
+  // Escape leaves the viewport fill too (native fullscreen handles its own).
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !stage.classList.contains(VIEWPORT_FILL_CLASS)) return;
+    void leaveStageFullscreen(stage, document).then(() => {
+      displayMode = "inline";
+      bridge.setHostContext(hostContext());
+    });
   });
   new ResizeObserver(() => bridge.setHostContext(hostContext())).observe(stage);
 

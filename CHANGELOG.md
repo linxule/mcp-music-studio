@@ -2,6 +2,15 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## Unreleased
+
+From a field test of 0.10.1 in the Claude iPhone app and Safari.
+
+- **Fixed — "playing" over "stopped".** When an update reached a stopped player, `get-session` went on saying "rev 1 is loaded in the player, which is stopped", even after Play was pressed and the line above said "playing". It now says Play has started it since. The session log describes the update in the past tense: it arrived while the player was stopped.
+- **`update-session` explains a stopped player.** It says there is no landing bar, because a stopped player starts when Play is pressed. If the player said "playing" just before, the reply adds that it stopped in between: someone pressed Stop, or the phone suspended it (an app in the background or a locked screen).
+- **A player that has gone quiet is not guessed at.** A playing player checks in at least every 20 seconds. When it has been silent for more than 30, `get-session` says when it last reported playing, and that it is probably suspended, instead of estimating a current bar.
+- **Fullscreen works on iPhone.** iPhone Safari has no fullscreen for a page element, so the button did nothing on shared player pages. The player now fills the browser window instead. In a chat whose app keeps the player inline, the player says so instead of doing nothing.
+
 ## 0.10.1 — October 2, 2026
 
 From a field test in claude.ai, where the listen loop ran three full handovers inside one reply.

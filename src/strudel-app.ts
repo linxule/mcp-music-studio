@@ -3070,6 +3070,10 @@ async function toggleDisplayMode(): Promise<void> {
     if (result?.mode) displayMode = result.mode;
     syncFullscreenButton();
     syncFrameSize();
+    // A host may answer with the mode it kept: say so, or the button looks broken.
+    if (wanted === "fullscreen" && displayMode !== "fullscreen") {
+      setStatus("This host kept the inline layout — fullscreen isn't available here", "normal");
+    }
     // Fullscreen changes the frame, so the backdrop needs a new backing store.
     requestAnimationFrame(syncVizCanvasSize);
   } catch {
