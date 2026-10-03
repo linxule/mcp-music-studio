@@ -51,14 +51,45 @@ export function spliceAt<P extends PatternLike>(
   boundary: number,
   stack: (...patterns: PatternLike[]) => P,
   now = -Infinity,
+  onBoundary?: () => void,
 ): P {
   const before = settle(previous, now);
-  const spliced = stack(
+  let spliced = stack(
     before.filterHaps((hap) => hapStart(hap) < boundary),
     next.filterHaps((hap) => hapStart(hap) >= boundary),
   );
+  if (onBoundary) spliced = withBoundaryHook(spliced, boundary, onBoundary);
   halves.set(spliced as object, { before, after: next, boundary });
   return spliced;
+}
+
+/**
+ * Call `hook` once, BEFORE the first query whose span reaches past `boundary`
+ * — i.e. before the scheduler computes the first events of the new half, so
+ * state the new pattern reads (remember()) is in place for its first bar. The
+ * last events of the old half in that same query see it too: at most one
+ * scheduler tick early, never a bar.
+ */
+function withBoundaryHook<P extends PatternLike>(pattern: P, boundary: number, hook: () => void): P {
+  const Ctor = (pattern as unknown as { constructor?: new (q: (state: any) => unknown) => P }).constructor;
+  const query = (pattern as unknown as { query?: (state: any) => unknown }).query;
+  if (typeof Ctor !== "function" || typeof query !== "function") {
+    hook(); // not a Strudel pattern we can wrap: apply now rather than never
+    return pattern;
+  }
+  let fired = false;
+  const steps = (pattern as unknown as { _steps?: unknown })._steps;
+  return new (Ctor as unknown as new (q: (state: any) => unknown, steps?: unknown) => P)((state: any) => {
+    if (!fired && Number(state?.span?.end) > boundary) {
+      fired = true;
+      try {
+        hook();
+      } catch {
+        /* the hook never breaks the music */
+      }
+    }
+    return query.call(pattern, state);
+  }, steps);
 }
 
 export interface SwapOutcome {

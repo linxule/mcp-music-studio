@@ -227,6 +227,20 @@ describe("remember() — transactions at the swap's bar", () => {
     expect(old.value.kick).toEqual([1, 0, 0, 1]); // one store: everyone hears the bar's state
   });
 
+  it("a merge applied at the swap's bar reports that bar, not the clock's lookahead", () => {
+    const h = harness();
+    h.run(() => {
+      h.g.remember("drums", GRID);
+    });
+    const token = h.run(() => {
+      h.g.remember("drums", GRID, { merge: (v: any) => { v.kick[3] = 1 }, label: "kick on 4" });
+    }, { deferState: true });
+    h.stage.activateState(token, 8);
+    const ai = h.changes.filter((c) => c.by === "ai");
+    expect(ai).toHaveLength(1);
+    expect(ai[0]).toMatchObject({ text: "kick on 4", cycle: 8 });
+  });
+
   it("listener writes between commit and activation survive the merge (it applies to the latest value)", () => {
     const h = harness();
     let d: any;

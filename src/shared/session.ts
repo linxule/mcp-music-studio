@@ -583,6 +583,7 @@ export const WIDGET_FUNCTION_SINCE: Readonly<Record<string, string>> = {
   say: "0.7.0", onFrame: "0.7.0", onEvent: "0.7.0", onTap: "0.7.0", cycle: "0.7.0",
   fader: "0.8.0", pad: "0.8.0", xy: "0.8.0",
   tilt: "0.9.0", mic: "0.9.0",
+  remember: "0.11.0", openStage: "0.11.0",
 };
 
 /** -1 / 0 / 1 for dotted numeric versions; unknown parts compare as 0. */
@@ -801,7 +802,7 @@ export function describeSession(data: SessionData, now: number, since = data.rea
     const label = last.text ? `: "${last.text}"` : "";
     lines.push(
       first.by === "ai"
-        ? `- your merge applied to '${first.name}'${label}${times}.`
+        ? `- ${last.cycle !== null ? `cycle ${cyc(last.cycle)}: ` : ""}your merge applied to '${first.name}'${label}${times}.`
         : `- ${atCycle(last.cycle)}: the human changed '${first.name}'${label}${times}.`,
     );
     kept = [];

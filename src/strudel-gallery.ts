@@ -1121,6 +1121,79 @@ osc(8, 0.08, 1.2).kaleid(4).color(1, 0.45, 0.2)
 stack(deckA, deckB)
   .delay(echo.fmap(e => e * 0.5)).delaytime(0.375).delayfeedback(0.55)`;
 
+const TRADE_A_BEAT = String.raw`setcps(0.5)
+await initHydra()
+
+// ════════ TRADE A BEAT — one grid, two players ════════
+// Tap a cell to switch it on or off. In a live session Claude answers with a
+// merge on the same remember() (topic "interactive"): its cells land on the
+// next bar, on top of yours, and a re-run never erases what you tapped.
+
+const ROWS = ['bd', 'sd', 'hh', 'oh', 'cp']
+const NAMES = ['kick', 'snare', 'hat', 'open hat', 'clap']
+const STEPS = 8
+const hits = row => row.map((v, i) => (v ? i + 1 : 0)).filter(Boolean).join(' ') || 'none'
+const beat = remember('beat', {
+  bd: [1, 0, 0, 0, 1, 0, 1, 0],
+  sd: [0, 0, 1, 0, 0, 0, 1, 0],
+  hh: [1, 1, 1, 1, 1, 1, 1, 1],
+  oh: [0, 0, 0, 0, 0, 0, 0, 0],
+  cp: [0, 0, 0, 0, 0, 0, 0, 0],
+}, { describe: v => ROWS.map((r, j) => NAMES[j] + ' on ' + hits(v[r])).join('; ') })
+
+const cvs = document.createElement('canvas')
+cvs.width = 800
+cvs.height = 450
+const g = cvs.getContext('2d')
+const W = 800 / STEPS
+const H = 450 / ROWS.length
+const flash = ROWS.map(() => Array(STEPS).fill(0))
+
+onTap(t => {
+  const col = Math.min(STEPS - 1, Math.floor(t.x * STEPS))
+  const j = Math.min(ROWS.length - 1, Math.floor(t.y * ROWS.length))
+  const r = ROWS[j]
+  beat.update(v => { v[r][col] = v[r][col] ? 0 : 1 },
+    v => NAMES[j] + (v[r][col] ? ' on' : ' off') + ' at step ' + (col + 1))
+  flash[j][col] = 1
+})
+onFrame(f => {
+  const now = Math.floor(f.cycle * STEPS) % STEPS
+  g.fillStyle = 'rgba(0,0,0,0.35)'
+  g.fillRect(0, 0, 800, 450)
+  ROWS.forEach((r, j) => beat.value[r].forEach((v, i) => {
+    flash[j][i] *= 0.9
+    const lit = f.playing && i === now
+    g.fillStyle = v ? (lit ? 'white' : 'hsl(' + (330 - j * 40) + ', 80%, 62%)') : (lit ? '#3a3a3a' : '#141414')
+    g.fillRect(i * W + 5, j * H + 5, W - 10, H - 10)
+    if (flash[j][i] > 0.05) {
+      g.strokeStyle = 'rgba(255,255,255,' + flash[j][i] + ')'
+      g.lineWidth = 6
+      g.strokeRect(i * W + 5, j * H + 5, W - 10, H - 10)
+    }
+  }))
+  g.fillStyle = 'rgba(255,255,255,0.6)'
+  g.font = '20px monospace'
+  NAMES.forEach((n, j) => g.fillText(n, 12, j * H + 26))
+})
+s1.init({ src: cvs, dynamic: true })
+src(s1).modulate(osc(3, 0.05), 0.004).out(o0)
+
+// Each row plays its remembered steps; the bass opens up with every kick you add.
+const steps = r => signal(t => beat.value[r][Math.floor(Number(t) * STEPS + 1e-6) % STEPS]).segment(STEPS)
+const kicks = () => beat.value.bd.filter(Boolean).length
+openStage()
+stack(
+  s('bd').bank('RolandTR909').mask(steps('bd')),
+  s('sd').bank('RolandTR909').mask(steps('sd')).gain(0.8),
+  s('hh').bank('RolandTR909').mask(steps('hh')).gain(0.45),
+  s('oh').bank('RolandTR909').mask(steps('oh')).gain(0.4),
+  s('cp').bank('RolandTR909').mask(steps('cp')).gain(0.7).room(0.3),
+  note("<c2 c2 ab1 bb1>").s('sawtooth').struct("x ~ x ~ ~ x ~ x")
+    .lpf(signal(() => 220 + kicks() * 160)).lpq(6).gain(0.35),
+  note("<[c3,eb3,g3] [c3,eb3,g3] [ab2,c3,eb3] [bb2,d3,f3]>").s('triangle').gain(0.12).room(0.6)
+)`;
+
 export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
   {
     id: "first-light",
@@ -1215,9 +1288,23 @@ export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
     ],
     code: TWO_DECKS,
   },
+  {
+    id: "trade-a-beat",
+    title: "Trade a Beat — one grid, two players",
+    summary:
+      "A drum grid drawn into the visuals: the listener taps cells on and off, Claude answers on the same grid with a merge that lands on the next bar, and nothing either of them added is lost when the code changes. The bass opens up with every kick.",
+    teaches: [
+      "remember(): named state that survives every re-run, changed by taps, read by patterns through signal()",
+      "describe: how the whole grid reads in get-session",
+      "a merge for Claude's turn: assign cells, it runs once on the bar",
+      "a drawn control: hit-test onTap into big cells, clamp the index, openStage() so taps reach the drawing",
+      "state that steers sound: the bass filter follows how many kicks are on",
+    ],
+    code: TRADE_A_BEAT,
+  },
 ];
 
-export const GALLERY_IDS = ["first-light", "duet", "petri-dish", "lossy-terminal", "signal-corruption", "weather-machine", "two-decks"] as const;
+export const GALLERY_IDS = ["first-light", "duet", "petri-dish", "lossy-terminal", "signal-corruption", "weather-machine", "two-decks", "trade-a-beat"] as const;
 
 /** The plain-text index get-strudel-guide returns for topic "gallery". */
 export function galleryIndex(): string {

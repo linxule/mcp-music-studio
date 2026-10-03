@@ -2,6 +2,12 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## Unreleased
+
+- **Controls the AI draws: `remember()`.** Pattern code can keep named state, such as which cells of a drum grid are on, that survives every change to the code. A tap that changes it reaches a live session in the piece's own words ("clap on at step 4"), and `get-session` shows the whole state as data. The AI answers with a `merge`, a small edit that lands on the swap's bar on top of the listener's taps and runs once. `openStage()` shows the visuals full-size so taps reach a drawing. The guide's `interactive` topic has the recipe.
+- **New gallery piece: Trade a Beat.** A drum grid drawn into the visuals that the listener and the AI play together.
+- A tap that changed remembered state is logged once, as that change, not also as a raw tap.
+
 ## 0.10.2 — October 3, 2026
 
 From a field test of 0.10.1 in the Claude iPhone app and Safari.

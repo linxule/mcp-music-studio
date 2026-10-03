@@ -282,7 +282,8 @@ export interface RememberStore {
   /** It succeeded. `defer`: its state waits for activate(token); otherwise it applies now. */
   commit(token: number, defer: boolean): void;
   /** Apply a committed evaluation's staged state (its swap reached the bar). */
-  activate(token: number): void;
+  /** `atCycle`: the bar it lands on (a swap's boundary), reported instead of the clock's lookahead. */
+  activate(token: number, atCycle?: number): void;
   /** It failed or was cancelled: drop its staged state. */
   rollback(token: number): void;
   /** Declare a name in the running evaluation (or, outside one, at once). */
@@ -343,9 +344,12 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
   const fits = (entry: Entry | undefined, decl: Decl): entry is Entry =>
     !!entry && entry.versionKey === decl.versionKey && entry.type === decl.type;
 
+  // Set while a deferred activation runs: the scheduler reaches the bar a
+  // little ahead of the clock, so the clock would read e.g. 1.8 for bar 2.
+  let landingCycle: number | null = null;
   const announce = (entry: Entry, by: RememberBy, label: string | null): void => {
     try {
-      hooks.observe?.({ name: entry.name, by, text: label ?? entry.text ?? entry.json.slice(0, MAX_REMEMBER_TEXT), cycle: hooks.cycle() });
+      hooks.observe?.({ name: entry.name, by, text: label ?? entry.text ?? entry.json.slice(0, MAX_REMEMBER_TEXT), cycle: landingCycle ?? hooks.cycle() });
     } catch {
       /* an observer never stops the piece */
     }
@@ -472,11 +476,16 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
       if (defer) deferred = staged;
       else activateStaged(staged, true);
     },
-    activate(token) {
+    activate(token, atCycle) {
       if (!deferred || deferred.token !== token) return;
       const staged = deferred;
       deferred = null;
-      activateStaged(staged, true);
+      landingCycle = typeof atCycle === "number" && Number.isFinite(atCycle) ? atCycle : null;
+      try {
+        activateStaged(staged, true);
+      } finally {
+        landingCycle = null;
+      }
     },
     rollback(token) {
       if (running?.token === token) running = null;

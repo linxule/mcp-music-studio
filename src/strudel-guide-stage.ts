@@ -364,6 +364,65 @@ stack(
   way reaches the edge.
 - The mic is analysed for loudness only — never recorded or sent anywhere.
 
+## Draw your own controls — remember()
+fader(), pad() and xy() put native controls on the strip. For anything else — a
+step grid, a chord wheel, a board — draw it yourself and keep its state in
+remember(): named state that survives every re-run, that the listener changes by
+tapping, and that a live session reports to you in words.
+
+await initHydra()
+const ROWS = ['bd', 'sd', 'hh', 'cp']
+const STEPS = 8
+const hits = row => row.map((v, i) => (v ? i + 1 : 0)).filter(Boolean).join(' ') || 'none'
+const beat = remember('beat', {
+  bd: [1, 0, 0, 0, 1, 0, 0, 0], sd: [0, 0, 1, 0, 0, 0, 1, 0],
+  hh: [1, 1, 1, 1, 1, 1, 1, 1], cp: [0, 0, 0, 0, 0, 0, 0, 0],
+}, { describe: v => ROWS.map(r => r + ' on ' + hits(v[r])).join('; ') })
+openStage()
+const cvs = document.createElement('canvas')
+cvs.width = 800
+cvs.height = 450
+const g = cvs.getContext('2d')
+onTap(t => {
+  const col = Math.min(STEPS - 1, Math.floor(t.x * STEPS))
+  const row = ROWS[Math.min(ROWS.length - 1, Math.floor(t.y * ROWS.length))]
+  beat.update(v => { v[row][col] = v[row][col] ? 0 : 1 },
+    v => row + (v[row][col] ? ' on' : ' off') + ' at step ' + (col + 1))
+})
+onFrame(f => {
+  const w = 800 / STEPS, h = 450 / ROWS.length
+  const now = Math.floor(f.cycle * STEPS) % STEPS
+  g.fillStyle = 'black'
+  g.fillRect(0, 0, 800, 450)
+  ROWS.forEach((r, j) => beat.value[r].forEach((v, i) => {
+    g.fillStyle = v ? (i === now ? 'white' : '#e8a') : (i === now ? '#444' : '#1a1a1a')
+    g.fillRect(i * w + 6, j * h + 6, w - 12, h - 12)
+  }))
+})
+s1.init({ src: cvs, dynamic: true })
+src(s1).out(o0)
+const steps = r => signal(t => beat.value[r][Math.floor(Number(t) * STEPS + 1e-6) % STEPS]).segment(STEPS)
+stack(...ROWS.map(r => s(r).bank('RolandTR909').mask(steps(r))))
+
+- remember(name, start, options) returns a handle. handle.value is the current
+  state and is read-only: change it with handle.update(fn, label) or
+  handle.set(value, label). Plain data only: numbers, strings, booleans,
+  arrays, objects — up to 4 KB.
+- A re-run keeps the stored state, so your next update never erases what the
+  listener tapped. options.version: change it to start over from start.
+- Change it inside onTap and the change is the listener's: a live session logs
+  your label ("sd on at step 4") and get-session(wait) wakes on it.
+- describe: value => text is how you read the whole state in get-session.
+- Taps only: a press is a tap, a drag is a scroll. Draw big cells — 8 columns
+  is the most a phone can hit. Clamp the index: a tap on the right edge is x = 1.
+- openStage() asks the player to show the stage, where taps reach your drawing
+  (in the normal view the code covers it). Never make it the last line: the
+  last expression is what plays.
+- Build labels and describe text with single quotes and +. A double-quoted
+  string or a template string becomes mini-notation here, and a template
+  string's placeholders are dropped without an error.
+- remember and controls share names: one name, one of them.
+
 ## Live sessions — playing back-to-back
 play-live-pattern with session: true keeps ONE player open, and you get two
 tools for it:
@@ -401,6 +460,23 @@ The listener can close the set with End session on the player: get-session then
 says the session ended (a wait returns at once), update-session no longer reaches
 the player, and its last pattern keeps playing on its own. To play on, open a new
 session.
+
+## Your turn on the same grid — merge
+In a live session, answer by editing the state, not by replacing it. Ship the
+same code with a merge. It runs ONCE, on the bar your update lands on, against
+whatever the listener has tapped by then:
+
+const beat = remember('beat', start, {
+  describe: v => ...,
+  merge: v => { v.hh = [1, 0, 1, 0, 1, 0, 1, 1]; v.cp[6] = 1 },
+  label: 'hats on the off-beats, a clap on 7',
+})
+
+- Assign cells (v.cp[6] = 1); don't toggle — you can't see a tap that lands
+  between your read and your bar.
+- Re-running the same code does not run the merge again; a NEW merge does.
+- get-session shows "your merge applied to 'beat': …" when it lands, and its
+  "Remembered state" block holds every name's value as JSON.
 
 ## Ideas that work
 - A simulation composes: Game of Life, a flock, a random walk — make each

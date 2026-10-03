@@ -25,7 +25,19 @@ In chat hosts that cannot read a widget's context directly (claude.ai is one), a
 - `tilt()` follows the device's motion and `mic()` the input loudness. Where the page cannot use them, they turn into an xy pad and a fader you play by hand, so a piece works in a chat and on a phone alike.
 - In a live session, every control move is logged for the AI to read.
 
-The guide's `interactive` topic has worked examples, and the gallery has two pieces built on them: Weather Machine and Two Decks.
+The guide's `interactive` topic has worked examples, and the gallery has three pieces built on them: Weather Machine, Two Decks and Trade a Beat.
+
+## Controls the AI draws
+
+The AI can also draw its own controls into the visuals, such as a step grid, a chord wheel or a game board, instead of adding fixed buttons to the player.
+
+- `remember('name', start)` holds the piece's state, for example which grid cells are on. The state survives every change to the code, so the AI's next update never erases what you tapped.
+- Tap a cell and the piece changes the state. In a live session the AI reads your change in the piece's own words, such as "clap on at step 4", and the whole state as data.
+- The AI answers on the same grid with a `merge`: a small edit, such as "open hat on step 8", that lands on the next bar on top of what you tapped. It runs once, even if the same code is run again.
+- `openStage()` shows the visuals full-size so your taps reach the drawing. Press Code or Escape to go back to the code.
+- Drawn controls take taps, not drags. On a phone, 8 columns is about the most you can hit.
+
+The guide's `interactive` topic has the recipe, and the gallery piece Trade a Beat is a drum grid you and the AI play together.
 
 ## Tools on the player itself
 

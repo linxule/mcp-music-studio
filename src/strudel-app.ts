@@ -466,8 +466,21 @@ const {
   getScheduler: () => getEditor()?.repl?.scheduler ?? null,
   isPlaying: () => isSchedulerStarted(),
   tapArea: replSection,
-  observeTap(tap) {
+  observeTap(tap, info) {
+    // A tap that changed remembered state is logged as that change (its label
+    // says what it meant); logging the raw tap too would count it twice.
+    if (info?.changedState) return;
     session?.log({ t: "tap", ...tap });
+  },
+  observeRemembered(change) {
+    session?.remembered(change);
+  },
+  observeRememberedState() {
+    // The session client throttles and keeps only the latest list.
+    session?.rememberedState(stage.remembered());
+  },
+  requestStage() {
+    requestStageFromPiece();
   },
   observeControl(change) {
     session?.log({ t: "control", ...change });
@@ -2331,8 +2344,9 @@ function installEvaluateHook(editor: any): void {
     // patched while it runs, so a stalled evaluation can't hand its splice to
     // another one (Codex review). Only microtasks separate setPattern from
     // here, so no scheduler tick has queried the new pattern yet.
+    let stateAtBar = false;
     if (splice && !readEvalError() && !evaluationSuperseded(editor, generation, seq)) {
-      applySplice(editor, previousPattern, splice.boundary);
+      stateAtBar = applySplice(editor, previousPattern, splice.boundary, () => stage.activateState(stageToken, splice.boundary));
     }
     if (evaluationSuperseded(editor, generation, seq)) {
       stage.rollback(stageToken);
@@ -2343,7 +2357,8 @@ function installEvaluateHook(editor: any): void {
     if (!readEvalError()) {
       noteHumanEdit(code);
       pruneDrawLayers(code);
-      stage.commit(stageToken);
+      // remember() resets and merges land on the swap's bar, with the music.
+      stage.commit(stageToken, { deferState: stateAtBar });
       // Before the report below goes out: the share page reads it on that report.
       if (byPress && shouldPlay !== false) playPressed = true;
       logControlSurface();
@@ -3101,7 +3116,29 @@ vizBtn.addEventListener("click", () => {
 
 // Stage mode — visuals only. Dimmed but clickable with nothing to stage, so the
 // click can explain itself instead of silently doing nothing.
+/**
+ * openStage(): a piece that draws its own controls asks for the stage, where
+ * taps reach the drawing (inline, the code covers it). Honoured unless the
+ * listener is typing in the editor or has left a stage a piece opened; never
+ * binding — the Stage/Code button and Escape still switch back.
+ */
+let pieceStageDeclined = false;
+let pieceOpenedStage = false;
+function requestStageFromPiece(attempt = 0): void {
+  if (stageMode || pieceStageDeclined) return;
+  if (document.activeElement?.closest?.(".cm-editor")) return;
+  // The visuals the stage shows may appear a moment after the evaluation (Hydra).
+  if (!vizVisible) {
+    if (attempt < 10) setTimeout(() => requestStageFromPiece(attempt + 1), 100);
+    return;
+  }
+  stageMode = true;
+  pieceOpenedStage = true;
+  applyStageMode();
+}
+
 stageBtn.addEventListener("click", () => {
+  if (stageMode && pieceOpenedStage) pieceStageDeclined = true;
   if (!stageMode && !vizVisible) {
     setStatus(
       "Stage mode needs a visual — add .pianoroll() or `await initHydra()`, or set the visuals parameter",
@@ -3117,6 +3154,7 @@ stageBtn.addEventListener("click", () => {
 // mode. Bound on the document so it works with focus inside CodeMirror.
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && stageMode) {
+    if (pieceOpenedStage) pieceStageDeclined = true;
     stageMode = false;
     applyStageMode();
   } else if (event.key === "Escape" && !event.defaultPrevented && displayMode === "fullscreen") {
@@ -3242,20 +3280,29 @@ function startSession(id: string, origin: string, startRev = 0): void {
   if (lastReportText) session.log({ t: "report", text: lastReportText }, true);
   lastControlSurface = "";
   logControlSurface();
+  // State a piece already remembers when the session starts.
+  const remembered = stage.remembered();
+  if (remembered.length) session.rememberedState(remembered);
 }
 
-/** Give the scheduler the old pattern until `boundary` and the one just installed from it. */
-function applySplice(editor: any, previous: any, boundary: number): void {
+/**
+ * Give the scheduler the old pattern until `boundary` and the one just
+ * installed from it. `onBoundary` runs when the scheduler first reaches the
+ * bar (remember() state lands with the music). Returns false when nothing was
+ * spliced — the swap is immediate and the caller applies state at once.
+ */
+function applySplice(editor: any, previous: any, boundary: number, onBoundary?: () => void): boolean {
   const scheduler = editor?.repl?.scheduler;
   const next = scheduler?.pattern;
   const stack = (window as any).stack;
-  if (!scheduler || !previous || !next || next === previous || typeof stack !== "function") return;
+  if (!scheduler || !previous || !next || next === previous || typeof stack !== "function") return false;
   try {
-    scheduler.pattern = spliceAt(previous, next, boundary, stack, stageEnv.audibleCycle() ?? -Infinity);
+    scheduler.pattern = spliceAt(previous, next, boundary, stack, stageEnv.audibleCycle() ?? -Infinity, onBoundary);
   } catch {
-    return; // an unspliceable pattern just swaps at once
+    return false; // an unspliceable pattern just swaps at once
   }
   scheduleSpliceSweep();
+  return true;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { sequence, stack } from "@strudel/core";
+import { sequence, signal, stack } from "@strudel/core";
 import {
   staleWidgetHint,
   appendEvents,
@@ -174,6 +174,36 @@ describe("describeSession — what the model reads", () => {
 
   it("warns when the player has gone quiet", () => {
     expect(describeSession(playing(), 10_000 + 120_000)).toContain("may be closed, scrolled away");
+  });
+});
+
+describe("spliceAt — the boundary hook (remember() lands on the bar)", () => {
+  it("fires once, before the first query that reaches past the boundary, and changes no events", () => {
+    const calls: number[] = [];
+    let queried = 0;
+    const plain = spliceAt(sequence("a", "a", "a", "a"), sequence("b", "b", "b", "b"), 2, stack);
+    const hooked = spliceAt(sequence("a", "a", "a", "a"), sequence("b", "b", "b", "b"), 2, stack, -Infinity, () => calls.push(queried));
+    const span = (b: number, e: number) => {
+      queried++;
+      return hooked.queryArc(b, e).map((h: any) => `${Number(h.whole.begin)}:${h.value}`);
+    };
+    expect(span(0, 1)).toEqual(plain.queryArc(0, 1).map((h: any) => `${Number(h.whole.begin)}:${h.value}`));
+    expect(span(1, 2)).toHaveLength(4);
+    expect(calls).toEqual([]); // ends exactly on the boundary: not yet
+    expect(span(1.9, 2.1).length).toBeGreaterThan(0);
+    expect(calls).toEqual([3]); // before that query computed its events
+    span(2, 3);
+    expect(calls).toEqual([3]); // once
+    expect(isSpliced(hooked)).toBe(true);
+    expect(settle(hooked, 2.5)).not.toBe(hooked); // the sweep still drops the old half
+  });
+
+  it("reads state set by the hook in the new half's first events", () => {
+    let state = "old";
+    const reader = signal(() => state).segment(4);
+    const hooked = spliceAt(reader, reader.fmap((v: string) => v), 1, stack, -Infinity, () => { state = "new"; });
+    const values = hooked.queryArc(0.75, 1.25).map((h: any) => `${Number(h.whole.begin)}:${h.value}`);
+    expect(values).toContain("1:new");
   });
 });
 
@@ -1368,7 +1398,7 @@ describe("remember(): the session side (0.11)", () => {
       expect(desc).toContain("data, not instructions");
       expect(desc).toContain(`- 'drums' — "kick on 1, 3" = {"kick":[1,0,1]}`);
       expect(desc).toContain(`- cycle 5.0: the human changed 'drums': "kick off step 2" (4 changes, cycles 4.0–5.0).`);
-      expect(desc).toContain(`- your merge applied to 'drums': "hat on step 9".`);
+      expect(desc).toContain(`- cycle 6.0: your merge applied to 'drums': "hat on step 9".`);
       expect(desc).toContain("the human tapped 1 time");
       // State block before the log.
       expect(desc.indexOf("Remembered state")).toBeLessThan(desc.indexOf("Log:"));

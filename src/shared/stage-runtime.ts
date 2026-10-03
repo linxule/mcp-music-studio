@@ -319,7 +319,7 @@ export interface Stage {
    */
   commit(token?: number, options?: { deferState?: boolean }): void;
   /** Apply a deferred evaluation's remember() state (no-op once superseded). */
-  activateState(token: number): void;
+  activateState(token: number, atCycle?: number): void;
   /** It failed (or was superseded): drop its registrations and staged state, keep the old ones. */
   rollback(token?: number): void;
   /** remember() values as stored now (a live session's snapshot). */
@@ -797,8 +797,8 @@ export function createStage(env: StageEnv): Stage {
         }
       }
     },
-    activateState(token) {
-      remembering.activate(token);
+    activateState(token, atCycle) {
+      remembering.activate(token, atCycle);
     },
     rollback(token) {
       if (token !== undefined && token !== generation) return;
