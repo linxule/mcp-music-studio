@@ -2,6 +2,10 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## Unreleased
+
+- **"Ask about selection" replaces the passage panel in chat apps.** The "Work on a passage" panel could send a question but never show an answer there, because chat apps don't call the player's own tools. Chat apps now get one button, shown only while music is selected, that sends the selection and its line numbers to the chat with a question (or copies it where the app can't send messages). In a live session the message reminds the AI it can answer with `update-session`. The full panel stays in the local development host, which does call those tools.
+
 ## 0.10.1 — October 2, 2026
 
 From a field test in claude.ai, where the listen loop ran three full handovers inside one reply.

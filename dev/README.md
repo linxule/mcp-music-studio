@@ -153,7 +153,13 @@ WebMCP page still has nine. Apply rechecks the request and current draft, valida
 the assembled source, and uses the same source/settings Undo history as direct
 edits. Source or sound-setting changes make the review stale.
 
-Ordinary embedded widgets have a **Work on a passage** panel with a question,
+Since 0.10.2 the full panel below appears only in this dev host (`MusicStudioDevHost`,
+`FULL_REVIEW_HOSTS` in `src/studio-review-panel.ts`), the one host that calls the
+review tools. Every other host (claude.ai, the share page) gets one **Ask about
+selection** button, shown while music is selected, that sends the selection to the
+chat as plain text (or copies it) and creates no shared review.
+
+Embedded widgets in this host have a **Work on a passage** panel with a question,
 selected source, explanation/proposal, explicit Apply, and Undo. Copy for chat
 always has a text fallback; Send question to chat appears only when the host
 supports messages. Manual proposal entry also works when the host cannot route

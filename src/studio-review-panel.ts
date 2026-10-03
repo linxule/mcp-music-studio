@@ -1,13 +1,48 @@
 import type { App } from "@modelcontextprotocol/ext-apps";
 import type { StudioSession, StudioState } from "./studio-session";
 import type { SharedReview } from "./studio-review";
-import { chatHandoff } from "./studio-handoff";
+import { askAboutSelectionMessage, chatHandoff, lineRange } from "./studio-handoff";
 import "./studio-review-panel.css";
 
-/** A view of the widget's session-owned review, never a second review store. */
+/**
+ * Hosts that call the widget's review tools (explain-selection / suggest-edit)
+ * and so can fill the full panel's proposal half. No chat host does: claude.ai
+ * never calls widget app tools (ext-apps #797), and the share page withholds
+ * them from WebMCP (RELAY_EXCLUDED_TOOLS). Only the local dev harness does.
+ */
+export const FULL_REVIEW_HOSTS: ReadonlySet<string> = new Set(["MusicStudioDevHost"]);
+
+/** The full passage panel only where a host drives the review tools; one button elsewhere. */
+export function reviewPanelMode(hostName: string | undefined): "full" | "compact" {
+  return hostName !== undefined && FULL_REVIEW_HOSTS.has(hostName) ? "full" : "compact";
+}
+
+/**
+ * Passage review in a widget. The host is known only after connect(), and both
+ * widgets install this before connecting, so the choice waits for the handshake.
+ */
 export function installStudioReviewPanel(app: App, session: StudioSession): void {
   // The standalone page owns the surrounding controls and isolated preview.
   if (document.documentElement.dataset.studio) return;
+  let decided = false;
+  const decide = () => {
+    const host = app.getHostVersion();
+    if (decided || !host) return;
+    decided = true;
+    if (reviewPanelMode(host.name) === "full") installFullReviewPanel(app, session);
+    else installAskAboutSelection(app, session);
+  };
+  decide();
+  if (decided) return;
+  const connect = app.connect.bind(app);
+  app.connect = (async (...args: Parameters<App["connect"]>) => {
+    await connect(...args);
+    decide();
+  }) as App["connect"];
+}
+
+/** A view of the widget's session-owned review, never a second review store. */
+function installFullReviewPanel(app: App, session: StudioSession): void {
   const panel = document.createElement("details");
   panel.id = "studio-review-panel";
   panel.className = "studio-review-panel";
@@ -209,4 +244,155 @@ export function installStudioReviewPanel(app: App, session: StudioSession): void
   for (const event of ["input", "change", "click", "music-studio-draft-changed"]) document.addEventListener(event, scheduleRead, { signal, capture: true });
   panel.addEventListener("toggle", () => { if (panel.open) void read().catch(error => notice(String(error), true)); }, { signal });
   session.onDispose(() => { ++intent; controller.abort(); clearTimeout(syncTimer); unsubscribe(); panel.remove(); });
+}
+
+const ASK_LABEL_HTML = `Ask<span class="ask-selection-more"> about selection</span>`;
+const ASK_FEEDBACK_MS = 2500;
+
+/**
+ * Chat hosts: one button, shown only while music is selected, that sends the
+ * selection to the chat with a question (or copies it where the host has no
+ * ui/message). No shared review is created, so nothing can go stale.
+ */
+function installAskAboutSelection(app: App, session: StudioSession): void {
+  const live = session.mode === "live";
+  // Live: beside Send to chat / Pass in the control row. Score: in the toolbar.
+  const anchor = document.getElementById(live ? "send-btn" : "toolbar");
+  if (!anchor) return;
+  const controller = new AbortController();
+  const { signal } = controller;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "ask-selection-btn";
+  button.className = live ? "control-btn ask-selection-btn" : "toolbar-btn toolbar-btn-text ask-selection-btn";
+  button.title = "Send the selected music to the chat and ask about it";
+  button.setAttribute("aria-label", "Ask the chat about the selected music");
+  button.innerHTML = ASK_LABEL_HTML;
+  button.hidden = true;
+  const announce = document.createElement("span");
+  announce.className = "ask-selection-status";
+  announce.setAttribute("role", "status");
+  announce.setAttribute("aria-live", "polite");
+  if (live) anchor.after(button, announce);
+  else anchor.append(button, announce);
+
+  let latest: StudioState | undefined;
+  let busy = false;
+  let feedbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let fallbackBox: HTMLElement | null = null;
+
+  const selected = (state: StudioState | undefined) => (state?.selection?.text.trim() ? state.selection : null);
+  const show = () => {
+    // Stay visible while a message is going out or its feedback is showing.
+    button.hidden = !busy && feedbackTimer === undefined && !selected(latest);
+  };
+  const feedback = (text: string) => {
+    if (signal.aborted) return;
+    clearTimeout(feedbackTimer);
+    button.textContent = text;
+    announce.textContent = text;
+    button.hidden = false;
+    feedbackTimer = setTimeout(() => {
+      feedbackTimer = undefined;
+      if (signal.aborted) return;
+      button.innerHTML = ASK_LABEL_HTML;
+      announce.textContent = "";
+      show();
+    }, ASK_FEEDBACK_MS);
+  };
+  const read = async () => {
+    const next = await session({ action: "get" });
+    if (!signal.aborted) {
+      latest = next;
+      show();
+    }
+    return next;
+  };
+  const refresh = () => {
+    clearTimeout(refreshTimer);
+    // After the editor has applied the gesture to its own selection state.
+    refreshTimer = setTimeout(() => { void read().catch(() => {}); }, 120);
+  };
+  const message = (state: StudioState): string | null => {
+    const selection = selected(state);
+    if (!selection) return null;
+    const source = String(state.args[live ? "code" : "abcNotation"] ?? "");
+    return askAboutSelectionMessage({
+      mode: session.mode,
+      text: selection.text,
+      lines: lineRange(source, selection.from, selection.to),
+      // The End button is shown exactly while a live session is joined.
+      inSession: live && document.getElementById("end-btn")?.hidden === false,
+    });
+  };
+  const showFallback = (text: string) => {
+    if (signal.aborted) return;
+    fallbackBox?.remove();
+    const box = document.createElement("div");
+    box.className = "ask-selection-fallback";
+    box.innerHTML = `<label>Copy this into your chat</label><textarea readonly rows="5"></textarea><button type="button">Close</button>`;
+    const field = box.querySelector("textarea")!;
+    field.value = text;
+    box.querySelector("button")!.addEventListener("click", () => {
+      box.remove();
+      fallbackBox = null;
+      button.focus();
+    });
+    const main = document.querySelector("main");
+    if (main) main.insertBefore(box, main.querySelector("footer"));
+    else document.body.append(box);
+    fallbackBox = box;
+    field.focus();
+    field.select();
+    feedback("Copy it below");
+  };
+
+  button.addEventListener("click", () => {
+    if (busy) return;
+    if (app.getHostCapabilities()?.message) {
+      busy = true;
+      void (async () => {
+        try {
+          const text = message(await read());
+          if (!text) {
+            feedback("Select some code first");
+            return;
+          }
+          await app.sendMessage({ role: "user", content: [{ type: "text", text }] });
+          feedback("Sent to chat");
+        } catch {
+          feedback("Couldn't send");
+        } finally {
+          busy = false;
+          show();
+        }
+      })();
+      return;
+    }
+    // Copy inside the click itself: WebKit drops clipboard writes after an await.
+    const text = latest ? message(latest) : null;
+    if (!text) {
+      feedback("Select some code first");
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      showFallback(text);
+      return;
+    }
+    navigator.clipboard.writeText(text).then(() => feedback("Copied — paste it in the chat"), () => showFallback(text));
+  }, { signal });
+
+  for (const event of ["selectionchange", "select", "keyup", "pointerup", "input", "music-studio-draft-changed"]) {
+    document.addEventListener(event, refresh, { signal, capture: true });
+  }
+  void read().catch(() => {});
+  session.onDispose(() => {
+    controller.abort();
+    clearTimeout(feedbackTimer);
+    clearTimeout(refreshTimer);
+    button.remove();
+    announce.remove();
+    fallbackBox?.remove();
+  });
 }
