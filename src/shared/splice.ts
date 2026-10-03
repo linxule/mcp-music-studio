@@ -64,11 +64,12 @@ export function spliceAt<P extends PatternLike>(
 }
 
 /**
- * Call `hook` once, BEFORE the first query whose span reaches past `boundary`
- * — i.e. before the scheduler computes the first events of the new half, so
- * state the new pattern reads (remember()) is in place for its first bar. The
- * last events of the old half in that same query see it too: at most one
- * scheduler tick early, never a bar.
+ * Call `hook` once, right AFTER the first query whose span reaches past
+ * `boundary` has computed its events. remember() state is activated there:
+ * the old half's last notes in that query were computed with the old state,
+ * and the new half reads its own staged state (remember-store's preview) from
+ * its first query, so neither needs the store to change earlier. Every later
+ * query starts past the bar.
  */
 function withBoundaryHook<P extends PatternLike>(pattern: P, boundary: number, hook: () => void): P {
   const Ctor = (pattern as unknown as { constructor?: new (q: (state: any) => unknown) => P }).constructor;
@@ -80,6 +81,7 @@ function withBoundaryHook<P extends PatternLike>(pattern: P, boundary: number, h
   let fired = false;
   const steps = (pattern as unknown as { _steps?: unknown })._steps;
   return new (Ctor as unknown as new (q: (state: any) => unknown, steps?: unknown) => P)((state: any) => {
+    const haps = query.call(pattern, state);
     if (!fired && Number(state?.span?.end) > boundary) {
       fired = true;
       try {
@@ -88,7 +90,7 @@ function withBoundaryHook<P extends PatternLike>(pattern: P, boundary: number, h
         /* the hook never breaks the music */
       }
     }
-    return query.call(pattern, state);
+    return haps;
   }, steps);
 }
 

@@ -14,9 +14,37 @@ const INPUTS = [
   "src/shared/hap-number.ts",
   "src/shared/tts.ts",
   "src/shared/sample-url-fix.ts",
+  "src/shared/remember-store.ts",
 ];
 
+/** Every local file the bundle imports, transitively (what its hash must cover). */
+function bundledFiles(entry: string): string[] {
+  const seen = new Set<string>();
+  const visit = (file: string) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    const src = readFileSync(file, "utf8");
+    for (const m of src.matchAll(/^\s*(?:import|export)\b[^'"]*?from\s+["'](\.[^"']+)["']/gm)) {
+      const rel = m[1].replace(/\.js$/, "");
+      const dir = file.slice(0, file.lastIndexOf("/"));
+      const parts = `${dir}/${rel}`.split("/");
+      const out: string[] = [];
+      for (const p of parts) {
+        if (p === "..") out.pop();
+        else if (p !== ".") out.push(p);
+      }
+      visit(`${out.join("/")}.ts`);
+    }
+  };
+  visit(entry);
+  return [...seen].sort();
+}
+
 describe("share page stage runtime", () => {
+  it("hashes every file the bundle imports (a store-only change must make it stale — Codex review)", () => {
+    expect(bundledFiles("src/shared/stage-runtime-global.ts")).toEqual([...INPUTS].sort());
+  });
+
   it("is built from the current sources (run `bun scripts/build-stage-runtime.mjs`)", () => {
     const hash = createHash("sha256");
     for (const file of INPUTS) hash.update(readFileSync(file));

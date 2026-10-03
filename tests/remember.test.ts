@@ -210,7 +210,7 @@ describe("remember() — merges: the AI's targeted edit, once", () => {
 });
 
 describe("remember() — transactions at the swap's bar", () => {
-  it("deferred state applies only at activateState; the old pattern reads the old state until then", () => {
+  it("deferred state is stored only at activateState: the old pattern reads the old state until then, the new one its own", () => {
     const h = harness();
     let old: any;
     h.run(() => {
@@ -221,7 +221,8 @@ describe("remember() — transactions at the swap's bar", () => {
       next = h.g.remember("drums", GRID, { merge: (v: any) => { v.kick[3] = 1 } });
     }, { deferState: true });
     expect(old.value.kick).toEqual([1, 0, 0, 0]);
-    expect(next.value.kick).toEqual([1, 0, 0, 0]);
+    expect(next.value.kick).toEqual([1, 0, 0, 1]); // the new pattern hears its own merge from its first query
+    expect(h.stage.remembered()[0].json).toBe('{"kick":[1,0,0,0],"snare":[0,0,1,0]}');
     h.stage.activateState(token);
     expect(next.value.kick).toEqual([1, 0, 0, 1]);
     expect(old.value.kick).toEqual([1, 0, 0, 1]); // one store: everyone hears the bar's state
@@ -290,11 +291,11 @@ describe("remember() — transactions at the swap's bar", () => {
     const token = h.run(() => {
       d = h.g.remember("n", { v: 1 }, { merge: (x: any) => { x.v = 5 } });
       d.update((x: any) => { x.v += 1 });
-      expect(d.value).toEqual({ v: 1 }); // nothing applied mid-evaluation
+      expect(d.value).toEqual({ v: 6 }); // the evaluation reads its own merge and write
     }, { deferState: true });
-    expect(d.value).toEqual({ v: 1 });
+    expect(h.stage.remembered()).toEqual([]); // nothing stored before the bar
     h.stage.activateState(token);
-    expect(d.value).toEqual({ v: 2 }); // the top-level update ran on init (staged), then won
+    expect(d.value).toEqual({ v: 6 }); // the top-level update ran on top of the merge, then was stored
   });
 
   it("a retired evaluation's leftover callback cannot write into its replacement's state", () => {
@@ -374,7 +375,7 @@ describe("remember() — who changed it", () => {
     });
     h.tick(500);
     d.set([1, 0]);
-    expect(h.stage.remembered()).toEqual([{ name: "drums", json: "[1,0]", text: "1 on", rev: 2, at: 1500 }]);
+    expect(h.stage.remembered()).toEqual([{ name: "drums", json: "[1,0]", text: "1 on", rev: 2, at: 1500, declared: true }]);
   });
 });
 

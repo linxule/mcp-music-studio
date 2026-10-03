@@ -383,11 +383,17 @@ const SANDBOX_BROWSER = () => {
  *
  * remember() is the REAL store (src/shared/remember-store.ts), one per run:
  * the same validation, freezing and name rules as the widget. Its state is
- * staged while the top level runs and applied (merges once) before the test
- * frames — as the widget applies it at commit — so the pattern the validator
- * queries reads what the widget's would.
+ * staged while the top level runs and applied (merges once) right after it,
+ * before the test frames — as the widget applies it at commit — so a name a
+ * callback declares first applies at once there too, and the pattern the
+ * validator queries reads what the widget's would. `stageControl.commitState` is
+ * how the evaluator applies it (not a name in the piece's scope).
  */
-const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknown>>) => {
+const SANDBOX_STAGE = (
+  checks: Array<() => void>,
+  settling: Array<Promise<unknown>>,
+  stageControl: { commitState: () => void },
+) => {
   const requireFunction = (api: string, fn: unknown) => {
     if (typeof fn !== "function") throw new TypeError(`${api} needs a function, got ${typeof fn}`);
   };
@@ -401,7 +407,7 @@ const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknow
       active?.warnings.push(`remember: a merge failed, so this piece's state changes were skipped: ${(err as Error)?.message ?? String(err)}`),
   });
   remembering.begin(1);
-  let stateQueued = false;
+  stageControl.commitState = () => remembering.commit(1, false);
   // Names in one namespace with the controls (the widget throws on a clash too).
   const controlNames = new Set<string>();
   const claimControl = (api: string, name: unknown): void => {
@@ -457,13 +463,7 @@ const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknow
       if (controlNames.has(id)) {
         throw new TypeError(`remember('${id}'): '${id}' is already a control in this piece — give the state its own name`);
       }
-      const handle = remembering.declare(id, init, options);
-      if (!stateQueued) {
-        stateQueued = true;
-        // Before every test frame: callbacks read the applied state.
-        checks.unshift(() => remembering.commit(1, false));
-      }
-      return handle;
+      return remembering.declare(id, init, options);
     },
     openStage() {
       /* the validator has no stage to open */
@@ -781,10 +781,11 @@ export async function evalStrudelSandboxed(
     // use it; route it to the outer one, which runTraced is capturing.
     const stageChecks: Array<() => void> = [];
     const stageSettling: Array<Promise<unknown>> = [];
+    const stageControl = { commitState: () => {} };
     const sandbox = Object.assign(Object.create(null), C.strudelScope, {
       console: { log: console.log, info: console.info, warn: console.warn, error: console.error },
       ...SANDBOX_BROWSER(),
-      ...SANDBOX_STAGE(stageChecks, stageSettling),
+      ...SANDBOX_STAGE(stageChecks, stageSettling, stageControl),
       document: SANDBOX_DOCUMENT(),
       __musicStudioStageChecks: () => {
         for (const check of stageChecks.splice(0)) check();
@@ -809,6 +810,7 @@ export async function evalStrudelSandboxed(
     });
     // The stage test frames, under the same vm ceiling (a `while(true)` in a
     // draw loop must not wedge the validator either).
+    stageControl.commitState();
     if (stageChecks.length) {
       vm.runInContext("__musicStudioStageChecks()", context, {
         timeout: Math.max(50, timeoutMs - (Date.now() - started)),

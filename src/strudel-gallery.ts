@@ -1184,11 +1184,11 @@ const steps = r => signal(t => beat.value[r][Math.floor(Number(t) * STEPS + 1e-6
 const kicks = () => beat.value.bd.filter(Boolean).length
 openStage()
 stack(
-  s('bd').bank('RolandTR909').mask(steps('bd')),
-  s('sd').bank('RolandTR909').mask(steps('sd')).gain(0.8),
-  s('hh').bank('RolandTR909').mask(steps('hh')).gain(0.45),
-  s('oh').bank('RolandTR909').mask(steps('oh')).gain(0.4),
-  s('cp').bank('RolandTR909').mask(steps('cp')).gain(0.7).room(0.3),
+  s('bd').bank('RolandTR909').struct(steps('bd')),
+  s('sd').bank('RolandTR909').struct(steps('sd')).gain(0.8),
+  s('hh').bank('RolandTR909').struct(steps('hh')).gain(0.45),
+  s('oh').bank('RolandTR909').struct(steps('oh')).gain(0.4),
+  s('cp').bank('RolandTR909').struct(steps('cp')).gain(0.7).room(0.3),
   note("<c2 c2 ab1 bb1>").s('sawtooth').struct("x ~ x ~ ~ x ~ x")
     .lpf(signal(() => 220 + kicks() * 160)).lpq(6).gain(0.35),
   note("<[c3,eb3,g3] [c3,eb3,g3] [ab2,c3,eb3] [bb2,d3,f3]>").s('triangle').gain(0.12).room(0.6)

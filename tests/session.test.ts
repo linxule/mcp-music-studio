@@ -178,7 +178,7 @@ describe("describeSession — what the model reads", () => {
 });
 
 describe("spliceAt — the boundary hook (remember() lands on the bar)", () => {
-  it("fires once, before the first query that reaches past the boundary, and changes no events", () => {
+  it("fires once, with the first query that reaches past the boundary, and changes no events", () => {
     const calls: number[] = [];
     let queried = 0;
     const plain = spliceAt(sequence("a", "a", "a", "a"), sequence("b", "b", "b", "b"), 2, stack);
@@ -191,19 +191,21 @@ describe("spliceAt — the boundary hook (remember() lands on the bar)", () => {
     expect(span(1, 2)).toHaveLength(4);
     expect(calls).toEqual([]); // ends exactly on the boundary: not yet
     expect(span(1.9, 2.1).length).toBeGreaterThan(0);
-    expect(calls).toEqual([3]); // before that query computed its events
+    expect(calls).toEqual([3]); // during the third query (after it computed its events)
     span(2, 3);
     expect(calls).toEqual([3]); // once
     expect(isSpliced(hooked)).toBe(true);
     expect(settle(hooked, 2.5)).not.toBe(hooked); // the sweep still drops the old half
   });
 
-  it("reads state set by the hook in the new half's first events", () => {
+  it("fires after the crossing query: the old half's last notes keep the old state (Codex review)", () => {
     let state = "old";
     const reader = signal(() => state).segment(4);
     const hooked = spliceAt(reader, reader.fmap((v: string) => v), 1, stack, -Infinity, () => { state = "new"; });
     const values = hooked.queryArc(0.75, 1.25).map((h: any) => `${Number(h.whole.begin)}:${h.value}`);
-    expect(values).toContain("1:new");
+    expect(values).toContain("0.75:old");
+    expect(state).toBe("new"); // applied once that query was computed
+    expect(hooked.queryArc(1.25, 1.5).map((h: any) => h.value)).toEqual(["new"]);
   });
 });
 

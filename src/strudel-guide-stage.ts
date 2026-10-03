@@ -402,7 +402,7 @@ onFrame(f => {
 s1.init({ src: cvs, dynamic: true })
 src(s1).out(o0)
 const steps = r => signal(t => beat.value[r][Math.floor(Number(t) * STEPS + 1e-6) % STEPS]).segment(STEPS)
-stack(...ROWS.map(r => s(r).bank('RolandTR909').mask(steps(r))))
+stack(...ROWS.map(r => s(r).bank('RolandTR909').struct(steps(r))))
 
 - remember(name, start, options) returns a handle. handle.value is the current
   state and is read-only: change it with handle.update(fn, label) or
