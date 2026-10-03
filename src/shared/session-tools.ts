@@ -21,6 +21,8 @@ export interface SessionUpdateOutcome {
   widgetSeenMsAgo: number | null;
   /** The state that check-in reported, before this update reached the player (absent before 0.10.2). */
   widgetState?: string | null;
+  /** How many times a player joined this session; more than one can mean a second screen (/s/<id>). */
+  joins?: number;
   /** Where the player's clock is now, and the cycle the update lands on. */
   estCycle: number | null;
   boundary: number | null;
@@ -165,11 +167,18 @@ function loadedStoppedReply(rev: number, outcome: SessionUpdateOutcome): string 
   const text =
     `Rev ${rev} arrived while the player was stopped, so there is no landing bar: it ${LOADED_STOPPED}.`;
   if (outcome.widgetState !== "playing" || outcome.widgetSeenMsAgo === null) return text;
-  return (
-    text +
-    ` The player had reported "playing" ${Math.max(1, Math.round(outcome.widgetSeenMsAgo / 1000))} s before this update, so it stopped in between: ` +
-    "the listener pressed Stop, or the player was suspended (on a phone: the app in the background or the screen locked)."
-  );
+  const secs = Math.max(1, Math.round(outcome.widgetSeenMsAgo / 1000));
+  const why = "the listener pressed Stop, or the player was suspended (on a phone: the app in the background or the screen locked)";
+  // Every joined screen answers updates; the one that answered need not be
+  // the one that reported "playing" (Codex review, 0.10.2).
+  if ((outcome.joins ?? 0) > 1) {
+    return (
+      text +
+      ` A player had reported "playing" ${secs} s before this update. More than one screen has joined this session, ` +
+      `so either that player stopped in between (${why}), or a stopped second screen answered first.`
+    );
+  }
+  return text + ` The player had reported "playing" ${secs} s before this update, so it stopped in between: ${why}.`;
 }
 
 export function buildUpdateSessionResult(

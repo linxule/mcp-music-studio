@@ -402,6 +402,9 @@ export function nextBoundary(cycle: number, quantize: number, lead = 0): number 
 export function estimatedCycle(hb: Heartbeat | null, now: number): number | null {
   if (!hb || hb.cycle === null) return null;
   if (hb.state !== "playing" || hb.cps === null) return hb.cycle;
+  // A playing player that has missed its check-ins is probably suspended:
+  // don't extrapolate a bar it may not be at (get-session says the same).
+  if (now - hb.at > SESSION_HEARTBEAT_LATE_MS) return null;
   return hb.cycle + ((now - hb.at) / 1000) * hb.cps;
 }
 
@@ -497,10 +500,12 @@ function describeLoadedStopped(
     hb !== null && hb.state === "playing" && hb.at > applied.at && now - hb.at <= SESSION_HEARTBEAT_LATE_MS;
   if (!playingSince) return `Your latest update (rev ${applied.rev}) ${LOADED_STOPPED}.`;
   const editedSince = data.events.some((e) => e.t === "edit" && e.at > applied.at);
-  return (
-    `Your latest update (rev ${applied.rev}) arrived while the player was stopped; Play has started it since` +
-    (editedSince ? ", and the human has run their own edit since (below)." : " — it is what is playing now.")
-  );
+  // The log is trimmed from the front: once it no longer reaches back to the
+  // answer, an edit since may have been dropped, so claim nothing about it.
+  const logCovers = data.events.length > 0 && data.events[0].at <= applied.at;
+  const head = `Your latest update (rev ${applied.rev}) arrived while the player was stopped; Play has started it since`;
+  if (editedSince) return `${head}, and the human has run their own edit since (below).`;
+  return logCovers ? `${head} — it is what is playing now.` : `${head}.`;
 }
 
 export function describeSession(data: SessionData, now: number, since = data.readSeq, serviceVersion?: string): string {

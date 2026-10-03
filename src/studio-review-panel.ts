@@ -25,11 +25,16 @@ export function installStudioReviewPanel(app: App, session: StudioSession): void
   // The standalone page owns the surrounding controls and isolated preview.
   if (document.documentElement.dataset.studio) return;
   let decided = false;
-  const decide = () => {
+  // A widget torn down before its handshake finished gets nothing mounted.
+  let disposed = false;
+  session.onDispose(() => { disposed = true; });
+  // afterConnect: a host that still reports no name gets the compact button,
+  // never nothing.
+  const decide = (afterConnect = false) => {
     const host = app.getHostVersion();
-    if (decided || !host) return;
+    if (decided || disposed || (!host && !afterConnect)) return;
     decided = true;
-    if (reviewPanelMode(host.name) === "full") installFullReviewPanel(app, session);
+    if (host && reviewPanelMode(host.name) === "full") installFullReviewPanel(app, session);
     else installAskAboutSelection(app, session);
   };
   decide();
@@ -37,7 +42,12 @@ export function installStudioReviewPanel(app: App, session: StudioSession): void
   const connect = app.connect.bind(app);
   app.connect = (async (...args: Parameters<App["connect"]>) => {
     await connect(...args);
-    decide();
+    // The panel is an extra: it never turns a good connection into a failed one.
+    try {
+      decide(true);
+    } catch (error) {
+      console.warn("[music-studio] passage review UI not installed:", error);
+    }
   }) as App["connect"];
 }
 
@@ -280,6 +290,8 @@ function installAskAboutSelection(app: App, session: StudioSession): void {
   let busy = false;
   let feedbackTimer: ReturnType<typeof setTimeout> | undefined;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  // A selection change not read back yet: `latest` may hold the previous one.
+  let dirty = false;
   let fallbackBox: HTMLElement | null = null;
 
   const selected = (state: StudioState | undefined) => (state?.selection?.text.trim() ? state.selection : null);
@@ -302,18 +314,33 @@ function installAskAboutSelection(app: App, session: StudioSession): void {
     }, ASK_FEEDBACK_MS);
   };
   const read = async () => {
+    const pending = dirty;
     const next = await session({ action: "get" });
+    if (pending && !refreshTimer) dirty = false;
     if (!signal.aborted) {
       latest = next;
       show();
     }
     return next;
   };
-  const refresh = () => {
+  const refresh = (event?: Event) => {
+    if (event && button.contains(event.target as Node)) return;
+    dirty = true;
     clearTimeout(refreshTimer);
     // After the editor has applied the gesture to its own selection state.
-    refreshTimer = setTimeout(() => { void read().catch(() => {}); }, 120);
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      void read().catch(() => {});
+    }, 120);
   };
+  // Read the selection as the press starts, so the click (which must copy
+  // synchronously) finds it current.
+  button.addEventListener("pointerdown", () => {
+    if (!dirty) return;
+    clearTimeout(refreshTimer);
+    refreshTimer = undefined;
+    void read().catch(() => {});
+  }, { signal });
   const message = (state: StudioState): string | null => {
     const selection = selected(state);
     if (!selection) return null;
@@ -354,11 +381,14 @@ function installAskAboutSelection(app: App, session: StudioSession): void {
       busy = true;
       void (async () => {
         try {
-          const text = message(await read());
+          const state = await read();
+          if (signal.aborted) return;
+          const text = message(state);
           if (!text) {
             feedback("Select some code first");
             return;
           }
+          if (signal.aborted) return;
           await app.sendMessage({ role: "user", content: [{ type: "text", text }] });
           feedback("Sent to chat");
         } catch {
@@ -371,6 +401,16 @@ function installAskAboutSelection(app: App, session: StudioSession): void {
       return;
     }
     // Copy inside the click itself: WebKit drops clipboard writes after an await.
+    // Never copy a selection the widget hasn't read back yet (it would be the old one).
+    if (dirty) {
+      if (refreshTimer !== undefined) {
+        clearTimeout(refreshTimer);
+        refreshTimer = undefined;
+        void read().catch(() => {});
+      }
+      feedback("One moment — tap again");
+      return;
+    }
     const text = latest ? message(latest) : null;
     if (!text) {
       feedback("Select some code first");

@@ -234,7 +234,8 @@ async function mount(): Promise<void> {
     displayMode = stageIsFullscreen(stage, document) ? "fullscreen" : "inline";
     bridge.setHostContext(hostContext());
   });
-  // Escape leaves the viewport fill too (native fullscreen handles its own).
+  // Escape leaves the viewport fill when focus is on this page; inside the player
+  // frame the key never reaches us, and the player asks for "inline" itself.
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !stage.classList.contains(VIEWPORT_FILL_CLASS)) return;
     void leaveStageFullscreen(stage, document).then(() => {

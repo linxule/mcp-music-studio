@@ -3119,6 +3119,10 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && stageMode) {
     stageMode = false;
     applyStageMode();
+  } else if (event.key === "Escape" && !event.defaultPrevented && displayMode === "fullscreen") {
+    // Leave fullscreen too: a share page's window fill never hears keys typed in
+    // this frame. defaultPrevented = the editor used the key (closing a completion).
+    void toggleDisplayMode();
   }
 });
 

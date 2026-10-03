@@ -199,6 +199,69 @@ describe("installStudioReviewPanel in a chat host", () => {
   });
 });
 
+describe("installStudioReviewPanel — review fixes (0.10.2)", () => {
+  it("mounts nothing when the widget is torn down before its handshake, and the connection still succeeds", async () => {
+    const { doc, created } = fakeDocument(["send-btn"]);
+    vi.stubGlobal("document", doc);
+    const { app } = fakeApp("MusicStudioDevHost");
+    const { session } = liveSession({ from: 0, to: 0, text: "" });
+    installStudioReviewPanel(app, session);
+    session.dispose();
+    await expect(app.connect()).resolves.toBeUndefined();
+    expect(created).toHaveLength(0);
+  });
+
+  it("gives a host that never names itself the compact button, not nothing", async () => {
+    const { doc, created } = fakeDocument(["send-btn"]);
+    vi.stubGlobal("document", doc);
+    const { app } = fakeApp("Claude");
+    (app as { getHostVersion: () => unknown }).getHostVersion = () => undefined;
+    const { session } = liveSession({ from: 0, to: 0, text: "" });
+    installStudioReviewPanel(app, session);
+    await app.connect();
+    expect(created.some((el) => el.id === "ask-selection-btn")).toBe(true);
+  });
+
+  it("never sends after the widget is gone", async () => {
+    const { doc, created } = fakeDocument(["send-btn"]);
+    vi.stubGlobal("document", doc);
+    const { app, sendMessage } = fakeApp("Claude");
+    const { session } = liveSession({ from: 12, to: 22, text: 's("bd sd")' });
+    installStudioReviewPanel(app, session);
+    await app.connect();
+    const button = created.find((el) => el.id === "ask-selection-btn")!;
+    await vi.waitFor(() => expect(button.hidden).toBe(false));
+    button.click();
+    session.dispose();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not copy a selection it has not read back yet", async () => {
+    const { doc, created } = fakeDocument(["send-btn"]);
+    vi.stubGlobal("document", doc);
+    const writeText = vi.fn(async (_t: string) => {});
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const { app } = fakeApp("Some host", {});
+    const { session, draft } = liveSession({ from: 12, to: 22, text: 's("bd sd")' });
+    installStudioReviewPanel(app, session);
+    await app.connect();
+    const button = created.find((el) => el.id === "ask-selection-btn")!;
+    await vi.waitFor(() => expect(button.hidden).toBe(false));
+    // The listener selects something else and clicks at once.
+    draft.selection = { from: 23, to: 36, text: 'note("c e g")' };
+    doc.dispatchEvent(new Event("selectionchange"));
+    button.click();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(button.textContent).toBe("One moment — tap again");
+    // Once read back, the next click copies the NEW selection.
+    await new Promise((r) => setTimeout(r, 20));
+    button.click();
+    expect(writeText).toHaveBeenCalledOnce();
+    expect(writeText.mock.calls[0][0]).toContain('note("c e g")');
+  });
+});
+
 describe("installStudioReviewPanel in the dev harness", () => {
   it("mounts the full panel and no Ask button", async () => {
     const { doc, created } = fakeDocument(["send-btn"]);

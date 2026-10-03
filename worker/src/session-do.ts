@@ -403,6 +403,7 @@ export class JamSession {
         applied,
         widgetSeenMsAgo,
         widgetState: hb?.state ?? null,
+        joins: data.events.filter((e) => e.t === "joined").length,
         estCycle,
         boundary,
         cps: hb?.cps ?? null,

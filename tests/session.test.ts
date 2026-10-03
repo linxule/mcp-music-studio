@@ -100,6 +100,8 @@ describe("quantize", () => {
     expect(estimatedCycle({ at: 1000, cycle: 10, cps: 0.5, state: "playing" }, 5000)).toBe(12);
     expect(estimatedCycle({ at: 1000, cycle: 10, cps: 0.5, state: "stopped" }, 5000)).toBe(10);
     expect(estimatedCycle(null, 5000)).toBeNull();
+    // A playing player that missed its check-ins: no bar is guessed (Codex review, 0.10.2).
+    expect(estimatedCycle({ at: 1000, cycle: 10, cps: 0.5, state: "playing" }, 1000 + SESSION_HEARTBEAT_LATE_MS + 1)).toBeNull();
   });
 });
 
@@ -1133,6 +1135,28 @@ describe("field report fixes (0.10.1)", () => {
     expect(text).toContain('The player had reported "playing" 6 s before this update, so it stopped in between');
     expect(text).toContain("the screen locked");
     expect(text).not.toMatch(/cycle 16/);
+    // A second screen may have answered: don't assert the playing one stopped (Codex review, 0.10.2).
+    const two = (buildUpdateSessionResult(ID, {
+      pattern, applied: { seq: 1, at: 0, t: "applied", rev: 2, ok: true, cycle: null },
+      widgetSeenMsAgo: 6400, widgetState: "playing", joins: 2, estCycle: 12.8, boundary: 16, cps: 0.5,
+    }).content[0] as any).text;
+    expect(two).toContain("More than one screen has joined this session");
+    expect(two).toContain("or a stopped second screen answered first");
+    expect(two).not.toContain("so it stopped in between:");
+  });
+
+  it("does not claim the update is what is playing once the log no longer reaches back to its answer (Codex review)", () => {
+    const data = newSession(ID, 0);
+    appendEvents(data, [{ t: "joined", host: "claude.ai" }], 1);
+    queuePattern(data, "x", 0, 2);
+    appendEvents(data, [{ t: "applied", rev: data.pattern!.rev, ok: true, cycle: null }], 1000);
+    // The human's edit, then enough taps to push it (and the answer) out of the log.
+    appendEvents(data, [{ t: "edit", cycle: 1, code: "y", chars: 1 }], 2000);
+    for (let i = 0; i < SESSION_MAX_EVENTS + 5; i++) appendEvents(data, [{ t: "tap", cycle: 2, x: 0.5, y: 0.5 }], 3000 + i);
+    recordHeartbeat(data, { cycle: 2, cps: 0.5, state: "playing" }, 9000);
+    const desc = describeSession(data, 10_000, 0);
+    expect(desc).toContain("Play has started it since.");
+    expect(desc).not.toContain("it is what is playing now");
   });
 
   it("a rev loaded while stopped reads as started once a later check-in says playing (field test 2026-10-03)", () => {
