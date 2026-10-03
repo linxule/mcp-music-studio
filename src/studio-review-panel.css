@@ -35,3 +35,26 @@
 .studio-review-body .error { color: var(--error, var(--color-danger)); }
 .studio-review-panel [hidden] { display: none !important; }
 @media (pointer: coarse) { .studio-review-body button { min-height: 44px; } }
+
+/* Chat hosts: one "Ask about selection" button, shown while music is selected. */
+.ask-selection-status {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+/* Phones: just "Ask", so the control row doesn't gain a line. */
+@media (max-width: 480px) { .ask-selection-more { display: none; } }
+.ask-selection-fallback {
+  padding: 8px 12px; border-top: 1px solid var(--border, var(--color-border));
+  background: var(--surface, var(--color-card-bg)); color: var(--text, var(--color-text));
+  font: 13px/20px var(--font-sans, system-ui, sans-serif);
+}
+.ask-selection-fallback label { display: block; margin-bottom: 4px; }
+.ask-selection-fallback textarea {
+  display: block; width: 100%; box-sizing: border-box; resize: vertical; padding: 8px;
+  border: 1px solid var(--border, var(--color-border)); border-radius: 4px;
+  color: inherit; background: var(--bg, var(--color-bg)); font: 12px/18px var(--font-mono, monospace);
+}
+.ask-selection-fallback button {
+  margin-top: 6px; min-height: 32px; padding: 5px 10px; color: inherit; font: inherit;
+  background: var(--bg, var(--color-bg)); border: 1px solid var(--border, var(--color-border)); border-radius: 4px; cursor: pointer;
+}

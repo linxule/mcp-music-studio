@@ -10,6 +10,7 @@ From a field test of 0.10.1 in the Claude iPhone app and Safari.
 - **`update-session` explains a stopped player.** It says there is no landing bar, because a stopped player starts when Play is pressed. If the player said "playing" just before, the reply adds that it stopped in between: someone pressed Stop, or the phone suspended it (an app in the background or a locked screen).
 - **A player that has gone quiet is not guessed at.** A playing player checks in at least every 20 seconds. When it has been silent for more than 30, `get-session` says when it last reported playing, and that it is probably suspended, instead of estimating a current bar.
 - **Fullscreen works on iPhone.** iPhone Safari has no fullscreen for a page element, so the button did nothing on shared player pages. The player now fills the browser window instead. In a chat whose app keeps the player inline, the player says so instead of doing nothing.
+- **"Ask about selection" replaces the passage panel in chat apps.** The "Work on a passage" panel could send a question but never show an answer there, because chat apps don't call the player's own tools. Chat apps now get one button, shown only while music is selected, that sends the selection and its line numbers to the chat with a question (or copies it where the app can't send messages). In a live session the message reminds the AI it can answer with `update-session`. The full panel stays in the local development host, which does call those tools.
 
 ## 0.10.1 — October 2, 2026
 
