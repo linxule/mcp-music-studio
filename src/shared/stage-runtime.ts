@@ -43,6 +43,15 @@
 
 import { noteNameToMidi } from "./hap-number.js";
 import { normalizeTts, ttsSampleName, ttsUrl } from "./tts.js";
+import {
+  createRememberStore,
+  type RememberChange,
+  type RememberedEntry,
+  type RememberHandle,
+  type RememberOptions,
+} from "./remember-store.js";
+
+export type { RememberChange, RememberedEntry, RememberHandle, RememberOptions } from "./remember-store.js";
 
 export interface StageEnv {
   /** The cycle being heard now, or null when there is no running scheduler. */
@@ -74,8 +83,12 @@ export interface StageEnv {
   cps?(): number | null;
   /** A registered callback threw. Called once per registration, not per frame. */
   reportError(api: string, error: unknown): void;
-  /** Sees every tap delivered to the piece (a live session logs them). */
-  observeTap?(tap: { x: number; y: number; cycle: number }): void;
+  /**
+   * Sees every tap delivered to the piece (a live session logs them), AFTER
+   * the piece's tap callbacks ran: `changedState` says whether they wrote
+   * remember() state — the app then logs the state change, not the raw tap.
+   */
+  observeTap?(tap: { x: number; y: number; cycle: number }, info?: { changedState: boolean }): void;
   /** Strudel's signal(): a continuous pattern that samples `read` when queried. */
   signal?(read: () => number): unknown;
   /**
@@ -101,6 +114,12 @@ export interface StageEnv {
   observeSurface?(): void;
   /** Milliseconds, for throttling sensor moves into the log. */
   now?(): number;
+  /** remember(): a listener write (inside a tap) or an AI merge changed a value. */
+  observeRemembered?(change: RememberChange): void;
+  /** remember(): some stored value changed; read stage.remembered() (throttle it). */
+  observeRememberedState?(): void;
+  /** The piece called openStage(): it would like Stage mode (the app decides). */
+  requestStage?(): void;
 }
 
 /** tilt() reads device orientation; mic() the input loudness. */
@@ -278,6 +297,10 @@ export interface Stage {
     xy: (name: unknown, options?: { label?: string }) => { x: ControlHandle; y: ControlHandle; readonly value: [number, number] };
     tilt: (name?: unknown, options?: { label?: string }) => { x: ControlHandle; y: ControlHandle; readonly value: [number, number] };
     mic: (name?: unknown, options?: { label?: string }) => ControlHandle;
+    /** Named state that survives re-runs; the listener changes it, the AI reads it (src/shared/remember-store.ts). */
+    remember: (name: unknown, init: unknown, options?: RememberOptions) => RememberHandle;
+    /** Ask for Stage mode (drawn controls are tappable only there). Once per evaluation; the app decides. */
+    openStage: () => void;
   };
   /** Each sensor's state, measured in this frame (for the model's report). */
   sensorStates(): Record<SensorKind, SensorState>;
@@ -289,10 +312,18 @@ export interface Stage {
    * queue timeout) can neither adopt nor clear a newer one's registrations.
    */
   begin(): number;
-  /** It succeeded: its registrations replace the previous evaluation's. */
-  commit(token?: number): void;
-  /** It failed (or was superseded): drop its registrations, keep the old ones. */
+  /**
+   * It succeeded: its registrations replace the previous evaluation's. Its
+   * remember() state applies now, or — `deferState` — when activateState(token)
+   * is called (a quantized swap: at its bar, while the old pattern plays on).
+   */
+  commit(token?: number, options?: { deferState?: boolean }): void;
+  /** Apply a deferred evaluation's remember() state (no-op once superseded). */
+  activateState(token: number): void;
+  /** It failed (or was superseded): drop its registrations and staged state, keep the old ones. */
   rollback(token?: number): void;
+  /** remember() values as stored now (a live session's snapshot). */
+  remembered(): RememberedEntry[];
   /** Teardown: end everything, for good — later registrations are ignored. */
   stop(): void;
   /** How many registrations are live (tests, diagnostics). */
@@ -321,6 +352,13 @@ export function createStage(env: StageEnv): Stage {
   /** Last time (ms) and value a sensor move was logged, per control. */
   const sensorLogged = new Map<string, { at: number; value: ControlValue }>();
   const SENSOR_LOG_MS = 500;
+  // remember(): writes made while a tap callback runs synchronously are the
+  // listener's (an async continuation is not — it is the piece's).
+  let tapDepth = 0;
+  let tapChangedState = false;
+  // openStage(): asked by the running evaluation / already sent for the committed one.
+  let stageAskedPending = false;
+  let stageAskedActive = false;
 
   const cycle = (): number => {
     const c = env.audibleCycle();
@@ -406,10 +444,20 @@ export function createStage(env: StageEnv): Stage {
 
   const deliverTap = (x: number, y: number): void => {
     const tap = { x, y, cycle: cycle(), next };
+    tapChangedState = false;
+    for (const reg of [...active]) {
+      if (reg.kind !== "tap") continue;
+      tapDepth++;
+      try {
+        call(reg, "onTap", tap);
+      } finally {
+        tapDepth--;
+      }
+    }
+    // After the callbacks: the observer learns whether the tap changed state.
     try {
-      env.observeTap?.({ x, y, cycle: tap.cycle });
+      env.observeTap?.({ x, y, cycle: tap.cycle }, { changedState: tapChangedState });
     } catch { /* an observer never stops the piece's own tap */ }
-    for (const reg of [...active]) if (reg.kind === "tap") call(reg, "onTap", tap);
   };
 
   const sync = (): void => {
@@ -455,7 +503,25 @@ export function createStage(env: StageEnv): Stage {
     return name.trim().slice(0, 32);
   };
 
+  const remembering = createRememberStore({
+    now: () => env.now?.() ?? Date.now(),
+    cycle: () => {
+      const c = env.audibleCycle();
+      return c !== null && Number.isFinite(c) ? Math.max(0, c) : null;
+    },
+    listenerWriting: () => tapDepth > 0,
+    listenerWrote: () => {
+      tapChangedState = true;
+    },
+    observe: (change) => env.observeRemembered?.(change),
+    changed: () => env.observeRememberedState?.(),
+    reportError: (api, error) => env.reportError(api, error),
+  });
+
   const declare = (spec: ControlSpec): void => {
+    if (pendingControls && remembering.declaresNow(spec.name)) {
+      throw new TypeError(`'${spec.name}' is already a remember() name in this piece — give the ${spec.kind} its own name`);
+    }
     const known = controlValues.get(spec.name);
     const fits =
       known !== undefined &&
@@ -677,6 +743,27 @@ export function createStage(env: StageEnv): Stage {
       });
       return handle(() => readNumber(id));
     },
+    remember(name, init, options) {
+      const id = controlName("remember(name)", name);
+      if (pendingControls?.has(id)) {
+        throw new TypeError(`remember('${id}'): '${id}' is already a control in this piece — give the state its own name`);
+      }
+      return remembering.declare(id, init, options);
+    },
+    openStage() {
+      if (disposed) return;
+      if (pending) {
+        stageAskedPending = true;
+        return;
+      }
+      if (stageAskedActive) return;
+      stageAskedActive = true;
+      try {
+        env.requestStage?.();
+      } catch (error) {
+        env.reportError("openStage", error);
+      }
+    },
   };
 
   return {
@@ -684,24 +771,41 @@ export function createStage(env: StageEnv): Stage {
     begin() {
       pending = new Set();
       pendingControls = new Map();
+      stageAskedPending = false;
+      remembering.begin(generation + 1);
       return ++generation;
     },
-    commit(token) {
+    commit(token, options) {
       if (!pending || (token !== undefined && token !== generation)) return;
       active = pending;
       pending = null;
       if (pendingControls) controlSpecs = pendingControls;
       pendingControls = null;
+      remembering.commit(generation, options?.deferState === true);
+      stageAskedActive = stageAskedPending;
+      stageAskedPending = false;
       syncSensors();
       renderControls();
       // The previous piece's sentence does not belong to this one.
       env.cancelSpeech?.();
       sync();
+      if (stageAskedActive) {
+        try {
+          env.requestStage?.();
+        } catch (error) {
+          env.reportError("openStage", error);
+        }
+      }
+    },
+    activateState(token) {
+      remembering.activate(token);
     },
     rollback(token) {
       if (token !== undefined && token !== generation) return;
       pending = null;
       pendingControls = null;
+      stageAskedPending = false;
+      remembering.rollback(generation);
       sync();
     },
     stop() {
@@ -710,11 +814,13 @@ export function createStage(env: StageEnv): Stage {
       pending = null;
       pendingControls = null;
       controlSpecs = new Map();
+      remembering.stop();
       syncSensors();
       renderControls();
       env.cancelSpeech?.();
       sync();
     },
+    remembered: () => remembering.entries(),
     size: () => active.size,
     controls: () =>
       [...controlSpecs.values()].map((spec) => ({ spec: sourceOf(spec), value: controlValues.get(spec.name) ?? spec.init })),
@@ -788,8 +894,11 @@ export interface BrowserStageOptions {
   ttsOrigin: string;
   /** A say() clip could not be loaded — once per clip, with the server's reason. */
   reportSpeech?(url: string, reason: string): void;
-  observeTap?(tap: { x: number; y: number; cycle: number }): void;
+  observeTap?(tap: { x: number; y: number; cycle: number }, info?: { changedState: boolean }): void;
   observeControl?(change: { name: string; kind: ControlKind; value: ControlValue; cycle: number; source?: ControlSource }): void;
+  observeRemembered?(change: RememberChange): void;
+  observeRememberedState?(): void;
+  requestStage?(): void;
   /** Where the control strip goes (default: tapArea). */
   controlsHost?: HTMLElement;
   /** The strip was redrawn (a live session snapshots it). */
@@ -931,6 +1040,9 @@ export function createBrowserStageEnv(options: BrowserStageOptions): BrowserStag
     reportError: options.reportError,
     observeTap: options.observeTap,
     observeControl: options.observeControl,
+    observeRemembered: options.observeRemembered,
+    observeRememberedState: options.observeRememberedState,
+    requestStage: options.requestStage,
     signal: (read) => (typeof w.signal === "function" ? w.signal(() => read()) : undefined),
     renderControls: (specs, values, input) =>
       renderControlStrip(options.controlsHost ?? options.tapArea, specs, values, input),
