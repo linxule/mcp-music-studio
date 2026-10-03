@@ -107,6 +107,24 @@ text = await waitFor(id, /clap on at step 4/);
 text = await waitFor(id, /clap on 4/);
 /clap on 4/.test(text) ? ok("the remembered grid now has the clap on 4") : fail(`state not updated:\n${text}`);
 
+// The tapped cell SOUNDS: the pattern the scheduler plays has a clap on step 4
+// of the bar (and the snare row its two steps) — the gallery's first version
+// used .mask(), which kept only beat 1 of every row (Codex review).
+const scheduled = await frame().evaluate(() => {
+  const pat = document.querySelector("strudel-editor")?.editor?.repl?.scheduler?.pattern;
+  if (!pat) return null;
+  const c = Math.ceil(Number(globalThis.cycle?.() ?? 0)) + 1;
+  const at = (s) =>
+    pat.queryArc(c, c + 1)
+      .filter((h) => h.hasOnset() && h.value?.s === s)
+      .map((h) => Math.round((Number(h.whole.begin) - c) * 8))
+      .sort((a, b) => a - b);
+  return { cp: at("cp"), sd: at("sd") };
+});
+scheduled && JSON.stringify(scheduled.cp) === "[3]" && JSON.stringify(scheduled.sd) === "[2,6]"
+  ? ok(`the scheduler plays the clap on step 4 and the snare on 3 and 7 (${JSON.stringify(scheduled)})`)
+  : fail(`scheduled steps: ${JSON.stringify(scheduled)}`);
+
 // The AI answers with a merge, quantized to 2 bars.
 const [status, outcome] = await post(`/session/${id}/update`, { code: MERGED, quantize: 2 });
 const boundary = outcome.applied?.cycle;

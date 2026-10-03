@@ -617,16 +617,16 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     }
     stageOpenedFor = code;
     document.body.classList.add('stage-on');
-    codeBtn.hidden = false;
+    if (codeBtn) codeBtn.hidden = false;
   }
   function leaveStage() {
     if (!document.body.classList.contains('stage-on')) return;
     if (stageOpenedFor !== null) stageDeclinedFor = stageOpenedFor;
     stageOpenedFor = null;
     document.body.classList.remove('stage-on');
-    codeBtn.hidden = true;
+    if (codeBtn) codeBtn.hidden = true;
   }
-  codeBtn.addEventListener('click', leaveStage);
+  if (codeBtn) codeBtn.addEventListener('click', leaveStage);
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') leaveStage(); });
   var stage = globalThis.MusicStudioStage.createStage(stageBundle.env);
   Object.assign(globalThis, stage.globals);
