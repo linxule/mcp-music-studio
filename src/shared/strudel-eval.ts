@@ -45,6 +45,7 @@ import * as tonal from "@strudel/tonal";
 // @ts-ignore -- no types published
 import { transpiler } from "@strudel/transpiler";
 import { stageEvent } from "./stage-runtime.js";
+import { createRememberStore } from "./remember-store.js";
 import { normalizeTts, ttsSampleName } from "./tts.js";
 
 type Any = Record<string, any>;
@@ -379,6 +380,12 @@ const SANDBOX_BROWSER = () => {
  * never sees in its temporal dead zone). A callback that throws there is a
  * warning, not a failure: in the widget it is reported and skipped, and the
  * music plays on. onTap callbacks are never called — a tap is the user's.
+ *
+ * remember() is the REAL store (src/shared/remember-store.ts), one per run:
+ * the same validation, freezing and name rules as the widget. Its state is
+ * staged while the top level runs and applied (merges once) before the test
+ * frames — as the widget applies it at commit — so the pattern the validator
+ * queries reads what the widget's would.
  */
 const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknown>>) => {
   const requireFunction = (api: string, fn: unknown) => {
@@ -386,6 +393,24 @@ const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknow
   };
   const warn = (api: string, err: unknown) =>
     active?.warnings.push(`${api} callback threw on a test frame: ${(err as Error)?.message ?? String(err)}`);
+  const remembering = createRememberStore({
+    now: () => Date.now(),
+    cycle: () => 0,
+    listenerWriting: () => false,
+    reportError: (_api, err) =>
+      active?.warnings.push(`remember: a merge failed, so this piece's state changes were skipped: ${(err as Error)?.message ?? String(err)}`),
+  });
+  remembering.begin(1);
+  let stateQueued = false;
+  // Names in one namespace with the controls (the widget throws on a clash too).
+  const controlNames = new Set<string>();
+  const claimControl = (api: string, name: unknown): void => {
+    const id = stageName(api, name);
+    if (remembering.declaresNow(id)) {
+      throw new TypeError(`'${id}' is already a remember() name in this piece — give the control its own name`);
+    }
+    controlNames.add(id);
+  };
   const testCall = (api: string, fn: (arg: unknown) => unknown, arg: () => unknown) =>
     checks.push(() => {
       try {
@@ -427,9 +452,26 @@ const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknow
       if ("error" in request) throw new TypeError(request.error);
       return C.s(ttsSampleName(request));
     },
+    remember(name: unknown, init: unknown, options?: Any) {
+      const id = stageName("remember", name);
+      if (controlNames.has(id)) {
+        throw new TypeError(`remember('${id}'): '${id}' is already a control in this piece — give the state its own name`);
+      }
+      const handle = remembering.declare(id, init, options);
+      if (!stateQueued) {
+        stateQueued = true;
+        // Before every test frame: callbacks read the applied state.
+        checks.unshift(() => remembering.commit(1, false));
+      }
+      return handle;
+    },
+    openStage() {
+      /* the validator has no stage to open */
+    },
     // Controls read their initial value here: a signal pattern with .value.
     fader(name: unknown, options: { min?: number; max?: number; init?: number } = {}) {
       requireName("fader", name);
+      claimControl("fader", name);
       const min = Number.isFinite(options.min) ? options.min! : 0;
       const max = Number.isFinite(options.max) ? options.max! : 1;
       if (!(max > min)) throw new RangeError(`fader('${name}'): max must be greater than min`);
@@ -438,23 +480,40 @@ const SANDBOX_STAGE = (checks: Array<() => void>, settling: Array<Promise<unknow
     },
     pad(name: unknown, options: { init?: boolean } = {}) {
       requireName("pad", name);
+      claimControl("pad", name);
       return control(options.init ? 1 : 0);
     },
     xy(name: unknown) {
       requireName("xy", name);
+      claimControl("xy", name);
       return { x: control(0.5), y: control(0.5), value: [0.5, 0.5] };
     },
     // Sensors start level / silent; the name is optional.
     tilt(name: unknown = "tilt") {
       requireName("tilt", name);
+      claimControl("tilt", name);
       return { x: control(0.5), y: control(0.5), value: [0.5, 0.5] };
     },
     mic(name: unknown = "mic") {
       requireName("mic", name);
+      claimControl("mic", name);
       return control(0);
     },
   };
 };
+
+/** A stage name as the widget reads it (controlName in stage-runtime.ts): trimmed, ≤ 32 characters. */
+function stageName(api: string, name: unknown): string {
+  if (name && typeof name === "object" && typeof (name as Any).__pure === "string") name = (name as Any).__pure;
+  else if (name && typeof name === "object" && typeof (name as Any).queryArc === "function") {
+    try {
+      const v = (name as Any).queryArc(0, 1)[0]?.value;
+      if (typeof v === "string") name = v;
+    } catch { /* not a name */ }
+  }
+  if (typeof name !== "string" || !name.trim()) throw new TypeError(`${api}(name) needs a name, e.g. ${api}('rain')`);
+  return name.trim().slice(0, 32);
+}
 
 function requireName(api: string, name: unknown): void {
   // A double-quoted name is a one-value mini-notation pattern; the widget accepts it too.

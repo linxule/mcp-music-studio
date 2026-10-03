@@ -144,7 +144,7 @@ const hasDeclaration = (code: string) => /^\s*(let|const|var)\s/m.test(code);
  * so far declared what they use — otherwise each step would be cut off as an
  * example of its own, and none of them would run.
  */
-const STAGE_STEP = /^(onFrame|onEvent|onTap|src|s[0-3]\.init)\(/;
+const STAGE_STEP = /^(onFrame|onEvent|onTap|openStage|src|s[0-3]\.init)\(/;
 const declaredNames = (code: string) =>
   [...code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
 const extendsDeclared = (code: string, line: string) =>
