@@ -63,7 +63,9 @@ jobs:
           retention-days: 7
 
       - name: Audit dependencies
-        run: bun audit
+        # GHSA-vfj7-8cjw-p6xm: braces <=3.0.3 (no fixed release yet, 2026-10-03), dev-only via
+        # vite-plugin-singlefile > micromatch; it only expands our own build globs. Drop when fixed.
+        run: bun audit --ignore=GHSA-vfj7-8cjw-p6xm
 
       - name: Publish to npm (OIDC Trusted Publishing)
         run: |

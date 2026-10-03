@@ -50,7 +50,9 @@ jobs:
         working-directory: worker
       - name: Audit dependency locks
         run: |
-          bun audit
+          # GHSA-vfj7-8cjw-p6xm: braces <=3.0.3 (no fixed release yet, 2026-10-03), dev-only via
+          # vite-plugin-singlefile > micromatch; it only expands our own build globs. Drop when fixed.
+          bun audit --ignore=GHSA-vfj7-8cjw-p6xm
           (cd worker && bun audit)
       - name: Build worker without deploying
         run: bunx wrangler deploy --dry-run --outdir /tmp/music-worker-build
