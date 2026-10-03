@@ -1,6 +1,6 @@
 {
   "name": "mcp-music-studio",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "type": "module",
   "description": "MCP music studio: ABC sheet music and Strudel live coding in interactive widgets, with 128 General MIDI instruments, Hydra visuals, music videos, live jam sessions with the AI, and player tools for browser agents.",
   "keywords": [
