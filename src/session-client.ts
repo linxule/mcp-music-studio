@@ -92,6 +92,13 @@ export class SessionClient {
   private stateTimer: unknown = null;
   private stateSentAt = -Infinity;
   private stateInFlight = false;
+  /**
+   * Every snapshot this player sends counts up under one id, so the server can
+   * ignore an older one that lands after a newer one (a Pass races the
+   * throttled send — Codex review).
+   */
+  private stateSeq = 0;
+  private readonly clientId = `${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
   private flushTimer: unknown = null;
   private stopped = false;
   private rev = 0;
@@ -241,7 +248,7 @@ export class SessionClient {
     if (!list || this.stopped || this.parked || this.stateInFlight) return;
     this.stateInFlight = true;
     this.stateSentAt = this.now();
-    const ok = await this.post([{ t: "rememberState", list }]);
+    const ok = await this.post([{ t: "rememberState", list, seq: ++this.stateSeq, client: this.clientId }]);
     this.stateInFlight = false;
     if (ok !== null && this.statePending === list) this.statePending = null;
     // Unsent (failed, or newer state arrived meanwhile): try again after the window.
@@ -273,12 +280,13 @@ export class SessionClient {
   /** Send a Pass now; resolves whether a listening model will read it (no chat message needed). */
   async pass(cycle: number | null): Promise<boolean> {
     // What the listener just did to the piece's state goes in the same batch,
-    // ahead of the Pass, so the model's read after it is current.
+    // ahead of the Pass, so the model's read after it is current. The state
+    // goes FIRST: a server reads a bounded prefix of a batch (Kimi review).
     this.drainRemembered();
     const state = this.statePending;
     if (state && !this.stopped) {
       this.clearStateTimer();
-      this.queue.push({ t: "rememberState", list: state });
+      this.queue.unshift({ t: "rememberState", list: state, seq: ++this.stateSeq, client: this.clientId });
     }
     this.log({ t: "pass", cycle });
     const body = await this.flush();

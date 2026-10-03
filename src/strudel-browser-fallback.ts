@@ -208,6 +208,9 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   }
   /* Lift the code off the animation, the way strudel.cc does. */
   body.viz-on .cm-content { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
+  /* openStage(): the code steps aside so taps reach a drawing; Code brings it back. */
+  body.stage-on main { visibility: hidden; }
+  #code-btn[hidden] { display: none; }
 </style>
 </head>
 <body class="${bodyClass}">
@@ -221,6 +224,7 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     <button id="play-btn">Play</button>
     <button id="stop-btn">Stop</button>
     <button id="retry-btn" hidden>Retry</button>
+    <button id="code-btn" hidden title="Show the code again">Code</button>
     <span id="status" role="status" aria-live="polite">Loading...</span>
   </div>
 </header>
@@ -594,7 +598,36 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
     reportSpeech: function (url, reason) {
       console.warn('[stage] a say() line could not load: ' + reason);
     },
+    requestStage: function () { requestStageFromPiece(0); },
   });
+  // openStage(): show the visuals, not the code, so taps reach what the piece
+  // draws — as the widget's Stage mode does. Leaving it (Code, Escape) declines
+  // it for that same piece only; a different piece asks afresh.
+  var stageDeclinedFor = null;
+  var stageOpenedFor = null;
+  var codeBtn = document.getElementById('code-btn');
+  function stageCode() { var ed = getEditor(); return (ed && typeof ed.code === 'string') ? ed.code : ''; }
+  function requestStageFromPiece(attempt) {
+    var code = stageCode();
+    if (document.body.classList.contains('stage-on') || (stageDeclinedFor !== null && stageDeclinedFor === code)) return;
+    var shown = document.body.classList.contains('viz-on') || document.body.classList.contains('hydra-on');
+    if (!shown) {
+      if (attempt < 10) setTimeout(function () { requestStageFromPiece(attempt + 1); }, 100);
+      return;
+    }
+    stageOpenedFor = code;
+    document.body.classList.add('stage-on');
+    codeBtn.hidden = false;
+  }
+  function leaveStage() {
+    if (!document.body.classList.contains('stage-on')) return;
+    if (stageOpenedFor !== null) stageDeclinedFor = stageOpenedFor;
+    stageOpenedFor = null;
+    document.body.classList.remove('stage-on');
+    codeBtn.hidden = true;
+  }
+  codeBtn.addEventListener('click', leaveStage);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') leaveStage(); });
   var stage = globalThis.MusicStudioStage.createStage(stageBundle.env);
   Object.assign(globalThis, stage.globals);
   // Raw speechSynthesis (not say(), which is a sample) needs a speak() inside a

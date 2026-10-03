@@ -69,7 +69,8 @@ export const UPDATE_SESSION_DESCRIPTION =
   "(quantize 1, the default), at the next multiple of n cycles, or at once (0). Patterns run on the session's clock, so " +
   "set quantize to your phrase length (an 8-bar phrase → 8) and the swap lands on its first bar. " +
   "The code is syntax-checked first; the result says whether the player ran it, and its error if not, " +
-  "when the player answers within a few seconds.";
+  "when the player answers within a few seconds. Edit a piece's remember() state with a merge, not a new start value " +
+  "(get-strudel-guide topic 'interactive').";
 
 const sessionField = z
   .string()

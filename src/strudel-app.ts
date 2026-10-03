@@ -3,6 +3,7 @@ import { bindSourceLink } from "./source-link.js";
 import { createStudioSession, installStudioBridge, type StudioSwapHooks } from "./studio-session";
 import { registerStudioAppTools } from "./studio-app-tools";
 import { installStudioReviewPanel } from "./studio-review-panel";
+import { createPieceStagePolicy } from "./stage-request-policy";
 import { installStrudelCompanion } from "./studio-strudel-companion";
 // =============================================================================
 // Strudel ext-apps client — uses @strudel/repl with layout fixes
@@ -3119,13 +3120,14 @@ vizBtn.addEventListener("click", () => {
 /**
  * openStage(): a piece that draws its own controls asks for the stage, where
  * taps reach the drawing (inline, the code covers it). Honoured unless the
- * listener is typing in the editor or has left a stage a piece opened; never
- * binding — the Stage/Code button and Escape still switch back.
+ * listener is typing in the editor or has left the stage this same piece
+ * opened (src/stage-request-policy.ts); never binding — the Stage/Code button
+ * and Escape still switch back.
  */
-let pieceStageDeclined = false;
-let pieceOpenedStage = false;
+const pieceStage = createPieceStagePolicy();
 function requestStageFromPiece(attempt = 0): void {
-  if (stageMode || pieceStageDeclined) return;
+  const code = getEditor()?.code ?? currentCode;
+  if (stageMode || !pieceStage.shouldOpen(code)) return;
   if (document.activeElement?.closest?.(".cm-editor")) return;
   // The visuals the stage shows may appear a moment after the evaluation (Hydra).
   if (!vizVisible) {
@@ -3133,12 +3135,12 @@ function requestStageFromPiece(attempt = 0): void {
     return;
   }
   stageMode = true;
-  pieceOpenedStage = true;
+  pieceStage.opened(code);
   applyStageMode();
 }
 
 stageBtn.addEventListener("click", () => {
-  if (stageMode && pieceOpenedStage) pieceStageDeclined = true;
+  if (stageMode) pieceStage.left();
   if (!stageMode && !vizVisible) {
     setStatus(
       "Stage mode needs a visual — add .pianoroll() or `await initHydra()`, or set the visuals parameter",
@@ -3154,7 +3156,7 @@ stageBtn.addEventListener("click", () => {
 // mode. Bound on the document so it works with focus inside CodeMirror.
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && stageMode) {
-    if (pieceOpenedStage) pieceStageDeclined = true;
+    pieceStage.left();
     stageMode = false;
     applyStageMode();
   } else if (event.key === "Escape" && !event.defaultPrevented && displayMode === "fullscreen") {

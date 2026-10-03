@@ -93,6 +93,13 @@ describe("share page stage runtime", () => {
     expect(html).toContain("hookStage(ed);");
     expect(html).toContain("Object.assign(globalThis, stage.globals);");
   });
+
+  it("honours openStage(): the stage env asks the page, which hides the code and offers a way back (Codex review)", () => {
+    const html = generateStrudelPlayerHtml({ code: 'note("c3 e3")' } as any);
+    expect(html).toMatch(/requestStage:\s*function/);
+    expect(html).toContain('id="code-btn"');
+    expect(html).toMatch(/body\.stage-on main\s*\{/);
+  });
 });
 
 describe("share page evaluate wrapper (0.7.0 gauntlet)", () => {
