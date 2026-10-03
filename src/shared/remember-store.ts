@@ -316,6 +316,12 @@ export interface RememberStore {
 
 /** Committed evaluations remembered for write authority (the newest writes). */
 const MAX_COMMITTED_TOKENS = 8;
+/**
+ * Swaps whose state may wait for their bar at once. A newer one past this
+ * drops the oldest: it loses write authority and its state never lands
+ * (Codex review, round 3 — the queue was unbounded).
+ */
+export const MAX_REMEMBER_WAITING = 8;
 
 export function createRememberStore(hooks: RememberHooks): RememberStore {
   const store = new Map<string, Entry>();
@@ -342,6 +348,35 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
   let disposed = false;
   /** >0 while a merge runs: a merge edits its draft — it never writes or declares through the store. */
   let inMerge = 0;
+  /**
+   * >0 while an evaluation's staged writes are replayed at activation: a write
+   * an update() callback makes through ANOTHER handle was already staged as its
+   * own op during the evaluation, so the replay ignores it — it never reaches
+   * the store outside the transaction (Codex review, round 3).
+   */
+  let replaying = 0;
+  /** >0 while an update() fn runs: it may not declare (declare at the top level). */
+  let inUpdate = 0;
+  /**
+   * An evaluation activated early (its pattern was installed before it
+   * committed): provisional until commit. Rollback restores the names it
+   * changed; its merge announcements wait for the commit (Codex review, round 3).
+   */
+  let provisional: {
+    token: number;
+    before: Map<string, Entry>;
+    affected: Set<string>;
+    committedNames: Set<string>;
+    committed: number[];
+    deferred: Staged[];
+    flush: () => void;
+  } | null = null;
+  /** A newer evaluation is taking over: an older provisional activation stands. */
+  const confirmProvisional = (): void => {
+    const p = provisional;
+    provisional = null;
+    p?.flush();
+  };
 
   /** Never evict what the playing piece declared, nor what a waiting one will. */
   const protectedNames = (...extra: string[]): Set<string> =>
@@ -443,11 +478,13 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
    * value), then its staged writes replayed in order on that value, then its
    * merges — all into a scratch map first, so one failure discards the lot.
    */
-  const activateStaged = (staged: Staged, replaceCommitted: boolean): boolean => {
-    if (disposed) return false;
+  const activateStaged = (staged: Staged, replaceCommitted: boolean, holdNotices = false): { ok: boolean; flush: () => void } => {
+    const none = { ok: false, flush: () => {} };
+    if (disposed) return none;
     const scratch = new Map<string, Entry>();
     const touched = new Set<string>();
     const merged: Array<{ name: string; label: string | null }> = [];
+    replaying++;
     try {
       for (const decl of staged.decls.values()) {
         const stored = store.get(decl.name);
@@ -490,7 +527,9 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
       }
     } catch (error) {
       hooks.reportError("remember", error);
-      return false;
+      return none;
+    } finally {
+      replaying--;
     }
     const now = hooks.now();
     for (const entry of scratch.values()) {
@@ -504,12 +543,14 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
     // in the snapshot ("kept from earlier code"): that is a change too.
     let flipped = false;
     for (const name of store.keys()) if (before.has(name) !== committedNames.has(name)) flipped = true;
-    for (const m of merged) {
-      const entry = store.get(m.name);
-      if (entry) announce(entry, "ai", m.label);
-    }
-    if (touched.size || flipped) changed();
-    return true;
+    const notices = merged.map((m) => ({ ...m, entry: store.get(m.name) }));
+    const notify = touched.size > 0 || flipped;
+    const flush = () => {
+      for (const m of notices) if (m.entry) announce(m.entry, "ai", m.label);
+      if (notify) changed();
+    };
+    if (!holdNotices) flush();
+    return { ok: true, flush };
   };
 
   /** Swaps waiting for a bar before `token` never play once `token` takes over. */
@@ -522,6 +563,7 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
     if (disposed) return;
     const api = `remember('${decl.name}')`;
     if (inMerge) throw new TypeError(`${api}: a merge can't write through a handle — change its draft (or return a new value) instead`);
+    if (replaying) return; // already staged as its own op (see `replaying`)
     requireLabel(`${api}.set/update`, label);
     // Top level of the evaluation that is running: staged with it. Validated
     // now (a bad value throws to the piece), replayed at activation.
@@ -576,23 +618,43 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
       // if the newer one fails, that swap's pattern is what plays at the bar,
       // so its state must land there too. It is superseded only when a newer
       // one takes over (a commit that applies now, or an earlier bar).
+      if (provisional && provisional.token !== token) confirmProvisional();
       running = { token, decls: new Map(), ops: [], early: false };
     },
     activateEarly(token) {
       if (!running || running.token !== token || running.early) return;
+      confirmProvisional();
+      const before = new Map(store);
+      const saved = { committedNames, committed: [...committed], deferred: [...deferred] };
       running.early = true;
       dropDeferredBefore(token);
       trust(token);
-      activateStaged(running, true);
+      const { flush } = activateStaged(running, true, true);
+      // What the activation CHANGED (activation re-puts every declared entry
+      // as a copy, so identity is no measure): value, version, text, merges.
+      const same = (a: Entry | undefined, b: Entry | undefined): boolean =>
+        !!a && !!b && a.json === b.json && a.versionKey === b.versionKey && a.type === b.type &&
+        a.text === b.text && a.mergeIds.join() === b.mergeIds.join();
+      const affected = new Set<string>();
+      for (const name of new Set([...before.keys(), ...store.keys()])) {
+        if (!same(before.get(name), store.get(name))) affected.add(name);
+      }
+      provisional = { token, before, affected, ...saved, flush };
     },
     commit(token, defer) {
       if (!running || running.token !== token) return;
       const staged = running;
       running = null;
-      if (staged.early) return; // applied when its pattern was installed
+      if (staged.early) {
+        // Applied when its pattern was installed: now it stands.
+        if (provisional?.token === token) confirmProvisional();
+        return;
+      }
+      confirmProvisional();
       trust(token);
       if (defer) {
         deferred.push(staged);
+        while (deferred.length > MAX_REMEMBER_WAITING) forget(deferred.shift()!.token);
         return;
       }
       dropDeferredBefore(token);
@@ -613,9 +675,24 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
       }
     },
     rollback(token) {
-      // An evaluation whose pattern was already installed (early) keeps its
-      // state — that pattern is playing — and only loses write authority.
       if (running?.token === token) running = null;
+      if (provisional?.token === token) {
+        // Activated when its pattern was installed, then cancelled or
+        // superseded before it committed: put back every name it changed
+        // (a listener write to one of them since loses — restore wins; writes
+        // to other names stay), and never announce its merges.
+        const p = provisional;
+        provisional = null;
+        for (const name of p.affected) {
+          const prev = p.before.get(name);
+          if (prev) store.set(name, prev);
+          else store.delete(name);
+        }
+        committedNames = p.committedNames;
+        committed = p.committed;
+        deferred = p.deferred;
+        changed();
+      }
       deferred = deferred.filter((d) => d.token !== token);
       forget(token);
     },
@@ -623,6 +700,7 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
     declare(name, init, options) {
       const api = `remember('${name}')`;
       if (inMerge) throw new TypeError(`${api}: a merge can't declare remembered state — declare it at the top level`);
+      if (inUpdate || replaying) throw new TypeError(`${api}: declare remembered state at the top level, not inside update()`);
       if (options !== undefined && (options === null || typeof options !== "object")) {
         throw new TypeError(`${api}: the third argument is an options object, e.g. { describe: v => '…', version: 1 }`);
       }
@@ -686,17 +764,23 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
           return read();
         },
         set(next: unknown, lab?: RememberLabel) {
-          write(decl, token, () => {
-            const out = freezeJson(next, `${api}.set`);
-            if (out.type !== decl.type) throw new TypeError(`${api}.set: the value must stay a${decl.type === "array" || decl.type === "object" ? "n" : ""} ${decl.type}, like its init`);
-            return out;
-          }, lab);
+          // Validated, copied and frozen NOW: a staged set replays this value,
+          // not the caller's object as it is by then (Codex review, round 3).
+          const out = freezeJson(next, `${api}.set`);
+          if (out.type !== decl.type) throw new TypeError(`${api}.set: the value must stay a${decl.type === "array" || decl.type === "object" ? "n" : ""} ${decl.type}, like its init`);
+          write(decl, token, () => out, lab);
         },
         update(fn: (draft: any) => unknown, lab?: RememberLabel) {
           if (typeof fn !== "function") throw new TypeError(`${api}.update(fn) needs a function, got ${typeof fn}`);
           write(decl, token, (_current, json) => {
             const draft = JSON.parse(json);
-            const result = fn(draft);
+            let result: unknown;
+            inUpdate++;
+            try {
+              result = fn(draft);
+            } finally {
+              inUpdate--;
+            }
             if (isThenable(result)) throw new TypeError(`${api}.update: fn must be synchronous (no async/await)`);
             const out = freezeJson(result === undefined ? draft : result, `${api}.update`);
             if (out.type !== decl.type) throw new TypeError(`${api}.update: the value must stay a${decl.type === "array" || decl.type === "object" ? "n" : ""} ${decl.type}, like its init`);
@@ -710,6 +794,7 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
     stop() {
       disposed = true;
       store.clear();
+      provisional = null;
       running = null;
       deferred = [];
       committed = [];

@@ -25,7 +25,7 @@ export function hapStart(hap: HapLike): number {
   return Number((hap.whole ?? hap.part).begin);
 }
 
-const halves = new WeakMap<object, { before: PatternLike; after: PatternLike; boundary: number }>();
+const halves = new WeakMap<object, { before: PatternLike; after: PatternLike; boundary: number; fire?: () => void }>();
 
 /**
  * What `pattern` plays from `cycle` on, without spliced halves that are
@@ -36,6 +36,9 @@ export function settle<P extends PatternLike>(pattern: P, cycle: number): P {
   for (let guard = 0; guard < 64; guard++) {
     const h = halves.get(p as object);
     if (!h || cycle < h.boundary) return p as P;
+    // Dropping a wrapper whose bar hook never fired (no query crossed the bar
+    // yet) would lose its remember() state: fire it first (Codex, round 3).
+    h.fire?.();
     p = h.after;
   }
   return p as P;
@@ -58,8 +61,9 @@ export function spliceAt<P extends PatternLike>(
     before.filterHaps((hap) => hapStart(hap) < boundary),
     next.filterHaps((hap) => hapStart(hap) >= boundary),
   );
-  if (onBoundary) spliced = withBoundaryHook(spliced, boundary, onBoundary);
-  halves.set(spliced as object, { before, after: next, boundary });
+  let fire: (() => void) | undefined;
+  if (onBoundary) ({ pattern: spliced, fire } = withBoundaryHook(spliced, boundary, onBoundary));
+  halves.set(spliced as object, { before, after: next, boundary, fire });
   return spliced;
 }
 
@@ -74,14 +78,7 @@ export function spliceAt<P extends PatternLike>(
  * rings across it comes back as two fragments of the same event, and only the
  * one holding its start is triggered — as before.
  */
-function withBoundaryHook<P extends PatternLike>(pattern: P, boundary: number, hook: () => void): P {
-  const Ctor = (pattern as unknown as { constructor?: new (q: (state: any) => unknown) => P }).constructor;
-  const query = (pattern as unknown as { query?: (state: any) => unknown[] }).query;
-  if (typeof Ctor !== "function" || typeof query !== "function") {
-    hook(); // not a Strudel pattern we can wrap: apply now rather than never
-    return pattern;
-  }
-  let fired = false;
+function withBoundaryHook<P extends PatternLike>(pattern: P, boundary: number, hook: () => void): { pattern: P; fire: () => void } {
   let hooked = false;
   const fire = () => {
     if (hooked) return;
@@ -92,31 +89,43 @@ function withBoundaryHook<P extends PatternLike>(pattern: P, boundary: number, h
       /* the hook never breaks the music */
     }
   };
+  const Ctor = (pattern as unknown as { constructor?: new (q: (state: any) => unknown) => P }).constructor;
+  const query = (pattern as unknown as { query?: (state: any) => unknown[] }).query;
+  if (typeof Ctor !== "function" || typeof query !== "function") {
+    fire(); // not a Strudel pattern we can wrap: apply now rather than never
+    return { pattern, fire };
+  }
   const steps = (pattern as unknown as { _steps?: unknown })._steps;
-  return new (Ctor as unknown as new (q: (state: any) => unknown, steps?: unknown) => P)((state: any) => {
+  const wrapped = new (Ctor as unknown as new (q: (state: any) => unknown, steps?: unknown) => P)((state: any) => {
     const span = state?.span;
-    if (fired || !(Number(span?.end) > boundary)) return query.call(pattern, state);
-    fired = true;
+    if (hooked || !(Number(span?.end) > boundary)) return query.call(pattern, state);
     if (!(Number(span.begin) < boundary)) {
       fire();
       return query.call(pattern, state);
     }
-    let bar: unknown;
-    let before: unknown[];
+    let beforeSpan: unknown;
+    let afterSpan: unknown;
     try {
       const TimeSpan = span.constructor as new (b: unknown, e: unknown) => unknown;
       // The bar as a Fraction of the same library (fraction.js refuses `new
       // Fraction(n)` here): arithmetic on the span's own begin.
-      bar = span.begin.sub(span.begin).add(boundary);
-      before = query.call(pattern, state.setSpan(new TimeSpan(span.begin, bar)));
-      fire();
-      return before.concat(query.call(pattern, state.setSpan(new TimeSpan(bar, span.end))));
+      const bar = span.begin.sub(span.begin).add(boundary);
+      beforeSpan = new TimeSpan(span.begin, bar);
+      afterSpan = new TimeSpan(bar, span.end);
     } catch {
       // Could not split this query: apply at the bar's query instead.
       fire();
       return query.call(pattern, state);
     }
+    // A pattern error in the old half propagates with the hook unfired: the
+    // next crossing query splits again. One in the new half propagates too —
+    // never a retry of the whole arc after the hook, which would hand the old
+    // half's last notes the new state (Codex review, round 3).
+    const before = query.call(pattern, state.setSpan(beforeSpan));
+    fire();
+    return before.concat(query.call(pattern, state.setSpan(afterSpan)));
   }, steps);
+  return { pattern: wrapped, fire };
 }
 
 export interface SwapOutcome {

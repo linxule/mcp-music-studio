@@ -2242,6 +2242,8 @@ function installEvaluateHook(editor: any): void {
   const original = editor.evaluate.bind(editor);
   // remember() state applied at setPattern (hookSchedulerForEarlyState below).
   let earlyStateToken: number | null = null;
+  // The renderGeneration the early-state evaluation began in: a cancel moves it.
+  let earlyStateGeneration = -1;
   let evaluationsInFlight = 0;
   const hookedSchedulers = new WeakSet<object>();
   editor.evaluate = async (shouldPlay?: unknown) => {
@@ -2290,8 +2292,16 @@ function installEvaluateHook(editor: any): void {
    * scheduler's setPattern applies the evaluation's state first. Only when
    * exactly ONE evaluation is in flight: with two, the call can't be tied to
    * its evaluation (a stalled run must never apply a newer one's state — the
-   * 0.8 splice lesson), and the state applies at the commit as before.
+   * 0.8 splice lesson), and the state applies at the commit as before — so
+   * with overlapping evaluations (rare: they queue; only one that waited past
+   * EVALUATION_QUEUE_MAX_WAIT_MS overlaps) the first query of the new pattern
+   * can hear the previous state for one scheduler tick. Accepted (Codex,
+   * round 3: #1 partial).
    * A quantized swap never uses it: its state lands at the bar.
+   *
+   * The activation is PROVISIONAL (remember-store): a cancel or a newer run
+   * after this point rolls it back; only the commit announces its merges.
+   * An evaluation already cancelled (renderGeneration moved) skips it.
    */
   function hookSchedulerForEarlyState(scheduler: any): void {
     if (!scheduler || hookedSchedulers.has(scheduler) || typeof scheduler.setPattern !== "function") return;
@@ -2299,7 +2309,7 @@ function installEvaluateHook(editor: any): void {
     const install = scheduler.setPattern;
     scheduler.setPattern = function (this: unknown, ...args: unknown[]) {
       const token = earlyStateToken;
-      if (token !== null && evaluationsInFlight === 1) {
+      if (token !== null && evaluationsInFlight === 1 && earlyStateGeneration === renderGeneration) {
         earlyStateToken = null;
         try {
           stage.activateStateNow(token);
@@ -2371,6 +2381,7 @@ function installEvaluateHook(editor: any): void {
     hookSchedulerForEarlyState(editor.repl?.scheduler);
     evaluationsInFlight++;
     earlyStateToken = splice ? null : stageToken;
+    earlyStateGeneration = generation;
     try {
       await original(holdForVoice ? false : shouldPlay !== false);
     } catch (err) {
