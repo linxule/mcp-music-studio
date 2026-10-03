@@ -211,7 +211,14 @@ export interface SessionData {
   endedAt?: number | null;
   endedCycle?: number | null;
   /** The piece's remembered state as the widget last sent it — replaced whole, never in the log. */
-  remembered?: { at: number; list: RememberedEntry[]; seq?: number | null; client?: string | null } | null;
+  remembered?: {
+    at: number;
+    list: RememberedEntry[];
+    seq?: number | null;
+    client?: string | null;
+    /** Newest snapshot seq per player, for the last few players (a snapshot older than its player's newest is ignored). */
+    seen?: Record<string, number>;
+  } | null;
 }
 
 /** When this session's storage is deleted: 2 h after the last activity, or 10 min after it was ended. */
@@ -347,6 +354,9 @@ export function latestRememberState(
   return { list: [...byName.values()].slice(0, REMEMBER_MAX_NAMES), seq: seq !== null && seq >= 0 ? Math.floor(seq) : null, client };
 }
 
+/** Players whose newest snapshot seq the session keeps (a reload is a new player). */
+export const REMEMBER_SEEN_PLAYERS = 8;
+
 /** The latest `rememberState` in a widget batch, validated; null when the batch carries none. */
 export function coerceRememberState(raw: unknown, max = REMEMBER_STATE_SCAN): RememberedEntry[] | null {
   return latestRememberState(raw, max)?.list ?? null;
@@ -359,14 +369,27 @@ export function coerceRememberState(raw: unknown, max = REMEMBER_STATE_SCAN): Re
 export function ingestWidgetBatch(data: SessionData, raw: unknown, now: number): SessionEvent[] {
   const state = latestRememberState(raw);
   const prev = data.remembered;
-  // The same player's older snapshot, landing after a newer one: ignore it.
+  // A player's older snapshot, landing after a newer one of the SAME player —
+  // even with another player's snapshot in between (A2 → B1 → A1, Codex
+  // review round 2): ignore it. The newest seq is kept per player, for the
+  // last REMEMBER_SEEN_PLAYERS players.
+  const seen: Record<string, number> = { ...(prev?.seen ?? {}) };
+  if (prev?.client && typeof prev.seq === "number" && !(prev.client in seen)) seen[prev.client] = prev.seq;
   const stale =
-    !!state && !!prev && state.client !== null && prev.client === state.client &&
-    state.seq !== null && typeof prev.seq === "number" && state.seq <= prev.seq;
+    !!state && state.client !== null && state.seq !== null && state.client in seen && state.seq <= seen[state.client];
   if (state && !stale) {
     data.remembered = { at: now, list: state.list };
     if (state.seq !== null) data.remembered.seq = state.seq;
-    if (state.client !== null) data.remembered.client = state.client;
+    if (state.client !== null) {
+      data.remembered.client = state.client;
+      if (state.seq !== null) {
+        delete seen[state.client];
+        seen[state.client] = state.seq;
+      }
+    }
+    const players = Object.keys(seen);
+    for (const old of players.slice(0, Math.max(0, players.length - REMEMBER_SEEN_PLAYERS))) delete seen[old];
+    if (Object.keys(seen).length) data.remembered.seen = seen;
   }
   const added = appendEvents(data, coerceEvents(raw), now);
   if (state && !added.length) enforceSessionBudget(data);

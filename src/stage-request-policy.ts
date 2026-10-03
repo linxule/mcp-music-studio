@@ -10,6 +10,13 @@
 export interface PieceStagePolicy {
   /** May the piece with this code open the stage? */
   shouldOpen(code: string): boolean;
+  /**
+   * The piece with this code asks for the stage. Returns whether the caller
+   * should open it now. When the stage is already open, the asking piece
+   * becomes the one it is open for — leaving then declines THIS piece, not the
+   * one that opened it earlier (Codex review, round 2).
+   */
+  requested(code: string, stageIsOpen: boolean): boolean;
   /** The stage was opened at this piece's request. */
   opened(code: string): void;
   /** The listener left the stage (button or Escape). */
@@ -19,8 +26,17 @@ export interface PieceStagePolicy {
 export function createPieceStagePolicy(): PieceStagePolicy {
   let openedFor: string | null = null;
   let declinedFor: string | null = null;
+  const shouldOpen = (code: string) => declinedFor === null || declinedFor !== code;
   return {
-    shouldOpen: (code) => declinedFor === null || declinedFor !== code,
+    shouldOpen,
+    requested(code, stageIsOpen) {
+      if (!shouldOpen(code)) return false;
+      if (stageIsOpen) {
+        openedFor = code;
+        return false;
+      }
+      return true;
+    },
     opened(code) {
       openedFor = code;
     },

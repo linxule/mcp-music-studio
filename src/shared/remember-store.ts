@@ -139,11 +139,21 @@ interface Decl {
   mergeId?: string;
 }
 
+interface StagedOp {
+  name: string;
+  /** The new value from the current one: re-run at activation on the value it lands on. */
+  compute: (current: unknown, json: string) => Validated;
+  /** What it computed when it was made (the base for the next write in the same evaluation). */
+  value: Validated;
+}
+
 interface Staged {
   token: number;
   decls: Map<string, Decl>;
-  /** Top-level set/update calls, in order: applied after the merges. */
-  ops: Array<{ name: string; value: Validated }>;
+  /** set/update calls staged with the evaluation, in order: replayed after its resets, before its merges. */
+  ops: StagedOp[];
+  /** Its state was applied when its pattern was installed (activateEarly), before its commit. */
+  early: boolean;
 }
 
 /** FNV-1a, 32 bit, as 8 hex digits. */
@@ -279,14 +289,22 @@ function describeText(entry: Pick<Entry, "describe" | "value">): string | null {
 const isThenable = (v: unknown) => !!v && (typeof v === "object" || typeof v === "function") && typeof (v as any).then === "function";
 
 export interface RememberStore {
-  /** An evaluation is starting (supersedes one that is committed but not activated yet). */
+  /** An evaluation is starting. */
   begin(token: number): void;
-  /** It succeeded. `defer`: its state waits for activate(token); otherwise it applies now. */
+  /**
+   * It succeeded. `defer`: its state waits for activate(token) (its swap's bar);
+   * otherwise it applies now (unless it already did, at activateEarly).
+   */
   commit(token: number, defer: boolean): void;
+  /**
+   * The running evaluation's pattern is being installed (and may be queried at
+   * once, e.g. a stopped player starting): apply its state now, before that.
+   */
+  activateEarly(token: number): void;
   /** Apply a committed evaluation's staged state (its swap reached the bar). */
   /** `atCycle`: the bar it lands on (a swap's boundary), reported instead of the clock's lookahead. */
   activate(token: number, atCycle?: number): void;
-  /** It failed or was cancelled: drop its staged state. */
+  /** It failed or was cancelled: drop its staged state; its handles stop writing. */
   rollback(token: number): void;
   /** Declare a name in the running evaluation (or, outside one, at once). */
   declare(name: string, init: unknown, options?: RememberOptions): RememberHandle;
@@ -296,26 +314,43 @@ export interface RememberStore {
   stop(): void;
 }
 
+/** Committed evaluations remembered for write authority (the newest writes). */
+const MAX_COMMITTED_TOKENS = 8;
+
 export function createRememberStore(hooks: RememberHooks): RememberStore {
   const store = new Map<string, Entry>();
   let running: Staged | null = null;
-  let deferred: Staged | null = null;
-  /** The committed evaluation: its handles write live. */
-  let activeToken = 0;
-  /** Names the committed evaluation declared: never evicted. */
+  /** Committed evaluations whose state waits for their swap's bar, oldest first. */
+  let deferred: Staged[] = [];
+  /**
+   * Committed evaluations, oldest first. The newest one's handles write (its
+   * callbacks are the live ones); a rolled-back or superseded one is removed,
+   * so authority never returns to an evaluation whose state was discarded.
+   */
+  let committed: number[] = [];
+  const authority = (): number => (committed.length ? committed[committed.length - 1] : 0);
+  const forget = (token: number): void => {
+    committed = committed.filter((t) => t !== token);
+  };
+  const trust = (token: number): void => {
+    forget(token);
+    committed.push(token);
+    if (committed.length > MAX_COMMITTED_TOKENS) committed.splice(0, committed.length - MAX_COMMITTED_TOKENS);
+  };
+  /** Names the active evaluation declared: never evicted. */
   let committedNames = new Set<string>();
-  /** The committed evaluation before the latest commit (a rolled-back deferred one hands writing back). */
-  let previousActive = 0;
   let disposed = false;
-  /** Bumped on every store change: previews recompute only then. */
-  let storeGen = 0;
-  /** >0 while a merge runs: a merge edits its draft, it never writes through a handle. */
+  /** >0 while a merge runs: a merge edits its draft — it never writes or declares through the store. */
   let inMerge = 0;
-  const previews = new WeakMap<Staged, Map<string, { gen: number; ops: number; value: unknown; json: string }>>();
 
   /** Never evict what the playing piece declared, nor what a waiting one will. */
   const protectedNames = (...extra: string[]): Set<string> =>
-    new Set([...committedNames, ...(deferred?.decls.keys() ?? []), ...(running?.decls.keys() ?? []), ...extra]);
+    new Set([
+      ...committedNames,
+      ...deferred.flatMap((d) => [...d.decls.keys()]),
+      ...(running?.decls.keys() ?? []),
+      ...extra,
+    ]);
 
   const evict = (protect: Set<string>): void => {
     while (store.size > MAX_REMEMBER_NAMES) {
@@ -327,7 +362,6 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
         }
       }
       store.delete(victim ?? store.keys().next().value!);
-      storeGen++;
     }
   };
 
@@ -335,7 +369,6 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
   const put = (entry: Entry): void => {
     store.delete(entry.name);
     store.set(entry.name, entry);
-    storeGen++;
   };
 
   const fresh = (decl: Decl, previous: Entry | undefined): Entry => {
@@ -394,50 +427,24 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
   };
 
   /**
-   * What an evaluation whose state is not active yet reads: the latest stored
-   * value with ITS reset, merge and writes applied — exactly what activation
-   * will store if nothing changes first. So a pattern hears its own state from
-   * its first query (a stopped player starts inside the evaluation, before the
-   * commit — Codex review), while the old pattern keeps reading the store until
-   * the bar. Nothing is stored or logged here; a merge that fails is reported
-   * at activation, and reads the unmerged value until then.
+   * The value a write staged in `staged` starts from: the evaluation's last
+   * staged write to the name, else the stored value — or init, when the
+   * evaluation resets the name. (No merge: merges apply at activation, after
+   * the evaluation's own writes, on whatever value is there by then.)
    */
-  const previewOf = (staged: Staged, decl: Decl): { value: unknown; json: string } => {
-    let cache = previews.get(staged);
-    if (!cache) previews.set(staged, (cache = new Map()));
-    const hit = cache.get(decl.name);
-    if (hit && hit.gen === storeGen && hit.ops === staged.ops.length) return hit;
-    let out: { value: unknown; json: string };
-    let last: Validated | undefined;
-    for (const op of staged.ops) if (op.name === decl.name) last = op.value;
-    if (last) {
-      out = { value: last.value, json: last.json };
-    } else {
-      const stored = store.get(decl.name);
-      const base = fits(stored, decl) ? stored : null;
-      out = base ? { value: base.value, json: base.json } : { value: decl.init, json: decl.initJson };
-      if (decl.merge && decl.mergeId && !(base?.mergeIds.includes(decl.mergeId) ?? false)) {
-        try {
-          const v = runMerge(decl, out.json);
-          out = { value: v.value, json: v.json };
-        } catch {
-          /* reported when the state activates */
-        }
-      }
-    }
-    cache.set(decl.name, { gen: storeGen, ops: staged.ops.length, ...out });
-    return out;
+  const stagedBase = (staged: Staged, decl: Decl): { value: unknown; json: string } => {
+    for (let i = staged.ops.length - 1; i >= 0; i--) if (staged.ops[i].name === decl.name) return staged.ops[i].value;
+    const stored = store.get(decl.name);
+    return fits(stored, decl) ? stored : { value: decl.init, json: decl.initJson };
   };
 
-  /** The evaluation a handle belongs to, while its state is not active yet. */
-  const pendingFor = (token: number, decl: Decl): Staged | null => {
-    const staged = running?.token === token ? running : deferred?.token === token ? deferred : null;
-    return staged && staged.decls.get(decl.name) === decl ? staged : null;
-  };
-
-  const activateStaged = (staged: Staged, replaceCommitted: boolean): void => {
-    if (disposed) return;
-    // Everything into a scratch map first: one bad merge discards the lot.
+  /**
+   * Apply an evaluation's state: for each name its reset (or the stored
+   * value), then its staged writes replayed in order on that value, then its
+   * merges — all into a scratch map first, so one failure discards the lot.
+   */
+  const activateStaged = (staged: Staged, replaceCommitted: boolean): boolean => {
+    if (disposed) return false;
     const scratch = new Map<string, Entry>();
     const touched = new Set<string>();
     const merged: Array<{ name: string; label: string | null }> = [];
@@ -456,44 +463,59 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
           next = fresh(decl, stored);
           touched.add(decl.name);
         }
-        if (decl.merge && decl.mergeId && !next.mergeIds.includes(decl.mergeId)) {
-          const v = runMerge(decl, next.json);
-          next.value = v.value;
-          next.json = v.json;
-          next.rev++;
-          next.mergeIds.push(decl.mergeId);
-          if (next.mergeIds.length > MAX_MERGE_IDS) next.mergeIds.splice(0, next.mergeIds.length - MAX_MERGE_IDS);
-          next.text = describeText(next);
-          touched.add(decl.name);
-          merged.push({ name: decl.name, label: decl.label ?? null });
-        }
         scratch.set(decl.name, next);
       }
       for (const op of staged.ops) {
         const next = scratch.get(op.name);
         if (!next) continue;
-        next.value = op.value.value;
-        next.json = op.value.json;
+        const v = op.compute(next.value, next.json);
+        next.value = v.value;
+        next.json = v.json;
         next.rev++;
         next.text = describeText(next);
         touched.add(op.name);
       }
+      for (const decl of staged.decls.values()) {
+        const next = scratch.get(decl.name)!;
+        if (!decl.merge || !decl.mergeId || next.mergeIds.includes(decl.mergeId)) continue;
+        const v = runMerge(decl, next.json);
+        next.value = v.value;
+        next.json = v.json;
+        next.rev++;
+        next.mergeIds.push(decl.mergeId);
+        if (next.mergeIds.length > MAX_MERGE_IDS) next.mergeIds.splice(0, next.mergeIds.length - MAX_MERGE_IDS);
+        next.text = describeText(next);
+        touched.add(decl.name);
+        merged.push({ name: decl.name, label: decl.label ?? null });
+      }
     } catch (error) {
       hooks.reportError("remember", error);
-      return;
+      return false;
     }
     const now = hooks.now();
     for (const entry of scratch.values()) {
       if (touched.has(entry.name)) entry.at = now;
       put(entry);
     }
+    const before = committedNames;
     committedNames = replaceCommitted ? new Set(staged.decls.keys()) : new Set([...committedNames, ...staged.decls.keys()]);
     evict(protectedNames(...staged.decls.keys()));
+    // A name the playing piece stopped (or started) declaring reads differently
+    // in the snapshot ("kept from earlier code"): that is a change too.
+    let flipped = false;
+    for (const name of store.keys()) if (before.has(name) !== committedNames.has(name)) flipped = true;
     for (const m of merged) {
       const entry = store.get(m.name);
       if (entry) announce(entry, "ai", m.label);
     }
-    if (touched.size) changed();
+    if (touched.size || flipped) changed();
+    return true;
+  };
+
+  /** Swaps waiting for a bar before `token` never play once `token` takes over. */
+  const dropDeferredBefore = (token: number): void => {
+    for (const d of deferred) if (d.token < token) forget(d.token);
+    deferred = deferred.filter((d) => d.token >= token);
   };
 
   const write = (decl: Decl, token: number, compute: (current: unknown, json: string) => Validated, label: RememberLabel | undefined): void => {
@@ -501,25 +523,25 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
     const api = `remember('${decl.name}')`;
     if (inMerge) throw new TypeError(`${api}: a merge can't write through a handle — change its draft (or return a new value) instead`);
     requireLabel(`${api}.set/update`, label);
-    // Top level of the evaluation that is running: staged with it, on top of
-    // what that evaluation reads (its reset and merges).
-    if (running && token === running.token) {
-      const base = previewOf(running, decl);
-      running.ops.push({ name: decl.name, value: compute(base.value, base.json) });
+    // Top level of the evaluation that is running: staged with it. Validated
+    // now (a bad value throws to the piece), replayed at activation.
+    if (running && !running.early && token === running.token) {
+      const base = stagedBase(running, decl);
+      running.ops.push({ name: decl.name, compute, value: compute(base.value, base.json) });
       return;
     }
-    // A retired (or rolled-back) evaluation's handle: its leftover callbacks
-    // must not write into the state of the piece that replaced it.
-    if (token !== activeToken) return;
+    // A retired, rolled-back or superseded evaluation's handle: its leftover
+    // callbacks must not write into the state of the piece that replaced it.
+    if (token !== authority()) return;
     const stored = store.get(decl.name);
-    const pending = pendingFor(token, decl);
-    if (pending && !fits(stored, decl)) {
+    const pending = deferred.find((d) => d.token === token);
+    if (pending && pending.decls.get(decl.name) === decl && !fits(stored, decl)) {
       // This evaluation resets the name at its bar, which hasn't come: the
-      // listener's write waits with the reset (the old pattern keeps the old
-      // value; nothing is stored if the write is refused — Codex review).
-      const base = previewOf(pending, decl);
+      // write waits with the reset (the old pattern keeps the old value, and a
+      // refused write stores nothing — Codex review).
+      const base = stagedBase(pending, decl);
       const v = compute(base.value, base.json);
-      pending.ops.push({ name: decl.name, value: v });
+      pending.ops.push({ name: decl.name, compute, value: v });
       if (hooks.listenerWriting()) {
         const shown: Entry = { ...fresh(decl, stored), value: v.value, json: v.json };
         shown.text = describeText(shown);
@@ -550,23 +572,39 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
 
   return {
     begin(token) {
-      // A newer evaluation supersedes one whose state never reached its bar.
-      deferred = null;
-      running = { token, decls: new Map(), ops: [] };
+      // A newer evaluation does not cancel a swap still waiting for its bar:
+      // if the newer one fails, that swap's pattern is what plays at the bar,
+      // so its state must land there too. It is superseded only when a newer
+      // one takes over (a commit that applies now, or an earlier bar).
+      running = { token, decls: new Map(), ops: [], early: false };
+    },
+    activateEarly(token) {
+      if (!running || running.token !== token || running.early) return;
+      running.early = true;
+      dropDeferredBefore(token);
+      trust(token);
+      activateStaged(running, true);
     },
     commit(token, defer) {
       if (!running || running.token !== token) return;
       const staged = running;
       running = null;
-      previousActive = activeToken;
-      activeToken = token;
-      if (defer) deferred = staged;
-      else activateStaged(staged, true);
+      if (staged.early) return; // applied when its pattern was installed
+      trust(token);
+      if (defer) {
+        deferred.push(staged);
+        return;
+      }
+      dropDeferredBefore(token);
+      activateStaged(staged, true);
     },
     activate(token, atCycle) {
-      if (!deferred || deferred.token !== token) return;
-      const staged = deferred;
-      deferred = null;
+      const i = deferred.findIndex((d) => d.token === token);
+      if (i < 0) return;
+      const staged = deferred[i];
+      // Older swaps still waiting for a later bar never play now.
+      for (const d of deferred.slice(0, i)) forget(d.token);
+      deferred = deferred.slice(i + 1);
       landingCycle = typeof atCycle === "number" && Number.isFinite(atCycle) ? atCycle : null;
       try {
         activateStaged(staged, true);
@@ -575,16 +613,16 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
       }
     },
     rollback(token) {
+      // An evaluation whose pattern was already installed (early) keeps its
+      // state — that pattern is playing — and only loses write authority.
       if (running?.token === token) running = null;
-      if (deferred?.token === token) {
-        deferred = null;
-        // Its handles stop writing; the evaluation it was replacing writes again.
-        if (activeToken === token) activeToken = previousActive;
-      }
+      deferred = deferred.filter((d) => d.token !== token);
+      forget(token);
     },
-    declaresNow: (name) => !!running?.decls.has(name),
+    declaresNow: (name) => !!running && !running.early && running.decls.has(name),
     declare(name, init, options) {
       const api = `remember('${name}')`;
+      if (inMerge) throw new TypeError(`${api}: a merge can't declare remembered state — declare it at the top level`);
       if (options !== undefined && (options === null || typeof options !== "object")) {
         throw new TypeError(`${api}: the third argument is an options object, e.g. { describe: v => '…', version: 1 }`);
       }
@@ -611,7 +649,7 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
         mergeId: opts.merge ? fnv1a(`${String(opts.merge)}\u0000${label ?? ""}\u0000${versionKey}`) : undefined,
       };
       let token: number;
-      if (running) {
+      if (running && !running.early) {
         if (running.decls.has(name)) throw new TypeError(`${api} is declared twice in this piece — declare each name once`);
         if (running.decls.size >= MAX_REMEMBER_PER_EVALUATION) {
           throw new RangeError(`At most ${MAX_REMEMBER_PER_EVALUATION} remember() names per piece`);
@@ -619,17 +657,27 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
         running.decls.set(name, decl);
         token = running.token;
       } else {
-        // Outside an evaluation (inside a callback): it applies at once, and
-        // counts toward the playing piece's names like a top-level one.
-        token = activeToken;
-        if (!committedNames.has(name) && committedNames.size >= MAX_REMEMBER_PER_EVALUATION) {
-          throw new RangeError(`At most ${MAX_REMEMBER_PER_EVALUATION} remember() names per piece`);
+        // Inside a callback: it belongs to the piece whose callbacks are live.
+        token = authority();
+        const pending = deferred.find((d) => d.token === token);
+        if (pending) {
+          // That piece's state waits for its bar: so does this name, and it
+          // counts toward that piece's names (Codex review, round 2).
+          if (!pending.decls.has(name) && pending.decls.size >= MAX_REMEMBER_PER_EVALUATION) {
+            throw new RangeError(`At most ${MAX_REMEMBER_PER_EVALUATION} remember() names per piece`);
+          }
+          pending.decls.set(name, decl);
+        } else {
+          if (!committedNames.has(name) && committedNames.size >= MAX_REMEMBER_PER_EVALUATION) {
+            throw new RangeError(`At most ${MAX_REMEMBER_PER_EVALUATION} remember() names per piece`);
+          }
+          if (!disposed) activateStaged({ token, decls: new Map([[name, decl]]), ops: [], early: false }, false);
         }
-        if (!disposed) activateStaged({ token, decls: new Map([[name, decl]]), ops: [] }, false);
       }
+      // Always the stored value: an evaluation whose state hasn't activated yet
+      // reads what is playing. Its state lands with its pattern — at the
+      // swap's bar, or when its pattern is installed — never as a preview.
       const read = () => {
-        const pending = pendingFor(token, decl);
-        if (pending) return previewOf(pending, decl).value;
         const entry = store.get(name);
         return fits(entry, decl) ? entry.value : decl.init;
       };
@@ -662,9 +710,9 @@ export function createRememberStore(hooks: RememberHooks): RememberStore {
     stop() {
       disposed = true;
       store.clear();
-      storeGen++;
       running = null;
-      deferred = null;
+      deferred = [];
+      committed = [];
       committedNames = new Set();
     },
   };

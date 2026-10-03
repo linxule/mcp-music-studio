@@ -18,6 +18,25 @@ describe("createPieceStagePolicy", () => {
     expect(p.shouldOpen("a chord wheel")).toBe(true);
   });
 
+  it("B8: a piece that asks while the stage is open becomes the one it's open for — leaving declines IT, not the earlier piece", () => {
+    const p = createPieceStagePolicy();
+    expect(p.requested("A", false)).toBe(true);
+    p.opened("A");
+    expect(p.requested("B", true)).toBe(false); // already open: nothing to open
+    p.left();
+    expect(p.shouldOpen("B")).toBe(false); // B was declined
+    expect(p.requested("B", false)).toBe(false); // and B's next request doesn't reopen it
+    expect(p.requested("A", false)).toBe(true); // A asks afresh
+  });
+
+  it("requested() honours an earlier decline of the same piece", () => {
+    const p = createPieceStagePolicy();
+    p.opened("A");
+    p.left();
+    expect(p.requested("A", false)).toBe(false);
+    expect(p.requested("A", true)).toBe(false);
+  });
+
   it("leaving a stage the listener opened themselves declines nothing", () => {
     const p = createPieceStagePolicy();
     p.left();

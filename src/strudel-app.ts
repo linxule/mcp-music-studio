@@ -2240,6 +2240,10 @@ function installEvaluateHook(editor: any): void {
   if (editor.__musicStudioHooked) return;
   editor.__musicStudioHooked = true;
   const original = editor.evaluate.bind(editor);
+  // remember() state applied at setPattern (hookSchedulerForEarlyState below).
+  let earlyStateToken: number | null = null;
+  let evaluationsInFlight = 0;
+  const hookedSchedulers = new WeakSet<object>();
   editor.evaluate = async (shouldPlay?: unknown) => {
     companion?.stop();
     const byPress = playPressIntent;
@@ -2278,6 +2282,34 @@ function installEvaluateHook(editor: any): void {
       finished();
     }
   };
+
+  /**
+   * remember() state must be stored before the scheduler's first query of a
+   * new pattern. Repl.evaluate installs it with scheduler.setPattern — and a
+   * stopped player starts and queries right there (Codex review) — so the
+   * scheduler's setPattern applies the evaluation's state first. Only when
+   * exactly ONE evaluation is in flight: with two, the call can't be tied to
+   * its evaluation (a stalled run must never apply a newer one's state — the
+   * 0.8 splice lesson), and the state applies at the commit as before.
+   * A quantized swap never uses it: its state lands at the bar.
+   */
+  function hookSchedulerForEarlyState(scheduler: any): void {
+    if (!scheduler || hookedSchedulers.has(scheduler) || typeof scheduler.setPattern !== "function") return;
+    hookedSchedulers.add(scheduler);
+    const install = scheduler.setPattern;
+    scheduler.setPattern = function (this: unknown, ...args: unknown[]) {
+      const token = earlyStateToken;
+      if (token !== null && evaluationsInFlight === 1) {
+        earlyStateToken = null;
+        try {
+          stage.activateStateNow(token);
+        } catch (error) {
+          console.error("[stage] remember() state could not apply early:", error);
+        }
+      }
+      return install.apply(this, args);
+    };
+  }
 
   async function evaluateNow(
     shouldPlay: unknown,
@@ -2333,6 +2365,12 @@ function installEvaluateHook(editor: any): void {
     }
     const splice = forSwap && forSwap.boundary !== null ? { boundary: forSwap.boundary } : null;
     const previousPattern = splice ? editor.repl?.scheduler?.pattern : null;
+    // Without a swap the new pattern is queried as soon as it is installed —
+    // inside original() when a stopped player starts — so its remember() state
+    // is applied right before that (setPattern), not at the commit below.
+    hookSchedulerForEarlyState(editor.repl?.scheduler);
+    evaluationsInFlight++;
+    earlyStateToken = splice ? null : stageToken;
     try {
       await original(holdForVoice ? false : shouldPlay !== false);
     } catch (err) {
@@ -2340,6 +2378,9 @@ function installEvaluateHook(editor: any): void {
       if (evaluationSuperseded(editor, generation, seq)) return;
       reportEvaluation(code, err as Error);
       return;
+    } finally {
+      evaluationsInFlight--;
+      if (earlyStateToken === stageToken) earlyStateToken = null;
     }
     // Splice AFTER the evaluation, onto the pattern it installed: nothing is
     // patched while it runs, so a stalled evaluation can't hand its splice to
@@ -3127,7 +3168,7 @@ vizBtn.addEventListener("click", () => {
 const pieceStage = createPieceStagePolicy();
 function requestStageFromPiece(attempt = 0): void {
   const code = getEditor()?.code ?? currentCode;
-  if (stageMode || !pieceStage.shouldOpen(code)) return;
+  if (!pieceStage.requested(code, stageMode)) return;
   if (document.activeElement?.closest?.(".cm-editor")) return;
   // The visuals the stage shows may appear a moment after the evaluation (Hydra).
   if (!vizVisible) {

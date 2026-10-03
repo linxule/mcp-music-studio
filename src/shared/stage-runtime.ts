@@ -320,6 +320,12 @@ export interface Stage {
   commit(token?: number, options?: { deferState?: boolean }): void;
   /** Apply a deferred evaluation's remember() state (no-op once superseded). */
   activateState(token: number, atCycle?: number): void;
+  /**
+   * The running evaluation's pattern is about to be installed (the scheduler
+   * may query it at once — a stopped player starting): apply its remember()
+   * state now, before that first query. Its commit then doesn't apply it again.
+   */
+  activateStateNow(token: number): void;
   /** It failed (or was superseded): drop its registrations and staged state, keep the old ones. */
   rollback(token?: number): void;
   /** remember() values as stored now (a live session's snapshot). */
@@ -799,6 +805,10 @@ export function createStage(env: StageEnv): Stage {
     },
     activateState(token, atCycle) {
       remembering.activate(token, atCycle);
+    },
+    activateStateNow(token) {
+      if (token !== generation || !pending) return;
+      remembering.activateEarly(token);
     },
     rollback(token) {
       if (token !== undefined && token !== generation) return;

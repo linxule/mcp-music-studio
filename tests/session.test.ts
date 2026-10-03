@@ -24,6 +24,7 @@ import {
   coerceRememberState,
   describeRemembered,
   ingestWidgetBatch,
+  REMEMBER_SEEN_PLAYERS,
   isHumanEvent,
   enforceSessionBudget,
   REMEMBER_BLOCK_MAX_CHARS,
@@ -191,21 +192,32 @@ describe("spliceAt — the boundary hook (remember() lands on the bar)", () => {
     expect(span(1, 2)).toHaveLength(4);
     expect(calls).toEqual([]); // ends exactly on the boundary: not yet
     expect(span(1.9, 2.1).length).toBeGreaterThan(0);
-    expect(calls).toEqual([3]); // during the third query (after it computed its events)
+    expect(calls).toEqual([3]); // during the third query, at the bar (between its two halves)
     span(2, 3);
     expect(calls).toEqual([3]); // once
     expect(isSpliced(hooked)).toBe(true);
     expect(settle(hooked, 2.5)).not.toBe(hooked); // the sweep still drops the old half
   });
 
-  it("fires after the crossing query: the old half's last notes keep the old state (Codex review)", () => {
+  it("splits the crossing query at the bar: old notes before it hear the old state, new notes from it the new (Codex review)", () => {
     let state = "old";
     const reader = signal(() => state).segment(4);
     const hooked = spliceAt(reader, reader.fmap((v: string) => v), 1, stack, -Infinity, () => { state = "new"; });
     const values = hooked.queryArc(0.75, 1.25).map((h: any) => `${Number(h.whole.begin)}:${h.value}`);
-    expect(values).toContain("0.75:old");
-    expect(state).toBe("new"); // applied once that query was computed
+    expect(values).toEqual(["0.75:old", "1:new"]);
     expect(hooked.queryArc(1.25, 1.5).map((h: any) => h.value)).toEqual(["new"]);
+  });
+
+  it("splitting changes no onset: an event ringing across the bar is triggered once, from the old half", () => {
+    const plain = spliceAt(sequence("a", "a"), sequence("b", "b"), 1, stack);
+    // "a@3 b" style: whole [0.5, 1.5) straddles the bar.
+    const slow = sequence("x", "y").slow(1.5);
+    const hooked = spliceAt(slow, sequence("b", "b"), 1, stack, -Infinity, () => {});
+    const unhooked = spliceAt(slow, sequence("b", "b"), 1, stack);
+    const on = (p: any) => p.queryArc(0.6, 1.4).filter((h: any) => h.hasOnset()).map((h: any) => `${Number(h.whole.begin)}:${h.value}`);
+    expect(on(hooked)).toEqual(on(unhooked));
+    expect(on(hooked)).toEqual(["0.75:y", "1:b"]); // y rings across the bar: one onset, before it
+    void plain;
   });
 });
 
@@ -1471,6 +1483,27 @@ describe("remember(): the session side (0.11)", () => {
       // A reloaded player (a new client id) starts its count again: taken.
       ingestWidgetBatch(data, [{ t: "rememberState", list: [entry("a", 3)], seq: 1, client: "c2" }], 30);
       expect(data.remembered?.list[0].json).toBe("3");
+    });
+
+    it("#5 (round 2) a player's stale snapshot is refused even after another player's: A2 → B1 → A1", () => {
+      const data = newSession(ID, 0);
+      ingestWidgetBatch(data, [{ t: "rememberState", list: [entry("a", 2)], seq: 2, client: "A" }], 10);
+      ingestWidgetBatch(data, [{ t: "rememberState", list: [entry("a", 5)], seq: 1, client: "B" }], 20);
+      ingestWidgetBatch(data, [{ t: "rememberState", list: [entry("a", 1)], seq: 1, client: "A" }], 30);
+      expect(data.remembered?.list[0].json).toBe("5");
+      // A's next snapshot is newer than its last: taken.
+      ingestWidgetBatch(data, [{ t: "rememberState", list: [entry("a", 3)], seq: 3, client: "A" }], 40);
+      expect(data.remembered?.list[0].json).toBe("3");
+      expect(data.remembered?.seen).toEqual({ B: 1, A: 3 });
+    });
+
+    it(`#5 (round 2) remembers the newest seq for at most ${REMEMBER_SEEN_PLAYERS} players`, () => {
+      const data = newSession(ID, 0);
+      for (let i = 0; i < REMEMBER_SEEN_PLAYERS + 3; i++) {
+        ingestWidgetBatch(data, [{ t: "rememberState", list: [entry("a", i)], seq: 4, client: `p${i}` }], 10 + i);
+      }
+      expect(Object.keys(data.remembered?.seen ?? {})).toHaveLength(REMEMBER_SEEN_PLAYERS);
+      expect(data.remembered?.seen).not.toHaveProperty("p0"); // the oldest player was dropped
     });
 
     it("K5 finds the state anywhere in a long batch", () => {

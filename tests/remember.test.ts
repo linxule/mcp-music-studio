@@ -210,7 +210,7 @@ describe("remember() — merges: the AI's targeted edit, once", () => {
 });
 
 describe("remember() — transactions at the swap's bar", () => {
-  it("deferred state is stored only at activateState: the old pattern reads the old state until then, the new one its own", () => {
+  it("deferred state is stored only at activateState: until the bar every handle reads what is playing", () => {
     const h = harness();
     let old: any;
     h.run(() => {
@@ -221,7 +221,9 @@ describe("remember() — transactions at the swap's bar", () => {
       next = h.g.remember("drums", GRID, { merge: (v: any) => { v.kick[3] = 1 } });
     }, { deferState: true });
     expect(old.value.kick).toEqual([1, 0, 0, 0]);
-    expect(next.value.kick).toEqual([1, 0, 0, 1]); // the new pattern hears its own merge from its first query
+    // No preview (Codex review, round 2): the new pattern is first queried at
+    // the bar, after activation — splice.ts splits that query.
+    expect(next.value.kick).toEqual([1, 0, 0, 0]);
     expect(h.stage.remembered()[0].json).toBe('{"kick":[1,0,0,0],"snare":[0,0,1,0]}');
     h.stage.activateState(token);
     expect(next.value.kick).toEqual([1, 0, 0, 1]);
@@ -285,17 +287,17 @@ describe("remember() — transactions at the swap's bar", () => {
     expect(h.stage.remembered()).toEqual([]);
   });
 
-  it("top-level writes are staged with their evaluation and applied after the merges", () => {
+  it("top-level writes are staged with their evaluation; its merge applies on top of them, at the bar", () => {
     const h = harness();
     let d: any;
     const token = h.run(() => {
-      d = h.g.remember("n", { v: 1 }, { merge: (x: any) => { x.v = 5 } });
+      d = h.g.remember("n", { v: 1 }, { merge: (x: any) => { x.v += 10 } });
       d.update((x: any) => { x.v += 1 });
-      expect(d.value).toEqual({ v: 6 }); // the evaluation reads its own merge and write
+      expect(d.value).toEqual({ v: 1 }); // reads what is stored (nothing yet: init) — no preview
     }, { deferState: true });
     expect(h.stage.remembered()).toEqual([]); // nothing stored before the bar
     h.stage.activateState(token);
-    expect(d.value).toEqual({ v: 6 }); // the top-level update ran on top of the merge, then was stored
+    expect(d.value).toEqual({ v: 12 }); // init 1 → the piece's write 2 → the merge +10
   });
 
   it("a retired evaluation's leftover callback cannot write into its replacement's state", () => {

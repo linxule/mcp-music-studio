@@ -609,7 +609,9 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
   function stageCode() { var ed = getEditor(); return (ed && typeof ed.code === 'string') ? ed.code : ''; }
   function requestStageFromPiece(attempt) {
     var code = stageCode();
-    if (document.body.classList.contains('stage-on') || (stageDeclinedFor !== null && stageDeclinedFor === code)) return;
+    if (stageDeclinedFor !== null && stageDeclinedFor === code) return;
+    // Already open: it is open for THIS piece now, so leaving declines this one.
+    if (document.body.classList.contains('stage-on')) { stageOpenedFor = code; return; }
     var shown = document.body.classList.contains('viz-on') || document.body.classList.contains('hydra-on');
     if (!shown) {
       if (attempt < 10) setTimeout(function () { requestStageFromPiece(attempt + 1); }, 100);

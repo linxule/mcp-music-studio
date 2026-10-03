@@ -53,19 +53,47 @@ const onsets = (pat: any, b: number, e: number) =>
   pat.queryArc(b, e).filter((h: any) => h.hasOnset()).map((h: any) => `${Number(h.whole.begin)}:${h.value}`);
 
 describe("#1 a pattern hears its own state from its first query", () => {
-  it("a stopped player starting inside the evaluation queries the merged value, before the commit", () => {
+  it("activateStateNow (the widget calls it from scheduler.setPattern) stores the state before a stopped player's first query", () => {
     const h = harness();
     h.run(() => {
       h.g.remember("n", 60);
     });
     const token = h.stage.begin();
     const d = h.g.remember("n", 60, { merge: () => 72 });
-    // The REPL's scheduler starts and queries inside the evaluation (Cyclist):
+    expect(d.value).toBe(60); // the evaluation reads what is playing — no preview
+    // repl.evaluate → scheduler.setPattern(pattern, autostart): the hook runs first…
+    h.stage.activateStateNow(token);
+    // …then the Cyclist starts and queries, still inside the evaluation:
     const pat = signal(() => d.value).segment(4);
     expect(onsets(pat, 0, 0.5)).toEqual(["0:72", "0.25:72"]);
-    h.stage.commit(token);
+    h.stage.commit(token); // does not apply it again
     expect(d.value).toBe(72);
-    expect(h.changes.filter((c) => c.by === "ai")).toHaveLength(1); // logged once, at activation
+    expect(h.changes.filter((c) => c.by === "ai")).toHaveLength(1); // the merge ran and was logged once
+  });
+
+  it("a later commit of the same evaluation is a no-op for its state, and its handles keep writing", () => {
+    const h = harness();
+    let d: any;
+    const token = h.stage.begin();
+    d = h.g.remember("n", 1);
+    h.g.onTap(() => d.update((v: number) => v + 1, "plus one"));
+    h.stage.activateStateNow(token);
+    h.stage.commit(token);
+    h.tap();
+    expect(d.value).toBe(2);
+    expect(h.stage.remembered().find((e) => e.name === "n")?.json).toBe("2");
+  });
+
+  it("activateStateNow is ignored for an evaluation that is no longer the running one", () => {
+    const h = harness();
+    const stale = h.stage.begin();
+    h.g.remember("n", 1, { merge: () => 5 });
+    const newer = h.stage.begin();
+    h.g.remember("n", 1);
+    h.stage.activateStateNow(stale);
+    expect(h.stage.remembered()).toEqual([]);
+    h.stage.commit(newer);
+    expect(h.stage.remembered().find((e) => e.name === "n")?.json).toBe("1");
   });
 });
 
@@ -125,7 +153,8 @@ describe("#2 a write while a reset waits for its bar", () => {
     next = 11;
     h.tap(); // accepted: it waits for the bar with the reset
     expect(v1.value).toBe(7);
-    expect(v2.value).toBe(11); // the new piece's view has it
+    expect(v2.value).toBe(10); // nothing previewed: the stored value isn't v2's, so its init
+    expect(h.stage.remembered().find((e) => e.name === "n")?.json).toBe("7");
     h.stage.activateState(token);
     expect(v2.value).toBe(11);
     expect(h.stage.remembered().find((e) => e.name === "n")?.json).toBe("11");

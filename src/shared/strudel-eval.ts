@@ -790,6 +790,7 @@ export async function evalStrudelSandboxed(
       __musicStudioStageChecks: () => {
         for (const check of stageChecks.splice(0)) check();
       },
+      __musicStudioCommitState: () => stageControl.commitState(),
     });
     // codeGeneration only governs THIS context's eval/Function. Every outer-
     // realm function in the sandbox (all of Strudel's, console.log, the inert()
@@ -808,9 +809,12 @@ export async function evalStrudelSandboxed(
       filename: "strudel-pattern.js",
       timeout: timeoutMs,
     });
-    // The stage test frames, under the same vm ceiling (a `while(true)` in a
-    // draw loop must not wedge the validator either).
-    stageControl.commitState();
+    // remember() state (merges run here) and the stage test frames, under the
+    // same vm ceiling: a `while(true)` in a merge or a draw loop must not wedge
+    // the validator either (Codex review, round 2).
+    vm.runInContext("__musicStudioCommitState()", context, {
+      timeout: Math.max(50, timeoutMs - (Date.now() - started)),
+    });
     if (stageChecks.length) {
       vm.runInContext("__musicStudioStageChecks()", context, {
         timeout: Math.max(50, timeoutMs - (Date.now() - started)),
