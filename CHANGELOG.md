@@ -2,15 +2,17 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
-## Unreleased
+## 0.10.2 — October 3, 2026
 
 From a field test of 0.10.1 in the Claude iPhone app and Safari.
 
 - **Fixed — "playing" over "stopped".** When an update reached a stopped player, `get-session` went on saying "rev 1 is loaded in the player, which is stopped", even after Play was pressed and the line above said "playing". It now says Play has started it since. The session log describes the update in the past tense: it arrived while the player was stopped.
 - **`update-session` explains a stopped player.** It says there is no landing bar, because a stopped player starts when Play is pressed. If the player said "playing" just before, the reply adds that it stopped in between: someone pressed Stop, or the phone suspended it (an app in the background or a locked screen).
 - **A player that has gone quiet is not guessed at.** A playing player checks in at least every 20 seconds. When it has been silent for more than 30, `get-session` says when it last reported playing, and that it is probably suspended, instead of estimating a current bar.
-- **Fullscreen works on iPhone.** iPhone Safari has no fullscreen for a page element, so the button did nothing on shared player pages. The player now fills the browser window instead. In a chat whose app keeps the player inline, the player says so instead of doing nothing.
+- **Fullscreen works on iPhone.** iPhone Safari has no fullscreen for a page element, so the button did nothing on shared player pages. The player now fills the browser window instead. In a chat whose app keeps the player inline, the player says so instead of doing nothing. Escape leaves fullscreen from inside the player too.
+- **Two screens on one session.** Every screen that joins a session answers updates. When a stopped screen answers while another reported "playing", `update-session` now says either could be the case instead of claiming the player stopped.
 - **"Ask about selection" replaces the passage panel in chat apps.** The "Work on a passage" panel could send a question but never show an answer there, because chat apps don't call the player's own tools. Chat apps now get one button, shown only while music is selected, that sends the selection and its line numbers to the chat with a question (or copies it where the app can't send messages). In a live session the message reminds the AI it can answer with `update-session`. The full panel stays in the local development host, which does call those tools.
+- The dependency audit skips one advisory (`braces`, GHSA-vfj7-8cjw-p6xm) that has no fixed release yet. It comes from a build tool and only reads this project's own build settings.
 
 ## 0.10.1 — October 2, 2026
 
