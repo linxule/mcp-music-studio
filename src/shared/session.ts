@@ -46,6 +46,16 @@ export const SESSION_IDLE_TTL_MS = 2 * 60 * 60 * 1000;
 export const SESSION_ENDED_TTL_MS = 10 * 60 * 1000;
 /** A widget that has not polled for this long is probably gone. */
 export const SESSION_WIDGET_STALE_MS = 60_000;
+/** How long the Durable Object holds a player's poll open (the poll IS its heartbeat). */
+export const SESSION_POLL_WAIT_MS = 20_000;
+/**
+ * A player re-polls the moment a poll returns, and at once on any change of
+ * state, so a live one checks in at least every SESSION_POLL_WAIT_MS plus a
+ * round trip. A "playing" heartbeat older than this means the player has gone
+ * quiet — on a phone, usually an app in the background or a locked screen,
+ * which suspends it — so the clock is no longer extrapolated from it.
+ */
+export const SESSION_HEARTBEAT_LATE_MS = SESSION_POLL_WAIT_MS + 10_000;
 /** Events kept per session (oldest dropped first). */
 export const SESSION_MAX_EVENTS = 400;
 /** Code edits whose full text is kept (older ones keep only their size). */
@@ -407,6 +417,8 @@ const cyc = (c: number | null | undefined): string =>
 const atCycle = (c: number | null | undefined): string => (c == null ? "while the player was stopped" : `cycle ${cyc(c)}`);
 /** A swap answered with no cycle: the player is stopped, so it plays from Play. */
 export const LOADED_STOPPED = "is loaded in the player, which is stopped — it starts when Play is pressed";
+/** The same answer as history: true when it arrived, not necessarily now. */
+export const ARRIVED_STOPPED = "arrived while the player was stopped, so no bar applied — it was loaded to start on Play";
 
 function describeTaps(taps: Array<Extract<SessionEvent, { t: "tap" }>>): string {
   const n = taps.length;
@@ -469,6 +481,28 @@ export function staleWidgetHint(error: string | undefined | null, widget: string
   );
 }
 
+/**
+ * The newest update was answered by a STOPPED player. That was true when it
+ * arrived; say what is true now. Once a fresh check-in after that answer says
+ * "playing", Play has started it since (claude.ai field test, 2026-10-03: the
+ * header read "playing, around cycle 12.8" over "rev 1 … is stopped").
+ */
+function describeLoadedStopped(
+  data: SessionData,
+  applied: Extract<SessionEvent, { t: "applied" }>,
+  now: number,
+): string {
+  const hb = data.heartbeat;
+  const playingSince =
+    hb !== null && hb.state === "playing" && hb.at > applied.at && now - hb.at <= SESSION_HEARTBEAT_LATE_MS;
+  if (!playingSince) return `Your latest update (rev ${applied.rev}) ${LOADED_STOPPED}.`;
+  const editedSince = data.events.some((e) => e.t === "edit" && e.at > applied.at);
+  return (
+    `Your latest update (rev ${applied.rev}) arrived while the player was stopped; Play has started it since` +
+    (editedSince ? ", and the human has run their own edit since (below)." : " — it is what is playing now.")
+  );
+}
+
 export function describeSession(data: SessionData, now: number, since = data.readSeq, serviceVersion?: string): string {
   const lines: string[] = [];
   if (typeof data.endedAt === "number") {
@@ -498,10 +532,15 @@ export function describeSession(data: SessionData, now: number, since = data.rea
     const heard = hb ? `last checked in ${ago(now - hb.at)}` : "has not checked in since";
     const stale = hb && now - hb.at > SESSION_WIDGET_STALE_MS;
     const est = estimatedCycle(hb, now);
+    const late = hb && !stale && hb.state === "playing" && now - hb.at > SESSION_HEARTBEAT_LATE_MS;
     const state = hb
       ? stale
         ? ` — it may be closed, scrolled away or the app backgrounded (last state: ${hb.state})`
-        : ` — ${hb.state}${est !== null ? `, around cycle ${cyc(est)}` : ""}${hb.cps ? ` at cps ${Math.round(hb.cps * 1000) / 1000}` : ""}`
+        : late
+          ? ` — last reported playing ${ago(now - hb.at)}${hb.cycle !== null ? ` (at cycle ${cyc(hb.cycle)})` : ""}, ` +
+            "and a live player checks in every ~20 s, so it is probably suspended or stopped now " +
+            "(on a phone: the app in the background or the screen locked)"
+          : ` — ${hb.state}${est !== null ? `, around cycle ${cyc(est)}` : ""}${hb.cps ? ` at cps ${Math.round(hb.cps * 1000) / 1000}` : ""}`
       : "";
     const widget = join?.widget ?? null;
     const build = widget
@@ -524,7 +563,7 @@ export function describeSession(data: SessionData, now: number, since = data.rea
       applied
         ? applied.ok
           ? applied.cycle === null
-            ? `Your latest update (rev ${applied.rev}) ${LOADED_STOPPED}.`
+            ? describeLoadedStopped(data, applied, now)
             : `Your latest update (rev ${applied.rev}) applied at cycle ${cyc(applied.cycle)}.`
           : `Your latest update (rev ${applied.rev}) FAILED in the widget: ${applied.error ?? "unknown error"} — the previous pattern kept playing.`
         : (() => {
@@ -643,7 +682,7 @@ export function describeSession(data: SessionData, now: number, since = data.rea
         lines.push(
           e.ok
             ? e.cycle === null
-              ? `- rev ${e.rev} ${LOADED_STOPPED}${e.report ? ` (${e.report})` : "."}`
+              ? `- rev ${e.rev} ${ARRIVED_STOPPED}${e.report ? ` (${e.report})` : "."}`
               : `- rev ${e.rev} applied at cycle ${cyc(e.cycle)}${e.report ? `: ${e.report}` : "."}`
             : `- rev ${e.rev} failed: ${e.error ?? "unknown error"} (the previous pattern kept playing).`,
         );

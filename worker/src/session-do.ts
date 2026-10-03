@@ -44,6 +44,7 @@ import {
   widgetVersion,
   SESSION_MAX_CODE_CHARS,
   SESSION_SWAP_LEAD_S,
+  SESSION_POLL_WAIT_MS,
   isHumanEvent,
   LISTEN_DEFAULT_MS,
   LISTEN_MAX_MS,
@@ -68,7 +69,7 @@ export interface SessionState {
   storage: SessionStorage;
 }
 
-export const POLL_WAIT_MS = 20_000;
+export const POLL_WAIT_MS = SESSION_POLL_WAIT_MS;
 /** get-session(wait) calls one session holds at once. */
 export const MAX_LISTENERS = 2;
 /**
@@ -401,6 +402,7 @@ export class JamSession {
         pattern: { ...pattern, code: "" },
         applied,
         widgetSeenMsAgo,
+        widgetState: hb?.state ?? null,
         estCycle,
         boundary,
         cps: hb?.cps ?? null,
