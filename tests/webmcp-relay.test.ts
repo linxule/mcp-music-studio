@@ -1,4 +1,4 @@
-import { liveStudioSchemas } from "../src/studio-schemas";
+import { liveStudioSchemas, scoreStudioSchemas } from "../src/studio-schemas";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@modelcontextprotocol/ext-apps";
 import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
@@ -429,6 +429,58 @@ describe("relaying the real studio app tools over App/AppBridge", () => {
 
     swap.remove();
     await vi.waitFor(() => expect(web.names()).not.toContain("late-tool"));
+  });
+});
+
+describe("a score share page relays the sheet widget's studio tools", () => {
+  const SCORE_TOOLS = [
+    "explain-selection", "get-studio-state", "play-current-music", "set-score", "stop-music", "suggest-edit", "undo-studio-edit",
+  ];
+
+  it("lists the 7 score studio tools; the share policy offers them minus the review pair, play after a press", async () => {
+    const snapshot: StudioSnapshot = { args: { abcNotation: "X:1\nK:C\nCDEF|" }, playback: "stopped", status: "Click ▶ to play", error: null, playPressed: false };
+    const play = vi.fn(async () => { snapshot.playback = "playing"; });
+    const session = createStudioSession({
+      read: () => structuredClone(snapshot),
+      apply: async (args) => { snapshot.args = args; },
+      play,
+      stop: () => { snapshot.playback = "stopped"; },
+    }, { mode: "score", schemas: scoreStudioSchemas });
+    const app = new App({ name: "Sheet widget", version: "1" }, { tools: { listChanged: true } }, { autoResize: false });
+    registerStudioAppTools(app, session);
+    const bridge = new AppBridge(null, { name: "Share page", version: "1" }, {});
+    const [hostTransport, appTransport] = InMemoryTransport.createLinkedPair();
+    await bridge.connect(hostTransport);
+    await app.connect(appTransport);
+    try {
+      // Parity: what the widget lists is exactly the score studio set.
+      expect((await bridge.listTools({})).tools.map((t) => t.name).sort()).toEqual(SCORE_TOOLS);
+
+      let pressed = false;
+      const web = fakeContext();
+      const relay = createWidgetToolRelay({
+        bridge, modelContext: web.context, exclude: shareRelayExclude(() => pressed), annotate: shareRelayAnnotations,
+      })!;
+      await relay.refresh();
+      expect(web.names()).toEqual(["get-studio-state", "set-score", "stop-music", "undo-studio-edit"]);
+      for (const name of web.names()) expect(web.tools.get(name)!.annotations).toMatchObject({ untrustedContentHint: true });
+
+      // The page reads the widget's playPressed after its "play-pressed" log.
+      snapshot.playPressed = true;
+      const state = await web.run("get-studio-state", {}) as StudioState;
+      expect(state.playPressed).toBe(true);
+      pressed = true;
+      await relay.refresh();
+      expect(web.names()).toEqual(["get-studio-state", "play-current-music", "set-score", "stop-music", "undo-studio-edit"]);
+      expect(SCORE_TOOLS.filter((n) => !shareRelayExclude(() => true)(n))).toEqual(web.names());
+      const played = await web.run("play-current-music", { instanceId: state.instanceId, expectedRevision: state.revision }) as StudioState;
+      expect(played.playback).toBe("playing");
+      relay.dispose();
+    } finally {
+      session.dispose();
+      await app.close();
+      await bridge.close();
+    }
   });
 });
 

@@ -99,6 +99,7 @@ import {
   shareId,
   shareKvKey,
   toPlayShareArgs,
+  type ScoreShareArgs,
   type SharePayload,
 } from "../../src/shared/share-url.js";
 import { ABCJS_CDN_BASE } from "../../src/abcjs-version.js";
@@ -284,8 +285,8 @@ const SHEET_PAGE_CSP = buildPlayerCsp({
 });
 
 function renderSharePayload(payload: SharePayload, url?: URL): Response {
-  if (payload.kind === "play" && url && url.searchParams.get("classic") !== "1") {
-    return renderFullPlayer(payload.args, url);
+  if (url && url.searchParams.get("classic") !== "1") {
+    return payload.kind === "play" ? renderFullPlayer(payload.args, url) : renderFullScorePlayer(payload.args, url);
   }
   return payload.kind === "play"
     ? playerResponse(generateStrudelPlayerHtml(payload.args), STRUDEL_PAGE_CSP)
@@ -294,8 +295,9 @@ function renderSharePayload(payload: SharePayload, url?: URL): Response {
 
 // -----------------------------------------------------------------------------
 // The full player: the real widget, hosted by a page of our own
-// (src/share-host.ts). The standalone page stays behind ?classic=1 — and is
-// still what the local --render-mode browser path writes to disk.
+// (src/share-host.ts), for patterns and scores alike. The standalone page
+// stays behind ?classic=1 — and is still what the local --render-mode browser
+// path writes to disk.
 // -----------------------------------------------------------------------------
 
 /** The share page only frames our widget and talks to nothing itself. */
@@ -319,8 +321,28 @@ function widgetPageCsp(origin: string): string {
   );
 }
 
+/** The sheet widget's CSP, from SHEET_CSP: it bundles abcjs and fetches only soundfonts. */
+const SHEET_WIDGET_CSP = buildPlayerCsp({ connectDomains: SHEET_CSP.connectDomains }, { frameAncestors: "'self'" });
+
+/** A widget page for the full player to frame (same origin). */
+function widgetResponse(html: string, csp: string): Response {
+  return new Response(html, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": csp,
+      "x-robots-tag": "noindex, nofollow",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "cache-control": "public, max-age=300",
+    },
+  });
+}
+
 export interface FullPlayerInit {
-  code: string;
+  /** Absent = "play". */
+  kind?: "play" | "score";
+  code?: string;
+  score?: ScoreShareArgs;
   title?: string;
   bpm?: number;
   session?: { id: string; origin: string; rev?: number };
@@ -357,6 +379,26 @@ function renderFullPlayer(
   // A session page shows whatever the session plays now: never cache it.
   if (session) res.headers.set("cache-control", "no-store");
   return res;
+}
+
+/**
+ * A score's full player: the sheet widget framed from /widget/sheet. Its
+ * arguments go to the widget as play-sheet-music's, so it applies tempo,
+ * style, swing and transpose exactly as it does for a tool call.
+ */
+function renderFullScorePlayer(args: ScoreShareArgs, url: URL): Response {
+  const classic = new URL(url);
+  classic.searchParams.set("classic", "1");
+  const { title, ...score } = args;
+  const html = fullPlayerHtml({
+    kind: "score",
+    // JSON drops the absent options; the title travels on its own, as for a pattern.
+    score,
+    ...(title ? { title } : {}),
+    widget: "/widget/sheet",
+    classic: `${classic.pathname}${classic.search}`,
+  });
+  return playerResponse(html, SHARE_HOST_CSP);
 }
 
 /** Placeholder for a session page that has nothing to show yet. */
@@ -1398,16 +1440,11 @@ export default {
     // GET /play?c=<base64url>&bpm=&title=&autoplay=  — Strudel live pattern
     // The widget, served for the full player page to frame (same origin).
     if (url.pathname === "/widget/strudel") {
-      return new Response(strudelHtml, {
-        headers: {
-          "content-type": "text/html; charset=utf-8",
-          "content-security-policy": widgetPageCsp(url.origin),
-          "x-robots-tag": "noindex, nofollow",
-          "referrer-policy": "no-referrer",
-          "x-content-type-options": "nosniff",
-          "cache-control": "public, max-age=300",
-        },
-      });
+      return widgetResponse(strudelHtml, widgetPageCsp(url.origin));
+    }
+    // The sheet widget, for a score's full player (/score, /p/<id> kind score).
+    if (url.pathname === "/widget/sheet") {
+      return widgetResponse(sheetMusicHtml, SHEET_WIDGET_CSP);
     }
 
     // GET /s/<id> — a live session's second screen: the full player, joined.
@@ -1434,7 +1471,7 @@ export default {
         return renderSharePayload({
           kind: "score",
           args: parseScoreSearchParams(url.searchParams),
-        });
+        }, url);
       } catch (err) {
         return shareError(err);
       }

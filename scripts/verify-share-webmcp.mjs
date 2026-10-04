@@ -10,7 +10,9 @@
 //     play-current-music -> stop-music works, audibly (measured), and a stale
 //     revision comes back as a readable result;
 //   - every relayed tool, writes included, carries untrustedContentHint;
-//   - dispose() takes the tools off the page again.
+//   - dispose() takes the tools off the page again;
+//   - /score does the same for the sheet widget: set-score, stop, undo before ▶;
+//     play-current-music only after a press of ▶ in the score; then audible.
 //
 //   bun run build
 //   (cd worker && bun install && bunx wrangler dev --port 8798)
@@ -181,6 +183,45 @@ const ours = new Set(await page.evaluate(() => window.__share.relay.tools()));
 await page.evaluate(() => window.__share.relay.dispose());
 const after = (await tools()).filter((t) => ours.has(t.name));
 check(ours.size > 0 && after.length === 0, `dispose() unregisters every relayed tool (${ours.size})`, `still listed: ${after.map((t) => t.name).join(", ")}`);
+
+// ---- A score's full player (/score): the sheet widget's 7 studio tools, same policy ----
+const ABC = `X:1\nT:WebMCP score\nM:4/4\nL:1/8\nK:C\n"C"C2E2 G2E2|"F"F2A2 "G"G4|"C"c8|]`;
+await page.goto(`${ORIGIN}/score?a=${b64(ABC)}`);
+for (let i = 0; i < 90 && !(await tools()).some((t) => t.name === "get-studio-state"); i++) await sleep(500);
+const scoreNames = (await tools()).map((t) => t.name).filter((n) => !/^(c2pa|mcp)/i.test(n)).sort();
+console.log(`  score tools: ${scoreNames.join(", ")}`);
+check(
+  JSON.stringify(scoreNames) === JSON.stringify(["get-studio-state", "set-score", "stop-music", "undo-studio-edit"]),
+  "score page, before ▶: get-studio-state, set-score, stop-music, undo-studio-edit (no play, no review pair)",
+  `score page before ▶: ${scoreNames.join(", ")}`,
+);
+const scoreHints = await page.evaluate(() => window.__share?.relayAnnotations?.() ?? null);
+if (scoreHints) check(Object.values(scoreHints).every((a) => a?.untrustedContentHint === true), "every relayed score tool is marked untrustedContentHint");
+const scoreState = await run("get-studio-state");
+check(scoreState?.mode === "score" && String(scoreState?.args?.abcNotation ?? "").includes("WebMCP score") && scoreState?.playback === "stopped", "get-studio-state reads the shared score, stopped", `score state: ${JSON.stringify(scoreState).slice(0, 200)}`);
+const sheet = page.frames().find((f) => f.url().includes("/widget/sheet"));
+await sheet.waitForSelector(".abcjs-midi-start", { timeout: 30000 });
+await sheet.click(".abcjs-midi-start");
+let scoreOpened = [];
+for (let i = 0; i < 60; i++) {
+  scoreOpened = (await tools()).map((t) => t.name);
+  if (scoreOpened.includes("play-current-music")) break;
+  await sleep(250);
+}
+check(scoreOpened.includes("play-current-music"), "after ▶ on the score: play-current-music appears", `after ▶: ${scoreOpened.join(", ")}`);
+const playingScore = await run("get-studio-state");
+await run("stop-music", { instanceId: playingScore.instanceId });
+const stagedScore = await run("set-score", { instanceId: playingScore.instanceId, expectedRevision: (await run("get-studio-state")).revision, abcNotation: ABC.replace("WebMCP score", "Agent edit") });
+check(stagedScore?.args?.abcNotation?.includes("Agent edit") && stagedScore?.playback === "stopped", "set-score staged an edit, stopped", `set-score: ${JSON.stringify(stagedScore).slice(0, 200)}`);
+await sheet.evaluate(() => { globalThis.__peak = 0; });
+const playedScore = await run("play-current-music", { instanceId: stagedScore.instanceId, expectedRevision: stagedScore.revision });
+let scorePeak = 0;
+for (let i = 0; i < 30 && scorePeak <= 0.05; i++) {
+  await sleep(500);
+  scorePeak = await sheet.evaluate(() => globalThis.__peak ?? 0);
+}
+check(scorePeak > 0.05, `the agent's play-current-music on the score is audible (peak ${scorePeak.toFixed(3)})`, `no sound (peak ${scorePeak}, playback ${playedScore?.playback})`);
+await run("stop-music", { instanceId: stagedScore.instanceId });
 
 // "Hash of blocked script: eval-sha256-..." is what Chromium 153 logs for the Strudel REPL's eval
 // under --enable-experimental-web-platform-features; the production page logs it too, the flag is the cause.

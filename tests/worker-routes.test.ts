@@ -122,6 +122,18 @@ describe("/health and /healthz", () => {
       expect(body.widgets[key].endsWith(`-${length}`)).toBe(true);
     }
   });
+
+  it("fingerprints exactly what the share pages frame: /widget/sheet (abc) and /widget/strudel", async () => {
+    // The worker's FNV-1a, recomputed over the served bytes.
+    const fnv = (html: string) => {
+      let hash = 0x811c9dc5;
+      for (let i = 0; i < html.length; i++) hash = Math.imul(hash ^ html.charCodeAt(i), 0x01000193) >>> 0;
+      return `${hash.toString(16).padStart(8, "0")}-${html.length}`;
+    };
+    const body = await (await get("/health")).json();
+    expect(fnv(await (await get("/widget/sheet")).text())).toBe(body.widgets.abc);
+    expect(fnv(await (await get("/widget/strudel")).text())).toBe(body.widgets.strudel);
+  });
 });
 
 describe("/icon.png", () => {
@@ -305,11 +317,56 @@ describe("GET /play", () => {
 describe("GET /score", () => {
   const ABC = "X:1\nT:Tune & Co\nM:4/4\nK:C\n|:C D E F|G A B c:|";
 
-  it("renders the sheet-music page with the notation round-tripped", async () => {
-    const q = new URLSearchParams({ a: encodeShareParam(ABC), style: "jazz" });
+  it("renders the full player — the real sheet widget, hosted — with the score round-tripped", async () => {
+    const q = new URLSearchParams({ a: encodeShareParam(ABC), style: "jazz", tempo: "132", transpose: "-2", title: "Shared tune" });
     const res = await get(`/score?${q}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    const html = await res.text();
+    const init = strudelInit(html) as unknown as {
+      kind?: string; code?: string; title?: string; widget?: string; classic?: string; score?: Record<string, unknown>;
+    };
+    expect(init.kind).toBe("score");
+    expect(init.widget).toBe("/widget/sheet");
+    // play-sheet-music's own arguments, byte for byte: the widget normalises them as for a tool call.
+    expect(init.score).toEqual({ abcNotation: ABC, style: "jazz", tempo: 132, transpose: -2 });
+    expect(init.title).toBe("Shared tune");
+    expect(init.code).toBeUndefined();
+    expect(init.classic).toMatch(/^\/score\?.*classic=1/);
+    expect(html).not.toContain("__SHARE_INIT__");
+    // Never autoplay: the host sends the widget autoplay: false (tests/share-player.test.ts).
+    expect((init as Record<string, unknown>).autoplay).toBeUndefined();
+  });
+
+  it("the full score page frames only our widget and loads nothing else", async () => {
+    const res = await get(`/score?${new URLSearchParams({ a: encodeShareParam(ABC) })}`);
+    const csp = res.headers.get("content-security-policy")!;
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("frame-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).not.toContain("jsdelivr");
+    expect(res.headers.get("x-robots-tag")).toContain("noindex");
+  });
+
+  it("serves the sheet widget for the full player: SHEET_CSP, framable only by this origin", async () => {
+    const res = await get("/widget/sheet");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    const csp = res.headers.get("content-security-policy")!;
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(csp).toContain("default-src 'none'");
+    // Soundfonts — the one origin SHEET_CSP declares. abcjs is bundled, so no CDN.
+    expect(csp).toMatch(/connect-src[^;]*https:\/\/paulrosen\.github\.io/);
+    expect(csp).not.toContain("jsdelivr");
+    expect(csp).not.toMatch(/script-src[^;]*data:/);
+    expect(res.headers.get("x-robots-tag")).toContain("noindex");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("keeps the standalone page behind ?classic=1, with the notation round-tripped", async () => {
+    const q = new URLSearchParams({ a: encodeShareParam(ABC), style: "jazz", classic: "1" });
+    const res = await get(`/score?${q}`);
+    expect(res.status).toBe(200);
 
     const html = await res.text();
     const init = scoreInit(html);
@@ -319,8 +376,8 @@ describe("GET /score", () => {
     expect(init.style).toBe("jazz");
   });
 
-  it("carries a CSP allowing abcjs's CDN and the soundfont host", async () => {
-    const q = new URLSearchParams({ a: encodeShareParam(ABC) });
+  it("carries a CSP allowing abcjs's CDN and the soundfont host (classic page)", async () => {
+    const q = new URLSearchParams({ a: encodeShareParam(ABC), classic: "1" });
     const csp = (await get(`/score?${q}`)).headers.get(
       "content-security-policy",
     )!;
@@ -346,6 +403,19 @@ describe("GET /p/<id>", () => {
     });
     expect(res.status).toBe(200);
     expect(strudelInit(await res.text()).code).toBe(PAYLOAD.args.code);
+  });
+
+  it("renders a stored score in the full player, and the standalone page with ?classic=1", async () => {
+    const abc = "X:1\nT:Stored\nM:3/4\nK:G\nG A B|";
+    const kv = fakeKv({ [`share:${"d".repeat(32)}`]: JSON.stringify({ kind: "score", args: { abcNotation: abc, style: "waltz" } }) });
+    const env = { DOCS_CACHE: kv.binding };
+    const full = strudelInit(await (await get(`/p/${"d".repeat(32)}`, undefined, env)).text()) as unknown as {
+      kind?: string; widget?: string; classic?: string; score?: Record<string, unknown>;
+    };
+    expect(full).toMatchObject({ kind: "score", widget: "/widget/sheet", score: { abcNotation: abc, style: "waltz" } });
+    expect(full.classic).toBe(`/p/${"d".repeat(32)}?classic=1`);
+    const classic = scoreInit(await (await get(full.classic!, undefined, env)).text());
+    for (const line of abc.split("\n")) expect(classic.abc).toContain(line);
   });
 
   it("404s a share that expired or never existed", async () => {
@@ -573,7 +643,11 @@ describe("create-share-link explicitly stores compositions", () => {
     expect(page.status).toBe(200);
     const html = await page.text();
     if (piece.kind === "play") expect(strudelInit(html).code).toBe(piece.args.code);
-    else for (const line of piece.args.abcNotation.split("\n")) expect(scoreInit(html).abc).toContain(line);
+    else {
+      const init = strudelInit(html) as unknown as { score?: Record<string, unknown>; title?: string };
+      expect(init.score?.abcNotation).toBe(piece.args.abcNotation);
+      expect(init.title).toBe(piece.args.title);
+    }
   });
 
   it.each([

@@ -146,7 +146,7 @@ describe("sheet music transport", () => {
     const forwarded = code.match(/renderAbc\(abc, preparedInput\.synthOptions, transport\)/g) ?? [];
     expect(forwarded.length).toBe(1); // shared input path requires RenderTransport
     expect(code).toContain("transport: RenderTransport, instrumentOverride = false");
-    expect(code).toContain("applyScoreInput(args, { autoplay: true, permit })");
+    expect(code).toContain("applyScoreInput(args, { autoplay: args.autoplay !== false, permit })");
     expect(calls.length).toBe(explicit.length + forwarded.length);
   });
 
