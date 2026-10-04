@@ -32,11 +32,6 @@ jobs:
         run: bunx playwright install --with-deps chromium
       - name: Verify browser audio and exports
         run: bun run test:audio
-      - name: Verify the plain path (one player, no optional module wakes up)
-        run: |
-          bunx vite --config dev/vite.config.ts --port 5177 > /tmp/vite.log 2>&1 &
-          for i in $(seq 1 60); do curl -sf -o /dev/null http://localhost:5177/ && break; sleep 1; done
-          node scripts/verify-plain.mjs || { cat /tmp/vite.log; exit 1; }
       - name: Verify published source and notices
         run: bun run test:package
       - name: Keep failed browser evidence
@@ -65,3 +60,36 @@ jobs:
       - name: Verify real worker HTTP transport
         run: node --test tests/mcp.test.mjs
         working-directory: worker
+
+  # Real-browser acceptance checks (scripts/verify-*.mjs) against a local Worker
+  # (wrangler dev --local: Durable Objects/KV/rate limits in workerd, no
+  # Cloudflare account) and the ext-apps dev harness: the plain path, live
+  # sessions, controls, sensors, remember(), swaps, the studio tools, share
+  # pages and WebMCP. verify-stage is left out: say() needs Workers AI.
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: worker
+      - run: bun run build
+      - run: bunx playwright install --with-deps chromium
+      - name: Browser acceptance checks
+        run: scripts/ci-browser.sh
+        env:
+          LOGS: ${{ runner.temp }}/ci-browser
+      - name: Keep logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-acceptance-logs
+          path: ${{ runner.temp }}/ci-browser/
+          retention-days: 7
