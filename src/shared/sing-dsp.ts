@@ -3,8 +3,9 @@
 //
 // sing(line, notes) plays one rendered line word by word, each word sped up or
 // slowed down onto a note. The speed is target ÷ spoken pitch, so the spoken
-// pitch must be measured: YIN (de Cheveigné & Kawahara, 2002) on the middle of
-// each word, median over a few windows. Whisper's word boundaries can be off by
+// pitch must be measured: YIN (de Cheveigné & Kawahara, 2002) every 10 ms
+// across each word, and the energy-weighted median of those windows — the
+// pitch its loud part sits at. Whisper's word boundaries can be off by
 // a couple of hundred milliseconds, so each start is moved to the nearest
 // energy onset — a word then lands ON its note instead of a breath before it.
 //
@@ -25,9 +26,6 @@ export const PITCH_MAX_HZ = 600;
 const YIN_THRESHOLD = 0.2;
 /** Pitch is measured at ≈16 kHz: ample for 600 Hz, and 9× less work at 48 kHz. */
 const ANALYSIS_RATE = 16_000;
-/** The part of a word measured: its middle 60% (consonants sit at the edges). */
-const MIDDLE = 0.6;
-const MAX_WINDOWS = 6;
 
 /** Box-filter decimation by an integer factor (the average is the anti-alias). */
 function decimate(samples: Float32Array, factor: number): Float32Array {
@@ -100,44 +98,96 @@ const median = (values: number[]): number => {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
 
+/** One measured window: its pitch and its energy (sum of squares). */
+export interface PitchWindow {
+  hz: number;
+  energy: number;
+}
+
 /**
- * The pitch of `samples[from, to)` (seconds) in Hz: the median of YIN over up
- * to six windows in its middle 60%. Null when no window is voiced.
+ * How a word's windows become ONE pitch. A spoken word glides (Aura-2's
+ * "deep" rose 208 → 278 Hz) and its quiet edges are where YIN is least sure,
+ * so the plain median of six windows in a word's middle swung by up to a
+ * semitone between slices a few milliseconds apart (Chromium and WebKit
+ * decode the clip slightly differently; measured over 9 Aura-2 lines × 15
+ * slice shifts of ±20 ms: plain median spread 58¢ median / 466¢ worst,
+ * dense energy-weighted 7¢ / 99¢). `weighted`: the energy-weighted median — the pitch
+ * the loud part of the word sits at, which is what is heard. `loudest`: the
+ * median of the loudest 40% of windows. `median`: the plain median (≤ 0.12).
+ */
+export type PitchAnchor = "weighted" | "loudest" | "median";
+export const DEFAULT_PITCH_ANCHOR: PitchAnchor = "weighted";
+
+export function anchorPitch(windows: PitchWindow[], anchor: PitchAnchor = DEFAULT_PITCH_ANCHOR): number | null {
+  if (!windows.length) return null;
+  if (anchor === "median") return median(windows.map((w) => w.hz));
+  if (anchor === "loudest") {
+    const loud = [...windows].sort((a, b) => b.energy - a.energy).slice(0, Math.max(1, Math.ceil(windows.length * 0.4)));
+    return median(loud.map((w) => w.hz));
+  }
+  const byHz = [...windows].sort((a, b) => a.hz - b.hz);
+  const total = byHz.reduce((n, w) => n + w.energy, 0);
+  if (!(total > 0)) return median(byHz.map((w) => w.hz));
+  let acc = 0;
+  for (const w of byHz) {
+    acc += w.energy;
+    if (acc >= total / 2) return w.hz;
+  }
+  return byHz[byHz.length - 1].hz;
+}
+
+/** Hop between pitch windows. Dense, so a short word still gets several. */
+const HOP_SECONDS = 0.01;
+
+/**
+ * The voiced windows of `samples[from, to)` (seconds), at ≈16 kHz: 40 ms
+ * windows every 10 ms across the WHOLE span (25 ms windows when 40 ms don't
+ * fit — 0.08 s of voice is common). The whole span, not its middle: a word's
+ * pitch can jump (Aura-2 asteria's "deep." sat at 178 Hz, then at 266–275 Hz,
+ * twice as loud), and the energy weighting, not the slice, decides which part
+ * counts.
+ */
+export function pitchWindows(
+  samples: Float32Array,
+  sampleRate: number,
+  from = 0,
+  to = samples.length / sampleRate,
+  options: PitchOptions & { hopSeconds?: number } = {},
+): PitchWindow[] {
+  const factor = Math.max(1, Math.floor(sampleRate / ANALYSIS_RATE));
+  const rate = sampleRate / factor;
+  const tauMax = Math.ceil(rate / (options.minHz ?? PITCH_MIN_HZ));
+  const a = Math.max(0, Math.floor(from * sampleRate));
+  const b = Math.min(samples.length, Math.ceil(to * sampleRate));
+  if (b <= a) return [];
+  const region = decimate(samples.subarray(a, b), factor);
+  let windowSize = Math.round(rate * 0.04);
+  if (region.length < windowSize + tauMax + 1) windowSize = Math.round(rate * 0.025);
+  const need = windowSize + tauMax + 1;
+  const hop = Math.max(1, Math.round(rate * (options.hopSeconds ?? HOP_SECONDS)));
+  const out: PitchWindow[] = [];
+  for (let at = 0; at + need <= region.length; at += hop) {
+    const hz = yin(region, rate, at, windowSize, options);
+    if (hz === null) continue;
+    let energy = 0;
+    for (let i = at; i < at + windowSize; i++) energy += region[i] * region[i];
+    out.push({ hz, energy });
+  }
+  return out;
+}
+
+/**
+ * The pitch of `samples[from, to)` (seconds) in Hz — see pitchWindows and
+ * PitchAnchor. Null when no window is voiced.
  */
 export function detectPitch(
   samples: Float32Array,
   sampleRate: number,
   from = 0,
   to = samples.length / sampleRate,
-  options: PitchOptions = {},
+  options: PitchOptions & { anchor?: PitchAnchor; hopSeconds?: number } = {},
 ): number | null {
-  const factor = Math.max(1, Math.floor(sampleRate / ANALYSIS_RATE));
-  const rate = sampleRate / factor;
-  const minHz = options.minHz ?? PITCH_MIN_HZ;
-  const windowSize = Math.round(rate * 0.04); // 40 ms
-  const tauMax = Math.ceil(rate / minHz);
-  const need = windowSize + tauMax + 1;
-  const length = Math.max(0, to - from);
-  // The middle 60%, widened to the whole slice when that is too short for a window.
-  let start = from + (length * (1 - MIDDLE)) / 2;
-  let end = to - (length * (1 - MIDDLE)) / 2;
-  if ((end - start) * rate < need) {
-    start = from;
-    end = to;
-  }
-  const a = Math.max(0, Math.floor(start * sampleRate));
-  const b = Math.min(samples.length, Math.ceil(end * sampleRate));
-  if ((b - a) / factor < need) return null;
-  const region = decimate(samples.subarray(a, b), factor);
-  const room = region.length - need;
-  const count = Math.min(MAX_WINDOWS, 1 + Math.floor(room / (windowSize / 2)));
-  const found: number[] = [];
-  for (let k = 0; k < count; k++) {
-    const offset = count === 1 ? 0 : Math.round((room * k) / (count - 1));
-    const hz = yin(region, rate, offset, windowSize, options);
-    if (hz !== null) found.push(hz);
-  }
-  return found.length ? median(found) : null;
+  return anchorPitch(pitchWindows(samples, sampleRate, from, to, options), options.anchor);
 }
 
 /** RMS of 10 ms frames over [from, to) seconds; frame k starts at from + k·10 ms. */
