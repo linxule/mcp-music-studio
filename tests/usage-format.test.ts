@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_DAYS,
   VOICE_MODEL,
+  isTokenShape,
   parseUsageArgs,
+  redact,
   renderUsage,
   reportWindow,
   shapeAi,
@@ -100,6 +102,60 @@ describe("shapeAnalytics", () => {
       { tool: "play-live-pattern", calls: 5 },
       { tool: "(probe names __…__)", calls: 3 },
     ]);
+  });
+});
+
+describe("shapeAnalytics — tool-time prerender", () => {
+  // A prerender miss is a model call like any other: hiding it would hide
+  // production voice usage (review finding).
+  const rows = [
+    { day: "2026-10-04", blob1: "tts", blob2: "miss", n: "10", chars: 200 },
+    { day: "2026-10-04", blob1: "tts", blob2: "prerender-miss", n: "6", chars: 90 },
+    { day: "2026-10-04", blob1: "tts", blob2: "prerender-hit", n: "4", chars: 60 },
+    { day: "2026-10-04", blob1: "tts", blob2: "prerender-skipped", n: "1", chars: 1 },
+    { day: "2026-10-04", blob1: "tts", blob2: "inflight-timeout", n: "1", chars: 9 },
+    { day: "2026-10-04", blob1: "tts", blob2: "hit", n: "12", chars: 300 },
+  ];
+  it("counts prerender misses in tts miss / miss chars and in their own prerender column", () => {
+    const ae = shapeAnalytics(dates, rows);
+    expect(ae.days[1]).toMatchObject({ ttsMiss: 16, ttsMissChars: 290, ttsPrerender: 6, ttsPrerenderChars: 90, ttsHit: 12, ttsInflightTimeout: 1 });
+  });
+  it("prints the prerender column", () => {
+    const text = renderUsage({
+      window: { start: "", end: "", dates },
+      workersAi: { error: "x" },
+      worker: { error: "x" },
+      durableObjects: { error: "x" },
+      voiceBudget: { error: "x" },
+      analyticsEngine: { dataset: "music_studio_usage", ...shapeAnalytics(dates, rows) },
+      notes: [],
+    });
+    expect(text).toMatch(/tts hit\s+tts miss\s+miss chars\s+prerender\s+refused/);
+    expect(text).toMatch(/2026-10-04\s+0\s+0\s+12\s+16\s+290\s+6\s+0/);
+  });
+});
+
+describe("the credential never reaches the output", () => {
+  const token = "AbC123-xyz_TOKEN-value.0987";
+  it("accepts printable ASCII, refuses whitespace and non-ASCII", () => {
+    expect(isTokenShape(token)).toBe(true);
+    expect(isTokenShape(`${token}\n`)).toBe(false);
+    expect(isTokenShape(`abc def`)).toBe(false);
+    expect(isTokenShape(`tökén`)).toBe(false);
+    expect(isTokenShape("")).toBe(false);
+    expect(isTokenShape(undefined)).toBe(false);
+  });
+  it("redacts the token and anything after Bearer", () => {
+    // What fetch throws for a token with a newline in it.
+    const broken = `${token}\nmore`;
+    const msg = `Header 'Authorization' has invalid value: 'Bearer ${broken}'`;
+    const out = redact(msg, broken);
+    expect(out).not.toContain(token);
+    expect(out).not.toContain("more");
+    expect(out).toBe("Header 'Authorization' has invalid value: 'Bearer [redacted]");
+    expect(redact(`SQL API 400: echoed ${token} back`, token)).toBe("SQL API 400: echoed [redacted] back");
+    expect(redact("listing accounts failed: []", null)).toBe("listing accounts failed: []");
+    expect(redact(undefined, token)).toBe("undefined");
   });
 });
 

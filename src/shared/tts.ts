@@ -32,6 +32,8 @@ export const DEFAULT_TTS_VOICE: TtsVoice = "luna";
 
 /** Longest line one say() renders. A lyric line, not an audiobook. */
 export const TTS_MAX_CHARS = 240;
+/** A rendered line is ~9 KB; anything bigger than this is not what we asked for. */
+export const TTS_MAX_BYTES = 4 * 1024 * 1024;
 
 /** Prefix of every say() sample name — the validator treats these as registered. */
 export const TTS_SAMPLE_PREFIX = "say_";

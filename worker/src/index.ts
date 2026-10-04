@@ -23,7 +23,7 @@ import { ABC_GUIDE_TOPICS, ABC_GUIDES } from "../../src/abc-guide.js";
 import { STRUDEL_GUIDE_TOPICS, STRUDEL_GUIDES } from "../../src/strudel-guide.js";
 import { VERSION } from "../../src/version.js";
 import { staticCheckStrudel } from "../../src/shared/strudel-static-check.js";
-import { TTS_MODEL, normalizeTts, type TtsRequest } from "../../src/shared/tts.js";
+import { TTS_MAX_BYTES, TTS_MODEL, normalizeTts, type TtsRequest } from "../../src/shared/tts.js";
 import { extractSayLines } from "../../src/shared/say-lines.js";
 import { budgetMicro, dayCapMicro, lineChars, usd, type VoiceLedger } from "../../src/shared/voice-budget.js";
 import { parseClient } from "../../src/shared/parse-client.js";
@@ -1047,8 +1047,6 @@ export function createMusicServer(
 // voice budget (VoiceBudget DO) after the per-address rate limits.
 /** How long a rendered clip stays cached. */
 export const TTS_TTL_SECONDS = 30 * 24 * 60 * 60;
-/** A line of speech is well under this; anything bigger is not what we asked for. */
-const TTS_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * The address a budget belongs to. IPv6 is bucketed by /64 — one subscriber
@@ -1114,6 +1112,29 @@ async function handleVoiceBudgetStatus(env: Env): Promise<Response> {
   );
 }
 
+/**
+ * The clip another caller is rendering: one KV read (free when it rendered in
+ * this colo), then the VoiceBudget DO, which holds us until that render posts
+ * its bytes (≤ 3 s). KV alone can't do it across colos — this colo may keep
+ * reading a cached miss. Null when the render failed or ran long.
+ */
+async function waitForClip(env: Env, budget: DurableObjectStub, key: string): Promise<ArrayBuffer | Uint8Array | null> {
+  try {
+    const cached = await env.DOCS_CACHE?.get(key, "arrayBuffer");
+    if (cached) return cached;
+  } catch {
+    /* ask the DO */
+  }
+  try {
+    const res = await budget.fetch("https://voice-budget/wait", { method: "POST", body: JSON.stringify({ key }) });
+    if (res.status !== 200) return null;
+    const clip = new Uint8Array(await res.arrayBuffer());
+    return clip.byteLength > 0 ? clip : null;
+  } catch {
+    return null;
+  }
+}
+
 /** What became of one line: the clip, or the status and reason the player is told. */
 type LineOutcome =
   | { ok: true; bytes: ArrayBuffer | Uint8Array; cached: boolean; stored?: Promise<void> }
@@ -1166,13 +1187,38 @@ async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, cal
   const chars = lineChars(line.text);
   if (!env.VOICE_BUDGET) return tooMany("Speech rendering is not available here (no voice budget).", "3600");
   const budget = budgetStub(env.VOICE_BUDGET);
-  let chargedIn: { month: string; day: string };
-  try {
+  const monthBudget = budgetMicro(env.VOICE_BUDGET_USD_PER_MONTH);
+  type Verdict = { ok?: boolean; reason?: "month" | "day" | "inflight"; ledger?: VoiceLedger };
+  // With the key, the DO also marks the line in flight — or answers "inflight"
+  // without charging when another caller is rendering it right now.
+  const reserveLine = async (withKey: boolean): Promise<Verdict> => {
     const res = await budget.fetch("https://voice-budget/reserve", {
       method: "POST",
-      body: JSON.stringify({ chars, budgetMicro: budgetMicro(env.VOICE_BUDGET_USD_PER_MONTH) }),
+      body: JSON.stringify({ chars, budgetMicro: monthBudget, ...(withKey ? { key } : {}) }),
     });
-    const verdict = (await res.json()) as { ok?: boolean; reason?: "month" | "day"; ledger?: VoiceLedger };
+    return (await res.json()) as Verdict;
+  };
+  let chargedIn: { month: string; day: string };
+  let marked = true;
+  try {
+    let verdict = await reserveLine(true);
+    if (verdict.reason === "inflight") {
+      // The tool-time prerender and the player ask for the same line at once:
+      // wait for the other render's clip instead of paying for it twice.
+      const clip = await waitForClip(env, budget, key);
+      if (clip) {
+        track(env, { blobs: ["tts", `${caller.label}hit`, line.voice], doubles: [line.text.length], indexes: ["tts"] });
+        return { ok: true, bytes: clip, cached: true };
+      }
+      track(env, { blobs: ["tts", "inflight-timeout", line.voice], doubles: [chars], indexes: ["tts"] });
+      // No clip: render it ourselves (the first render may have failed and
+      // freed the key; if it is still going, this pays twice).
+      verdict = await reserveLine(true);
+      if (verdict.reason === "inflight") {
+        marked = false;
+        verdict = await reserveLine(false);
+      }
+    }
     if (!verdict.ok || !verdict.ledger) {
       track(env, { blobs: ["tts", "budget", verdict.reason ?? "unknown"], doubles: [chars], indexes: ["tts"] });
       return verdict.reason === "day"
@@ -1183,12 +1229,25 @@ async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, cal
   } catch {
     return tooMany("Speech rendering is busy. Try again in a minute.");
   }
+  // However the render ends, the line is no longer in flight: /done hands the
+  // clip (empty on failure) to anyone waiting on it. A lost /done only means
+  // the DO forgets the key at its TTL and its waiters render the line too.
+  const done = (clip?: Uint8Array) =>
+    marked
+      ? budget
+          .fetch("https://voice-budget/done", { method: "POST", headers: { "x-line-key": key }, body: clip ?? new Uint8Array(0) })
+          .then(() => undefined, () => undefined)
+      : Promise.resolve();
   // Refund ONLY when the model refused the call. Once it has returned output
   // the render may be billed, so a failure on our side keeps the charge.
+  // The refund also clears the in-flight key.
   const giveBack = () =>
     ctx.waitUntil(
       budget
-        .fetch("https://voice-budget/refund", { method: "POST", body: JSON.stringify({ chars, ...chargedIn }) })
+        .fetch("https://voice-budget/refund", {
+          method: "POST",
+          body: JSON.stringify({ chars, ...chargedIn, ...(marked ? { key } : {}) }),
+        })
         .then(() => undefined, () => undefined),
     );
   if (!env.AI) {
@@ -1206,18 +1265,24 @@ async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, cal
   try {
     bytes = await audioBytes(output);
   } catch (err) {
+    ctx.waitUntil(done());
     return { ok: false, status: 502, message: `Speech rendering failed: ${(err as Error)?.message ?? "unknown error"}` };
   }
   if (bytes.byteLength === 0 || bytes.byteLength > TTS_MAX_BYTES) {
+    ctx.waitUntil(done());
     return { ok: false, status: 502, message: "Speech rendering returned an unusable clip." };
   }
-  const stored = (async () => {
-    try {
-      await env.DOCS_CACHE?.put(key, bytes, { expirationTtl: TTS_TTL_SECONDS });
-    } catch {
-      /* the next request renders again */
-    }
-  })();
+  // Waiters get the bytes from the DO straight away, in whatever colo they are.
+  const stored = Promise.all([
+    (async () => {
+      try {
+        await env.DOCS_CACHE?.put(key, bytes, { expirationTtl: TTS_TTL_SECONDS });
+      } catch {
+        /* the next request renders again */
+      }
+    })(),
+    done(bytes),
+  ]).then(() => undefined);
   track(env, { blobs: ["tts", `${caller.label}miss`, line.voice], doubles: [line.text.length], indexes: ["tts"] });
   return { ok: true, bytes, cached: false, stored };
 }
@@ -1267,8 +1332,9 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
 // Run under ctx.waitUntil, never awaited: the tool reply is the model's turn,
 // and 8 lines at ~1.5 s each, 3 at a time, is ~4.5 s it would otherwise wait.
 // Starting before the reply is what matters; the first lines finish while the
-// widget is still loading. A line the player asks for mid-render is a second
-// miss — paid twice, never broken. Never fails the tool call.
+// widget is still loading. A line the player asks for mid-render waits for
+// this render's clip, handed over by the VoiceBudget DO, instead of paying for
+// it twice. Never fails the tool call.
 
 /** Lines rendered at once per tool call. */
 const PRERENDER_PARALLEL = 3;
