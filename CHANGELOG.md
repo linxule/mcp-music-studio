@@ -4,6 +4,7 @@ Notable changes per release, newest first. Every release, including those not li
 
 ## Unreleased
 
+- **Spoken lines are ready sooner.** When a piece with `say('…')` lines is played or sent to a live session through the hosted service, the server starts rendering those lines as soon as the code arrives, while the player is still loading. By the time the player asks for a line it is usually already cached, so a voiced piece no longer waits on speech before it starts. Only lines written as a single-quoted string are rendered ahead (with an optional single-quoted `voice`), at most 8 per call; others render when the player first asks, as before. Lines rendered ahead are charged against the same voice budget, once each.
 - Gallery: **Still Water — just the music** (`still-water`), a ninth piece with no controls, film or drawing: a 48-bar downtempo track (arrange, per-layer sound design, `.velocity()` ducking, development from one four-bar idea). The gallery index says when to reach for it.
 - `bun run usage` (`scripts/usage.mjs`) prints a read-only report of the hosted service for the last week: voice-model calls and characters, Worker requests and errors, live-session time, the voice budget, sessions opened and tool calls. Maintainers run it at each release. See [docs/development.md](docs/development.md#usage-report).
 
