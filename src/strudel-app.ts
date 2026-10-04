@@ -2,7 +2,7 @@ import {
   initLayers, fixLayout, syncVizCanvasSize, getHydraCanvas, adoptHydraCanvas,
   syncHydraCanvasSize, pruneDrawLayers, clearDrawLayers, applyVizVisibility,
   syncVizTheme, applyStageMode, syncStageAffordance, stageVisuals,
-  observeVisualSize, disconnectVisualObservers, removeDrawLayers,
+  observeVisualSize, disconnectVisualObservers, removeDrawLayers, getVisualLayers, stageFrame,
 } from "./strudel-app/layers";
 import {
   initAudioReactive, installAudioReactiveGlobals, startAnalyserLoop, teardownAudioAnalyser, hasAudioApi,
@@ -15,6 +15,7 @@ import {
 } from "./strudel-app/missing-sounds";
 import {
   initRecording, startRecording, stopRecording, handleDownload, teardownRecording, disconnectRecordingTap,
+  canRecordVideo, noteSetlistChange, paintVideoFrameAfterHydraTick,
 } from "./strudel-app/recording";
 import * as widgetState from "./strudel-app/state";
 import type { StatusType } from "./strudel-app/state";
@@ -94,6 +95,7 @@ const app = new App(
 
 const playBtn = document.getElementById("play-btn") as HTMLButtonElement;
 const recordBtn = document.getElementById("record-btn") as HTMLButtonElement;
+const videoBtn = document.getElementById("video-btn") as HTMLButtonElement;
 const downloadBtn = document.getElementById("download-btn") as HTMLButtonElement;
 const sendBtn = document.getElementById("send-btn") as HTMLButtonElement;
 const passBtn = document.getElementById("pass-btn") as HTMLButtonElement;
@@ -174,8 +176,13 @@ let sessionApplySeq = 0;
 let lastRenderArgs: Record<string, unknown> | null = null;
 
 initRecording({
-  app, recordBtn, downloadBtn, setStatus, showPlayingStatus,
+  app, recordBtn, videoBtn, downloadBtn, setStatus, showPlayingStatus,
   replAudioContext, ensureLimiter, currentLimiter, recordingFileStem,
+  visualLayers: getVisualLayers, stageFrame,
+  hydraTicking: () => hydraTickRaf !== null,
+  currentCode: getLiveCode,
+  audibleCycle: () => stageEnv.audibleCycle(),
+  inSession: () => widgetState.session !== null,
 });
 
 initReports({
@@ -655,6 +662,8 @@ function startHydraTickLoop(): void {
       // hydra-synth already swallows shader errors inside tick(); this catches
       // the teardown race where regl is destroyed mid-frame.
     }
+    // Same task as the render: the WebGL buffer still holds this frame.
+    paintVideoFrameAfterHydraTick();
     hydraTickRaf = requestAnimationFrame(frame);
   };
   hydraTickRaf = requestAnimationFrame(frame);
@@ -1726,7 +1735,10 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
     onCommit?.();
 
     // Enable recording once pattern is loaded
-    recordBtn.disabled = false;
+    if (!widgetState.isRecording) {
+      recordBtn.disabled = false;
+      videoBtn.disabled = false;
+    }
 
     // Surface a non-blocking warning if soundfont registration failed —
     // explains silent/absent audio rather than swallowing it.
@@ -1822,6 +1834,17 @@ recordBtn.addEventListener("click", () => {
     stopRecording();
   } else {
     startRecording();
+  }
+});
+
+videoBtn.addEventListener("click", () => {
+  if (videoBtn.getAttribute("aria-disabled") === "true") {
+    // No downloadFile here (Claude's phone apps): the share page saves files.
+    setStatus("Videos can't be saved in this app — ask Claude for a share link and record on that page", "normal");
+  } else if (widgetState.isRecording) {
+    stopRecording();
+  } else {
+    startRecording("video");
   }
 });
 
@@ -2137,13 +2160,15 @@ function scheduleSpliceSweep(): void {
   }, 1000);
 }
 
-function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome> {
-  return quantizedSwap(pattern.code, pattern.quantize, () => (widgetState.session ? null : "the player closed"), {
+async function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome> {
+  const outcome = await quantizedSwap(pattern.code, pattern.quantize, () => (widgetState.session ? null : "the player closed"), {
     // Tell the service at once which bar THIS player picked: update-session
     // reports it instead of the server's estimate (a field run said "cycle 40"
     // for a swap the player put on 48).
     onQueued: (boundary) => widgetState.session?.log({ t: "scheduled", rev: pattern.rev, boundary }, true),
   });
+  if (outcome.ok) noteSetlistChange({ by: "claude", rev: pattern.rev, cycle: outcome.cycle, code: pattern.code });
+  return outcome;
 }
 
 /**
@@ -2259,7 +2284,9 @@ function noteHumanEdit(code: string): void {
   if (!widgetState.session) return;
   if (code.trim() === lastProgrammaticCode.trim() || code === lastLoggedEdit) return;
   lastLoggedEdit = code;
-  widgetState.session.log({ t: "edit", cycle: stageEnv.audibleCycle(), code, chars: code.length }, true);
+  const cycle = stageEnv.audibleCycle();
+  widgetState.session.log({ t: "edit", cycle, code, chars: code.length }, true);
+  noteSetlistChange({ by: "you", cycle, code });
 }
 
 // End session: the listener closes it. The pattern keeps playing locally;
@@ -2525,6 +2552,7 @@ const studioSession = createStudioSession({
       });
       lastLoggedEdit = code;
       widgetState.session.log({ t: "edit", cycle: outcome.cycle, code, chars: code.length }, true);
+      noteSetlistChange({ by: "tool", cycle: outcome.cycle, code });
     }
     return outcome;
   },
@@ -2565,7 +2593,11 @@ app.connect().then(() => {
     downloadBtn.hidden = true;
     recordBtn.hidden = true;
     recordBtn.title = "Recording export not supported on this host";
+    // Kept visible but inert: its click points at the share page, which can save.
+    videoBtn.setAttribute("aria-disabled", "true");
+    videoBtn.title = "Saving a video isn't supported in this app — a share link's page can record and save one";
   }
+  videoBtn.hidden = !canRecordVideo();
 
   // "Send to chat" needs the host to accept ui/message.
   if (caps?.message) canSendMessage = true;
