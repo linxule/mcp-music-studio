@@ -33,9 +33,6 @@ export function savedDraft(mode: StudioMode, state: Pick<StudioSnapshot, 'args' 
 export function draftSignature(mode: StudioMode, state: Pick<StudioSnapshot, 'args' | 'settings'>) {
   return JSON.stringify(savedDraft(mode, state));
 }
-export function reviewForMode<T extends { passage: { mode: StudioMode } }>(mode: StudioMode, review: T | null | undefined): T | null {
-  return review?.passage.mode === mode ? review : null;
-}
 
 export async function connectStudioTools<T extends { registerTool: (...args: any[]) => unknown }>(
   candidates: unknown[], register: (context: T) => Promise<void>, status: (text: string) => void,

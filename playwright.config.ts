@@ -5,7 +5,10 @@ export default defineConfig({
   timeout: 120_000,
   expect: { timeout: 30_000 },
   workers: 1,
-  retries: 0,
+  // One retry in CI: the audio tests fetch soundfonts over the network, and a
+  // slow fetch once failed a publish run (2026-10-04). A retried pass is still
+  // reported as "flaky" in the log.
+  retries: process.env.CI ? 1 : 0,
   reporter: "list",
   use: {
     browserName: "chromium",

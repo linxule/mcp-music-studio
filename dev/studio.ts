@@ -346,6 +346,11 @@ const getSchema = z.object({ mode: modeSchema.optional() }).strict();
 const instanceSchema = z.string().uuid().describe("Widget instanceId from get-studio-state; changes when the widget is remounted.");
 const patternSchema = playLiveInputSchema.omit({ autoplay: true }).extend({ code: playLiveInputSchema.shape.code.min(1), expectedRevision: revisionSchema, instanceId: instanceSchema }).strict();
 const scoreSchema = playSheetInputSchema.extend({ abcNotation: playSheetInputSchema.shape.abcNotation.removeDefault().min(1), expectedRevision: revisionSchema, instanceId: instanceSchema }).strict();
+const swapSchema = z.object({
+  code: playLiveInputSchema.shape.code.min(1),
+  quantize: z.number().int().min(0).max(32).optional().describe("Cycles per phrase to land on (0–32, default 4)."),
+  expectedRevision: revisionSchema, instanceId: instanceSchema,
+}).strict();
 const controlSchema = z.object({ mode: modeSchema, expectedRevision: revisionSchema, instanceId: instanceSchema }).strict();
 
 async function registerTools() {
@@ -360,7 +365,7 @@ async function registerTools() {
         if (!readOnlyHint && name !== "stop-music") {
           const state = result as Partial<Snapshot>;
           const labels: Record<string, string> = {
-            "open-studio-mode": "Workspace opened", "set-pattern": "Agent updated the pattern",
+            "open-studio-mode": "Workspace opened", "set-pattern": "Agent updated the pattern", "swap-pattern": "Agent swapped the pattern in",
             "set-score": "Agent updated the score", "undo-studio-edit": "Previous source restored",
             "explain-selection": "Passage explained", "suggest-edit": "Edit proposed for review",
           };
@@ -396,6 +401,11 @@ async function registerTools() {
     // A measured tempo is feedback, not a persistent override of new source.
     const { bpm: _previousTempo, ...retained } = before.args;
     return request("live", { action: "set", expectedRevision, instanceId, args: { ...retained, ...args } });
+  });
+  await register("swap-pattern", "Change the live pattern WHILE IT PLAYS: the current one keeps playing until the next boundary of quantize cycles (default 4; 0 = at once), then the new code takes over in time. Set quantize to the phrase length. Only for a playing live editor; when stopped, use set-pattern and play-current-music. Supply instanceId and expectedRevision from get-studio-state. undo-studio-edit restores the previous source, stopped. Code executes as JavaScript in the music iframe.", swapSchema, async ({ expectedRevision, instanceId, quantize, code }) => {
+    reviewUI?.stop();
+    if (active !== "live" || switching) throw new Error("Open live mode first.");
+    return request("live", { action: "swap", expectedRevision, instanceId, quantize, args: { code } });
   });
   await register("set-score", "Replace the ABC score in the open editor, stopped. Read get-studio-state first and supply its instanceId and expectedRevision. Existing settings are preserved unless provided. Return includes rendering errors.", scoreSchema, async ({ expectedRevision, instanceId, ...args }) => {
     reviewUI?.stop();

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { parseStudioFile, savedDraft, draftSignature, reviewForMode, connectStudioTools } from '../src/studio-file';
+import { parseStudioFile, savedDraft, draftSignature, connectStudioTools } from '../src/studio-file';
 import { chatHandoff } from '../src/studio-handoff';
 const file = {
   format: 'music-studio', version: 1, active: 'score',
@@ -33,10 +33,6 @@ describe('portable studio sessions', () => {
   it('does treat source and score sound changes as unsaved changes', () => {
     const a = file.drafts.score;
     expect(draftSignature('score', a)).not.toBe(draftSignature('score', { ...a, settings: { ...a.settings, room: true } }));
-  });
-  it('does not attach a live review to a score read', () => {
-    const review = { passage: { mode: 'live' as const } };
-    expect(reviewForMode('score', review)).toBeNull(); expect(reviewForMode('live', review)).toBe(review);
   });
 });
 describe('agent connection fallback', () => {
