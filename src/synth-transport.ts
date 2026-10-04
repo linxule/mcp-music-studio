@@ -28,6 +28,25 @@ interface SynthInternals {
   toggleLoop(): void;
   setWarp(warp: unknown): unknown;
   randomAccess?(ev: unknown): unknown;
+  timer?: TimerInternals | null;
+  midiBuffer?: BufferInternals | null;
+  seek?(position: number, units?: string): void;
+}
+
+/** abcjs's TimingCallbacks (abc_timing_callbacks.js), as far as we read it. */
+interface TimerInternals {
+  isRunning?: boolean;
+  startTime?: number | null;
+  pausedPercent?: number | null;
+  lastMoment?: number;
+}
+
+/** abcjs's CreateSynth (create-synth.js), as far as we read or patch it. */
+interface BufferInternals {
+  isRunning?: boolean;
+  startTimeSec?: number;
+  pausedTimeSec?: number;
+  seek(position: number, units?: string): void;
 }
 
 const internals = (control: object) => control as SynthInternals;
@@ -550,6 +569,8 @@ export interface ReprimeHooks {
   stillWanted(): boolean;
   /** The change was superseded after it had started the music again. */
   onSuperseded?(): void;
+  /** Carry on from where the playhead was, instead of from bar 1. */
+  keepPosition?: boolean;
 }
 
 /**
@@ -562,12 +583,114 @@ export interface ReprimeHooks {
  */
 export async function reprime(control: object, hooks: ReprimeHooks): Promise<void> {
   const transport = readTransport(control);
+  const position = hooks.keepPosition ? transportPosition(control) : 0;
   await hooks.prime();
   // A cancel keeps the controller, so "is it still ours?" is not enough: the
   // music must not come back after the user stopped it.
   if (!hooks.stillWanted()) return;
   restoreLoop(control, transport);
+  // Before play(), so the sound starts at the playhead rather than at bar 1.
+  if (position > 0) seekTransport(control, position);
   if (!transport.wasPlaying) return;
   await internals(control).play();
   if (!hooks.stillWanted()) hooks.onSuperseded?.();
+}
+
+// =============================================================================
+// Seeking (practice loop, voice mutes)
+// =============================================================================
+
+/**
+ * Where the playhead is, in seconds of the timer's timeline (the one the note
+ * highlight follows), or 0 when nothing has played. Playing: from the timer's
+ * start time. Paused: abcjs's `timer.pause()` keeps `pausedPercent`.
+ */
+export function transportPosition(control: object, now = performance.now()): number {
+  const timer = internals(control).timer;
+  if (!timer || !(Number(timer.lastMoment) > 0)) return 0;
+  if (timer.isRunning && typeof timer.startTime === "number") {
+    return Math.max(0, (now - timer.startTime) / 1000);
+  }
+  return typeof timer.pausedPercent === "number"
+    ? (timer.pausedPercent * Number(timer.lastMoment)) / 1000
+    : 0;
+}
+
+const seekFixed = new WeakSet<object>();
+
+/**
+ * Keep the audio clock right after a seek made while playing.
+ *
+ * `CreateSynth.seek()` on a running buffer restarts the sources at the new
+ * offset but leaves `startTimeSec` where the old start put it, and `pause()`
+ * computes the resume point from `startTimeSec`. So pause → ▶ after any
+ * running seek (abcjs's own progress bar, a practice loop wrapping) resumed
+ * the audio at the wrong place while the highlight resumed at the right one.
+ * Wraps the instance method; call it after every `go()` (`onReady`), which may
+ * have built a new buffer.
+ */
+export function fixRunningSeek(midiBuffer: unknown, now: () => number): boolean {
+  const buffer = midiBuffer as BufferInternals | null;
+  if (!buffer || typeof buffer.seek !== "function") return false;
+  if (seekFixed.has(buffer)) return true;
+  seekFixed.add(buffer);
+  const seek = buffer.seek;
+  buffer.seek = function (this: unknown, position: number, units?: string) {
+    const wasRunning = Boolean(buffer.isRunning);
+    seek.call(this, position, units);
+    // seek() leaves the offset it computed (any units) in pausedTimeSec.
+    const offset = buffer.pausedTimeSec;
+    if (wasRunning && typeof offset === "number") buffer.startTimeSec = now() - offset;
+  };
+  return true;
+}
+
+const joggerFixed = new WeakSet<object>();
+
+/**
+ * One backup timer per TimingCallbacks, however often it is seeked.
+ *
+ * `start()` and every `setProgress()` (each seek) schedule
+ * `setTimeout(self.animationJogger, 60)`, and each jogger reschedules itself
+ * while the timer runs, but only the newest id is kept, so a seek while
+ * playing adds a chain nobody can cancel. Measured in Chromium: 61 jogger
+ * ticks/s after a practice loop started, 306/s after ~14 wraps. A tick that
+ * comes within half the interval of the last one is a duplicate chain and
+ * ends there. `setTimeout(self.animationJogger)` looks the method up when it
+ * schedules, so the instance wrap catches every chain. Call after every
+ * `go()`, which builds a new timer.
+ */
+export function oneJogger(timer: unknown, now: () => number = () => performance.now()): boolean {
+  const raw = timer as { animationJogger?: () => void } | null;
+  if (!raw || typeof raw.animationJogger !== "function") return false;
+  if (joggerFixed.has(raw)) return true;
+  joggerFixed.add(raw);
+  const jog = raw.animationJogger;
+  let last = Number.NEGATIVE_INFINITY;
+  raw.animationJogger = () => {
+    const t = now();
+    if (t - last < JOGGER_INTERVAL_MS / 2) return;
+    last = t;
+    jog();
+  };
+  return true;
+}
+
+/** abcjs's `JOGGING_INTERVAL` (abc_timing_callbacks.js). */
+const JOGGER_INTERVAL_MS = 60;
+
+/**
+ * Move the playhead to `seconds`, playing or paused.
+ *
+ * Measured, not assumed: a seek made while paused does NOT leave the
+ * highlight behind. `_play()` restarts the timer from `self.percent`, which
+ * `seek()` itself never writes, but the timer's `setProgress()` reports the
+ * new beat straight away, and the beat callback writes `percent` (to the
+ * 1/16 beat, abcjs's subdivision). Paused seek to bar 4 then ▶: bar 4 lit and
+ * the audio started at 4.68 s, in Chromium and WebKit, with abcjs alone.
+ */
+export function seekTransport(control: object, seconds: number): void {
+  const raw = internals(control);
+  if (!raw.timer || !raw.midiBuffer || typeof raw.seek !== "function") return;
+  raw.seek(Math.max(0, seconds), "seconds");
 }

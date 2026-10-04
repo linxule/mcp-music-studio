@@ -3,6 +3,7 @@
   --color-text: #1f2937;
   --color-text-muted: #6b7280;
   --color-primary: #2563eb;
+  --color-selection: #c2410c;
   --color-success: #10b981;
   --color-danger: #ef4444;
   --color-card-bg: #f9fafb;
@@ -16,6 +17,7 @@
     --color-text: #f9fafb;
     --color-text-muted: #9ca3af;
     --color-primary: #3b82f6;
+    --color-selection: #fb923c;
     --color-success: #34d399;
     --color-danger: #f87171;
     --color-card-bg: #1f2937;
@@ -31,6 +33,7 @@
   --color-text: #f9fafb;
   --color-text-muted: #9ca3af;
   --color-primary: #3b82f6;
+  --color-selection: #fb923c;
   --color-success: #34d399;
   --color-danger: #f87171;
   --color-card-bg: #1f2937;
@@ -42,6 +45,7 @@
   --color-text: #1f2937;
   --color-text-muted: #6b7280;
   --color-primary: #2563eb;
+  --color-selection: #c2410c;
   --color-success: #10b981;
   --color-danger: #ef4444;
   --color-card-bg: #f9fafb;
@@ -357,6 +361,46 @@ body {
 
 .note-playing path[stroke] {
   stroke: var(--color-playback, var(--color-primary)) !important;
+}
+
+/* Selected notes (a click, Shift-click, or a selection in the editor). abcjs
+   writes its selectionColor into a fill/stroke attribute; any CSS outranks a
+   presentation attribute, so the theme decides. Playback still wins (above). */
+#sheet-music .abcjs-note_selected {
+  fill: var(--color-selection);
+}
+
+#sheet-music .abcjs-note_selected[highlight="stroke"] {
+  stroke: var(--color-selection);
+}
+
+/* Practice row: Loop selection and the voice mutes, under the transport. */
+.practice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.practice-row[hidden] {
+  display: none;
+}
+
+.practice-voices {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.practice-voices:empty {
+  display: none;
+}
+
+/* A muted voice reads as switched off, not merely unpressed. */
+.practice-voice-btn[aria-pressed="false"] {
+  text-decoration: line-through;
+  color: var(--color-text-muted);
 }
 
 /* Sheet Music Section — the score's one scroll container. It takes whatever

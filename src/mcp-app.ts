@@ -47,7 +47,19 @@ import {
   hasFatalAbcWarning,
   staleControlAction,
 } from "./abc-edit";
-import { listenForAudioGestures, resumeAudioContext } from "./audio-unlock";
+import { TapTracker, listenForAudioGestures, resumeAudioContext } from "./audio-unlock";
+import { abcOffsetMap, type AbcOffsetMap } from "./abc-offsets";
+import { auditionNote, type AuditionPitch } from "./note-audition";
+import { PracticeRow } from "./practice-row";
+import {
+  VoiceMutes,
+  loopRange,
+  loopWrapTarget,
+  tuneVoices,
+  type LoopRange,
+  type TimingEventLike,
+  type TuneLineLike,
+} from "./score-practice";
 import { LiveRoom, ROOM_PREF_KEY, renderWithRoom, routeThroughRoom } from "./room-reverb";
 import {
   AutoplayMemory,
@@ -71,13 +83,16 @@ import { OVERHANG_TEXT_SELECTOR, paddingRightToFit } from "./score-fit";
 import {
   TransportQueue,
   carryWarp,
+  fixRunningSeek,
   keepLoopLitThroughWarp,
   noteGestureStart,
+  oneJogger,
   pauseTransport,
   queueWarp,
   readTransport,
   reprime,
   restoreLoop,
+  seekTransport,
   trackTransport,
   type TransportEvent,
   type TransportState,
@@ -86,7 +101,7 @@ import {
   alignTimerWithSwing,
   type FlatEvent,
   type NoteMapNote,
-  type TimingEventLike,
+  type TimingEventLike as SwingTimingEvent,
 } from "./swing-timing";
 import { VERSION } from "./version";
 
@@ -289,6 +304,9 @@ function currentSynthOptions(): Record<string, unknown> {
     options.sequenceCallback = captureSwungNoteMap;
     options.callbackContext = { swung: null } satisfies SwingCapture;
   }
+  // Practice mutes (abcjs numbers voices as its sequencer does: tuneVoices()).
+  const voicesOff = voiceMutes.voicesOff();
+  if (voicesOff) options.voicesOff = voicesOff;
   return options;
 }
 
@@ -315,7 +333,7 @@ function captureSwungNoteMap(tracks: NoteMapNote[][], context: SwingCapture): No
  */
 function followSwing(controller: unknown): void {
   const raw = controller as {
-    timer?: { noteTimings?: TimingEventLike[] } | null;
+    timer?: { noteTimings?: SwingTimingEvent[] } | null;
     midiBuffer?: {
       flattened?: { tracks?: FlatEvent[][] };
       callbackContext?: SwingCapture;
@@ -405,6 +423,9 @@ const cursorControl: CursorControl & { extraMeasuresAtBeginning?: number } = {
     // is queued behind a load): its notes are no longer on the page.
     const first = ev.elements?.[0]?.[0] as Element | undefined;
     if (first && !first.isConnected) return;
+    // A practice loop past its end: back to its start, without lighting the
+    // note that follows the selection.
+    if (wrapLoopIfDue(ev.milliseconds)) return;
     clearHighlights();
 
     for (const group of ev.elements ?? []) {
@@ -427,6 +448,7 @@ const cursorControl: CursorControl & { extraMeasuresAtBeginning?: number } = {
   onReady(controller?: unknown) {
     followSwing(controller);
     routeRoom(controller);
+    fixSeeks(controller);
   },
 };
 
@@ -664,14 +686,15 @@ function reengraveForInstrument(): void {
  */
 const transportQueue = new TransportQueue(() => state.synthControl, () => !disposed);
 
-function applySettings(prepare?: () => void): Promise<void> {
+function applySettings(prepare?: () => void, keepPosition = false): Promise<void> {
   wakeAudio();
   // Each step re-reads the CURRENT selector values, so a burst collapses to
   // "prime whatever was chosen last". `prepare` runs right before the re-prime
-  // reads `state.visualObj` (the instrument re-engrave, #25).
+  // reads `state.visualObj` (the instrument re-engrave, #25). `keepPosition`:
+  // carry on from where the playhead was (a voice mute) rather than bar 1.
   return transportQueue.run(() => {
     prepare?.();
-    return applySettingsNow();
+    return applySettingsNow(keepPosition);
   });
 }
 
@@ -758,7 +781,7 @@ audioControlsEl.addEventListener(
   { capture: true },
 );
 
-async function applySettingsNow(): Promise<void> {
+async function applySettingsNow(keepPosition = false): Promise<void> {
   const control = state.synthControl;
   const tune = state.visualObj?.[0];
   if (!control || !tune) return;
@@ -779,6 +802,7 @@ async function applySettingsNow(): Promise<void> {
         hasPrimedAudio = true;
       },
       stillWanted: () => state.synthControl === control && !isStale(generation),
+      keepPosition,
       onSuperseded: () => {
         // A cancel landed while play() was starting: stop what we started.
         // An edit that took the controller over decides for itself.
@@ -986,6 +1010,367 @@ function routeRoom(controller: unknown): void {
   const midiBuffer = (controller as { midiBuffer?: unknown } | null)?.midiBuffer;
   routeThroughRoom(midiBuffer, audioContext, (ctx) => liveRoom.inputFor(ctx));
 }
+
+/** Two abcjs seek bugs, patched on each go()'s new buffer and timer (src/synth-transport.ts). */
+function fixSeeks(controller: unknown): void {
+  const raw = controller as { midiBuffer?: unknown; timer?: unknown } | null;
+  fixRunningSeek(raw?.midiBuffer, () => audioContext()?.currentTime ?? 0);
+  oneJogger(raw?.timer);
+}
+
+// =============================================================================
+// Practice — click a note, loop a selection, mute a voice
+// =============================================================================
+//
+// For the person at the score. A click on a note selects its ABC in the editor
+// (the widget's selection, which the review tools read) and sounds it; Shift
+// extends the selection. "Loop selection" plays the selected notes round and
+// round; a score with two or more voices gets a mute toggle per voice.
+//
+// Dragging (abcjs `dragging: true`) stays off on purpose: it moves notes only
+// vertically, only on screen (the ABC is not rewritten), and on a phone a drag
+// that starts on a note fights the scroll.
+
+/** The effective ABC the score on screen was engraved from. */
+let engravedAbc = "";
+
+/** Offsets between the editor's raw ABC and the engraved string, if they map. */
+function scoreOffsets(): AbcOffsetMap | null {
+  if (state.currentAbc === null) return null;
+  const map = abcOffsetMap(state.currentAbc, {
+    style: state.currentStyle,
+    programOverride: state.instrumentOverride
+      ? (INSTRUMENTS[state.currentInstrument] ?? null)
+      : null,
+  });
+  return map && map.effective === engravedAbc ? map : null;
+}
+
+/** The editor still holds exactly the score on screen (no unrendered draft). */
+function editorMatchesScore(): boolean {
+  return state.currentAbc !== null && editorEl.value === state.currentAbc;
+}
+
+/** The selection, as raw offsets, when it belongs to the score on screen. */
+function sourceSelection(): { from: number; to: number } | null {
+  if (!editorMatchesScore()) return null;
+  const from = editorEl.selectionStart;
+  const to = editorEl.selectionEnd;
+  return to > from ? { from, to } : null;
+}
+
+/** Mark the selection on the score (abcjs `rangeHighlight`), or clear it. */
+function highlightScoreSelection(): void {
+  const engraver = (state.visualObj?.[0] as { engraver?: { rangeHighlight?: (s: number, e: number) => void } } | undefined)?.engraver;
+  if (!engraver?.rangeHighlight) return;
+  const selection = sourceSelection();
+  const map = selection ? scoreOffsets() : null;
+  if (selection && map) {
+    engraver.rangeHighlight(map.toEffective(selection.from), map.toEffective(selection.to));
+  } else {
+    engraver.rangeHighlight(-1, -1); // matches nothing: clears
+  }
+}
+
+/** Select `from`–`to` of the raw ABC in the editor, scrolled into view. */
+function selectSource(from: number, to: number, focus: boolean): void {
+  if (focus && !editorPaneEl.hidden) editorEl.focus({ preventScroll: true });
+  editorEl.setSelectionRange(from, to);
+  if (!editorPaneEl.hidden) {
+    const line = editorEl.value.slice(0, from).split("\n").length - 1;
+    const lineHeight = parseFloat(getComputedStyle(editorEl).lineHeight) || 18;
+    const top = line * lineHeight;
+    if (top < editorEl.scrollTop || top > editorEl.scrollTop + editorEl.clientHeight - lineHeight) {
+      editorEl.scrollTop = Math.max(0, top - editorEl.clientHeight / 3);
+    }
+  }
+  // The review tools' "Ask about selection" re-reads on this.
+  editorEl.dispatchEvent(new Event("select", { bubbles: true }));
+}
+
+/**
+ * Taps, not scrolls. abcjs reports a click on finger-LIFT (touchend), even
+ * after the finger scrolled the score, and on mouse-up after a drag. Only a
+ * press that stayed within TAP_SLOP_PX counts. Touch also fires emulated
+ * mouse events after touchend, which abcjs reports as a second click: the
+ * first one consumes the press, so the echo finds none.
+ */
+const scoreTap = new TapTracker();
+{
+  const point = (event: Event) => {
+    const e = event as PointerEvent & TouchEvent;
+    return e.touches?.[0] ?? e;
+  };
+  const listen = (type: string, handler: (event: Event) => void) =>
+    sheetMusicEl.addEventListener(type, handler, { capture: true, passive: true });
+  listen("pointerdown", (e) => scoreTap.start(point(e).clientX, point(e).clientY));
+  listen("touchstart", (e) => {
+    if (!scoreTap.active) scoreTap.start(point(e).clientX, point(e).clientY);
+  });
+  listen("pointermove", (e) => scoreTap.move(point(e).clientX, point(e).clientY));
+  listen("touchmove", (e) => scoreTap.move(point(e).clientX, point(e).clientY));
+  listen("pointercancel", () => scoreTap.cancel());
+  // Shift-click extends OUR selection. Left to the browser, a Shift-press
+  // outside the focused editor first extends the textarea's own selection to
+  // its end (measured in Chromium), and the click then extended that.
+  sheetMusicEl.addEventListener(
+    "mousedown",
+    (event) => {
+      if (event.shiftKey) event.preventDefault();
+    },
+    { capture: true },
+  );
+}
+
+/** What abcjs hands the click listener, as far as it is read here. */
+interface ClickedElement {
+  el_type?: string;
+  startChar?: number;
+  endChar?: number;
+  rest?: unknown;
+  midiPitches?: AuditionPitch[];
+  midiGraceNotePitches?: AuditionPitch[];
+}
+
+function onScoreClick(
+  abcElem: ClickedElement,
+  _tuneNumber: number,
+  _classes: string,
+  _analysis: unknown,
+  _drag: unknown,
+  event?: Event,
+): void {
+  const tap = scoreTap.isTap();
+  scoreTap.reset();
+  if (!tap || disposed) {
+    // abcjs has already coloured whatever was under the lifted finger.
+    highlightScoreSelection();
+    return;
+  }
+  const start = abcElem.startChar ?? -1;
+  const end = abcElem.endChar ?? -1;
+  const map = start >= 0 && end > start ? scoreOffsets() : null;
+  if (map && editorMatchesScore()) {
+    let from = map.toRaw(start);
+    let to = map.toRaw(end);
+    // abcjs's span takes in the spaces around the note.
+    while (to > from && /\s/.test(editorEl.value[to - 1])) to--;
+    while (from < to && /\s/.test(editorEl.value[from])) from++;
+    const previous = (event as MouseEvent | undefined)?.shiftKey ? sourceSelection() : null;
+    if (previous) {
+      from = Math.min(from, previous.from);
+      to = Math.max(to, previous.to);
+    }
+    // Focus only for a mouse with the editor open: on a phone it would raise
+    // the keyboard over the score.
+    const mouse = typeof (event as MouseEvent | undefined)?.button === "number";
+    selectSource(from, to, mouse); // its "select" event marks the range on the score
+    reportPointedSelection(from, to);
+  } else if (state.currentAbc !== null && !editorMatchesScore()) {
+    setStatus("The editor has changes not on the score yet — ⌘/Ctrl+Enter to render them");
+  }
+  if (abcElem.el_type === "note" && !abcElem.rest) void soundClickedNote(abcElem);
+}
+
+/** Say which notes are selected, so a screen reader hears the click land. */
+function reportPointedSelection(from: number, to: number): void {
+  const text = editorEl.value.slice(from, to).trim();
+  if (text) setStatus(`Selected ${text.length > 40 ? `${text.slice(0, 40)}…` : text}`);
+}
+
+/** Sound a clicked note once, with the tune's instrument, bank, release and Room. */
+async function soundClickedNote(abcElem: ClickedElement): Promise<void> {
+  const tune = state.visualObj?.[0];
+  if (!tune) return;
+  void resumeAudioContext(audioContext(), AUDIO_RESUME_TIMEOUT_MS);
+  const {
+    voicesOff: _voicesOff,
+    sequenceCallback: _sequenceCallback,
+    callbackContext: _callbackContext,
+    ...options
+  } = currentSynthOptions();
+  try {
+    // midiPitches exist only once the tune has been through setUpAudio (a
+    // prime). Re-run it unmuted: a muted voice's notes carry volume 0.
+    tune.setUpAudio(options as SynthOptions);
+    const pitches = abcElem.midiPitches ?? [];
+    const primed = (state.synthControl as { midiBuffer?: { millisecondsPerMeasure?: number } } | null)
+      ?.midiBuffer?.millisecondsPerMeasure;
+    const meter = tune.getMeterFraction();
+    const meterSize = meter?.den ? meter.num / meter.den : 1;
+    await auditionNote({
+      pitches,
+      graces: abcElem.midiGraceNotePitches,
+      msPerWholeNote: (primed ?? tune.millisecondsPerMeasure()) / meterSize,
+      synthOptions: options,
+      route: (buffer) => routeThroughRoom(buffer, audioContext, (ctx) => liveRoom.inputFor(ctx)),
+    });
+  } catch (error) {
+    console.debug("Couldn't sound the note:", error);
+  }
+}
+
+const voiceMutes = new VoiceMutes();
+let voiceNames: string[] = [];
+
+/** Adopt the engraved score's voices (before anything primes it). */
+function syncVoices(tune: ABCJS.TuneObject | undefined): void {
+  voiceNames = tune ? tuneVoices(tune.lines as unknown as TuneLineLike[]).names : [];
+  voiceMutes.setVoiceCount(voiceNames.length);
+  syncPracticeRow();
+}
+
+/** The loop the listener asked for, in raw offsets of the score it was set on. */
+let practiceLoop: { from: number; to: number; abc: string } | null = null;
+/** The loop's timeline range, per timer: a tempo change or re-prime builds a new one. */
+let loopCache: { timer: object; range: LoopRange | null } | null = null;
+
+function loopActive(): boolean {
+  return practiceLoop !== null && practiceLoop.abc === state.currentAbc;
+}
+
+/** Where the loop runs on the live controller's current timeline. */
+function activeLoopRange(control: ABCJS.SynthObjectController | null = state.synthControl): LoopRange | null {
+  if (!loopActive() || !control || control !== state.synthControl) return null;
+  const timer = (control as { timer?: { noteTimings?: TimingEventLike[] } | null }).timer;
+  if (!timer?.noteTimings) return null;
+  if (loopCache?.timer === timer) return loopCache.range;
+  const map = scoreOffsets();
+  const tune = state.visualObj?.[0];
+  let range: LoopRange | null = null;
+  if (map && tune && practiceLoop) {
+    range = loopRange(
+      timer.noteTimings,
+      { from: map.toEffective(practiceLoop.from), to: map.toEffective(practiceLoop.to) },
+      tuneVoices(tune.lines as unknown as TuneLineLike[]).voiceOf,
+    );
+  }
+  loopCache = { timer, range };
+  return range;
+}
+
+let loopWrapPending = false;
+
+/**
+ * Called for every timing event: send a looping playhead back to the start.
+ * The seek waits for the timer's own loop to finish (a microtask): seeking
+ * from inside the callback lets the timer step past the event it just
+ * landed on, and the loop's first note never lit up.
+ */
+function wrapLoopIfDue(atMs: number): boolean {
+  const control = state.synthControl;
+  const range = activeLoopRange(control);
+  if (!control || !range || loopWrapTarget(range, atMs) === null) return false;
+  if (!loopWrapPending) {
+    loopWrapPending = true;
+    queueMicrotask(() => {
+      loopWrapPending = false;
+      if (state.synthControl === control && readTransport(control).wasPlaying) {
+        seekTransport(control, range.startMs / 1000);
+      }
+    });
+  }
+  return true;
+}
+
+/**
+ * A loop that runs to the end of the tune never sees an event past its end:
+ * the timer calls `finished()` instead, which stops (or, with abcjs's Loop
+ * on, restarts from bar 1). Catch it first. `finished` is an instance lookup
+ * (`self.finished()`), so wrapping the instance is enough.
+ */
+function loopThroughEnd(control: ABCJS.SynthObjectController): void {
+  const raw = control as unknown as { finished: () => unknown; isStarted?: boolean };
+  const finished = raw.finished;
+  raw.finished = () => {
+    const range = activeLoopRange(control);
+    if (range && raw.isStarted) {
+      seekTransport(control, range.startMs / 1000);
+      return "continue";
+    }
+    return finished();
+  };
+}
+
+async function toggleSelectionLoop(): Promise<void> {
+  if (loopActive()) {
+    practiceLoop = null;
+    loopCache = null;
+    syncPracticeRow();
+    setStatus("Loop off — playing on");
+    return;
+  }
+  const selection = sourceSelection();
+  const control = state.synthControl;
+  if (!control) return;
+  if (!selection) {
+    setStatus(
+      editorMatchesScore()
+        ? "Select notes to loop: click a note, Shift-click another (or select ABC in the editor)"
+        : "Render the editor's changes first (⌘/Ctrl+Enter), then select notes to loop",
+    );
+    return;
+  }
+  practiceLoop = { ...selection, abc: state.currentAbc ?? "" };
+  loopCache = null;
+  syncPracticeRow();
+  highlightScoreSelection();
+  wakeAudio();
+  // The ▶ of this gesture: take the controller over, as a ▶ press does.
+  playPresses++;
+  const generation = renderGeneration;
+  ownSynthControl(control, generation);
+  const raw = control as unknown as { runWhenReady(fn: () => unknown): Promise<unknown> };
+  try {
+    // Prime without playing (no timer exists before the first ▶), so the
+    // playhead can be put at the loop's start BEFORE the sound begins.
+    await raw.runWhenReady(() => undefined);
+    if (isStale(generation) || state.synthControl !== control || !loopActive()) return;
+    const range = activeLoopRange(control);
+    if (!range) {
+      practiceLoop = null;
+      syncPracticeRow();
+      setStatus("Nothing in that selection plays — select some notes");
+      return;
+    }
+    seekTransport(control, range.startMs / 1000);
+    if (!readTransport(control).wasPlaying) await control.play();
+    if (!isStale(generation)) setStatus("Looping the selection");
+  } catch (error) {
+    console.error("Loop failed:", error);
+  }
+}
+
+function toggleVoice(voice: number): void {
+  voiceMutes.toggle(voice);
+  syncPracticeRow();
+  if (state.visualObj && state.synthControl) void applySettings(undefined, true);
+}
+
+const practiceRow = new PracticeRow({
+  toggleLoop: () => void toggleSelectionLoop(),
+  toggleVoice,
+});
+audioControlsEl.after(practiceRow.element);
+
+function syncPracticeRow(): void {
+  if (practiceLoop && !loopActive()) {
+    practiceLoop = null;
+    loopCache = null;
+  }
+  practiceRow.sync(
+    {
+      looping: loopActive(),
+      voices: voiceNames.map((name, i) => ({ name, muted: voiceMutes.isMuted(i) })),
+    },
+    toolbarEl.classList.contains("visible") && state.visualObj !== null,
+  );
+}
+
+// An editor selection marks the score too, so what Loop will play is visible.
+editorEl.addEventListener("select", highlightScoreSelection);
+editorEl.addEventListener("keyup", highlightScoreSelection);
+editorEl.addEventListener("pointerup", () => setTimeout(highlightScoreSelection, 0));
 
 // =============================================================================
 // ABC Source Editor
@@ -1226,6 +1611,7 @@ function engraveEdit(abc: string, effective: string, messages: string[]): ABCJS.
   resetFollow();
   state.visualObj = visualObj;
   state.currentAbc = abc;
+  syncVoices(visualObj[0]);
   lastEditRendered = abc;
   renderTitle();
   syncInstrumentSelect();
@@ -1515,6 +1901,8 @@ function midiExportOptions(): ABCJS.MidiFileOptions {
     // The swing capture only matters to prime(); the writer never swings.
     sequenceCallback: _sequenceCallback,
     callbackContext: _callbackContext,
+    // The score, not the practice mix: every voice is written.
+    voicesOff: _voicesOff,
     ...musical
   } = currentSynthOptions();
   return {
@@ -1627,7 +2015,15 @@ function setLoading(text: string): void {
   }
 }
 
-const SCORE_RENDER_OPTIONS = { responsive: "resize", add_classes: true } as const;
+/** abcjs's selection colour; the CSS (`--color-selection`) overrides it per theme. */
+const SELECTION_COLOR = "#c2410c";
+
+const SCORE_RENDER_OPTIONS = {
+  responsive: "resize",
+  add_classes: true,
+  clickListener: onScoreClick as unknown as ABCJS.ClickListener,
+  selectionColor: SELECTION_COLOR,
+} as const;
 
 /**
  * Engrave `abc` (the effective notation, style already applied) into the
@@ -1639,11 +2035,15 @@ const SCORE_RENDER_OPTIONS = { responsive: "resize", add_classes: true } as cons
  * the same layout, scaled down a little, and only when it has to be.
  */
 function engraveScore(abc: string): ABCJS.TuneObject[] {
+  engravedAbc = abc;
   const tunes = ABCJS.renderAbc(sheetMusicEl, abc, SCORE_RENDER_OPTIONS);
   const paddingright = overhangPadding(tunes);
-  return paddingright === null
+  const result = paddingright === null
     ? tunes
     : ABCJS.renderAbc(sheetMusicEl, abc, { ...SCORE_RENDER_OPTIONS, paddingright });
+  // Every caller has made this the widget's score by then.
+  queueMicrotask(highlightScoreSelection);
+  return result;
 }
 
 /** The right padding the engraved score needs, or null if it already fits. */
@@ -1785,6 +2185,7 @@ async function renderAbc(
     if (!state.visualObj || state.visualObj.length === 0) {
       throw new Error("Failed to parse music notation");
     }
+    syncVoices(state.visualObj[0]);
 
     if (!ABCJS.synth.supportsAudio()) {
       throw new Error("Audio not supported in this browser");
@@ -1808,6 +2209,8 @@ async function renderAbc(
       displayProgress: true,
       displayWarp: true,
     });
+    // Over trackTransport's wrap of finished(), so a loop's restart is not an end.
+    loopThroughEnd(synthControl);
     if (transport.carry) {
       carryWarp(synthControl, transport.carry.warp, state.visualObj[0]);
     }
@@ -1827,6 +2230,7 @@ async function renderAbc(
 
     // Show toolbar once we have content
     toolbarEl.classList.add("visible");
+    syncPracticeRow();
     downloadBtn.disabled = !downloadSupported;
     // MIDI is generated from the parsed tune, so it needs no prior playback.
     midiBtn.disabled = !downloadSupported;
@@ -1954,6 +2358,9 @@ async function applyScoreInput(args: Record<string, unknown>, transport: RenderT
   transposeNote = null;
 
   state.currentInstrument = preparedInput.instrument;
+  // A new piece plays every voice, and loops nothing.
+  voiceMutes.setVoiceCount(0);
+  practiceLoop = null;
   // A new tool call hands the instrument back to the score (#25).
   state.instrumentOverride = instrumentOverride;
   instrumentSelect.value = preparedInput.instrument;

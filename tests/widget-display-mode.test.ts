@@ -85,7 +85,7 @@ describe("applySettings is serialised against rapid selector changes", () => {
     expect(ABC).toContain(
       "const transportQueue = new TransportQueue(() => state.synthControl, () => !disposed);",
     );
-    expect(ABC).toContain("return transportQueue.run(() => {\n    prepare?.();\n    return applySettingsNow();");
+    expect(ABC).toContain("return transportQueue.run(() => {\n    prepare?.();\n    return applySettingsNow(keepPosition);");
   });
 
   it("re-reads the current selector values inside the chained call", () => {
@@ -100,7 +100,7 @@ describe("applySettings is serialised against rapid selector changes", () => {
 
   it("still returns a promise the callers can chain onto", () => {
     // The sound-bank change path does applySettings().then(...).catch(...).
-    expect(ABC).toMatch(/function applySettings\(prepare\?: \(\) => void\): Promise<void>/);
+    expect(ABC).toMatch(/function applySettings\(prepare\?: \(\) => void, keepPosition = false\): Promise<void>/);
     expect(ABC).toContain("applySettings(resetSoundsCache)\n    .then(");
   });
 });

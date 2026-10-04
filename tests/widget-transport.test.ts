@@ -42,7 +42,7 @@ describe("sheet music transport", () => {
   it("keeps playing (and looping) through an instrument or sound change", () => {
     // The behaviour itself (Loop kept, play only if playing, never after a
     // cancel) is reprime(), exercised in synth-transport.test.ts.
-    const fn = body(ABC, "async function applySettingsNow()");
+    const fn = body(ABC, "async function applySettingsNow(");
     expect(fn).toContain("await reprime(control, {");
     expect(fn).toContain("await control.setTune(tune, true, currentSynthOptions() as SynthOptions);");
   });
@@ -50,7 +50,7 @@ describe("sheet music transport", () => {
   it("re-checks the generation, not just the controller, after a settings prime", () => {
     // ontoolcancelled bumps the generation but KEEPS the controller, so an
     // identity check alone let a prime in flight restart cancelled music.
-    const fn = body(ABC, "async function applySettingsNow()");
+    const fn = body(ABC, "async function applySettingsNow(");
     expect(fn).toMatch(/const generation = renderGeneration;/);
     expect(fn).toContain(
       "stillWanted: () => state.synthControl === control && !isStale(generation),",
@@ -61,7 +61,7 @@ describe("sheet music transport", () => {
     const fn = body(ABC, "function applySettings(");
     expect(fn).toContain("wakeAudio();");
     // The #25 re-engrave runs AFTER the wait, inside the same step.
-    expect(fn).toMatch(/transportQueue\.run\(\(\) => \{\s*prepare\?\.\(\);\s*return applySettingsNow\(\);/);
+    expect(fn).toMatch(/transportQueue\.run\(\(\) => \{\s*prepare\?\.\(\);\s*return applySettingsNow\(keepPosition\);/);
     expect(body(ABC, "async function renderAbc(")).toMatch(
       /trackTransport\(synthControl, [^\n]*\);\s*queueWarp\(synthControl, transportQueue, [\s\S]{0,400}?\}\);\s*synthControl\.load\(/,
     );
