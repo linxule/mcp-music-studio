@@ -1194,6 +1194,60 @@ stack(
   note("<[c3,eb3,g3] [c3,eb3,g3] [ab2,c3,eb3] [bb2,d3,f3]>").s('triangle').gain(0.12).room(0.6)
 )`;
 
+const STILL_WATER = String.raw`setcps(0.4333)
+
+// ════════════ STILL WATER — just the music ════════════
+// No controls, no film, no drawing: one idea held through four sections.
+// 104 bpm, F minor: Fm7 → Dbmaj7 → Abmaj7 → Eb. The melody asks a
+// question for 24 bars and answers it for 24. Every layer moves a little.
+//   intro 8 · verse 16 · lift 16 · outro 8  (≈ 1 min 50 s)
+
+// ── harmony: one four-bar loop, every layer reads it ──
+const ROOTS  = "<f1 db1 ab1 eb1>"
+const CHORDS = "<[f3,ab3,c4,eb4] [db3,f3,ab3,c4] [ab2,c3,eb3,g3] [eb3,g3,bb3,db4]>"
+
+// ── melody: the question (A), and its answer (B) ──
+const A = "<[~ c5 ~ eb5] [f5 ~ eb5 c5] [~ ab4 ~ c5] [bb4@3 ~]>"
+const B = "<[~ c5 eb5 f5] [ab5 ~ g5 eb5] [c5 ~ eb5 ~] [f5@2 eb5 c5]>"
+
+// ── sound design ──
+// The kick ducks everything on the beat: velocity multiplies gain, so each
+// layer keeps its own level and takes the same breath.
+const duck = "[0.35 0.8 1 1]*4"
+
+const kick  = s("<[bd*4] [bd*4] [bd*4] [bd bd bd [bd bd]]>").bank('RolandTR808').gain(0.95)
+const snare = s("~ cp ~ cp").bank('RolandTR808').gain(0.5).room(0.35).roomsize(3)
+const hats  = s("hh*8").bank('RolandTR808').velocity("[0.9 0.35 0.6 0.35]*2")
+  .gain(0.38).pan(sine.range(0.4, 0.6).slow(3)).hpf(600)
+const ride  = s("[~ oh]*2").bank('RolandTR808').gain(0.16).release(0.08)
+
+const bass = note(ROOTS).struct("x ~ x [~ x] ~ x x ~").s('sawtooth')
+  .lpf(280).lpenv(2.2).lpdecay(0.18).lpq(5).release(0.1)
+  .gain(0.45).velocity(duck)
+
+const keys = note(CHORDS).struct("[x ~ ~ x] [~ ~ x ~]").s('gm_epiano1')
+  .attack(0.01).release(0.7).gain(0.32).room(0.5).roomsize(4).velocity(duck)
+  .every(4, x => x.late(0.125))                     // the keys lean back every fourth bar
+
+const pad = note(CHORDS).transpose(12).s('sawtooth')
+  .attack(1.4).release(2.2).lpf(sine.range(380, 1500).slow(16)).lpq(1)
+  .gain(0.11).room(0.75).roomsize(6).velocity(duck)
+
+// FM electric piano for the lead: harmonicity 2 keeps it hollow, the short
+// FM decay gives it the pluck, a dotted-eighth delay gives it room to answer itself.
+const lead = (phrase) => note(phrase).s('sine').fm(3).fmh(2)
+  .fmattack(0.01).fmdecay(0.25).release(0.45)
+  .gain(0.34).room(0.45).delay(0.28).delaytime(0.43).delayfeedback(0.35)
+
+// ── form ──
+arrange(
+  [8,  stack(keys, pad.gain(0.08), lead(A).velocity(0.6), hats.gain(0.22))],
+  [16, stack(kick, snare, hats, bass, keys, lead(A))],
+  [16, stack(kick, snare, hats, ride, bass.lpf(360), keys, pad,
+             lead(B).off(0.125, x => x.transpose(12).velocity(0.4)))],
+  [8,  stack(keys.release(1.5), pad, lead(B).slow(2).release(1.2).velocity(0.7))]
+).pianoroll({ fold: 1 })`;
+
 export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
   {
     id: "first-light",
@@ -1302,9 +1356,23 @@ export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
     ],
     code: TRADE_A_BEAT,
   },
+  {
+    id: "still-water",
+    title: "Still Water — just the music",
+    summary:
+      "No controls, no film, no drawing: a 48-bar downtempo track at 104 bpm in F minor, intro → verse → lift → outro. One four-bar harmony every layer reads; a melody that asks for 24 bars and answers for 24; the kick ducks every layer by the same breath. For when the ask is a track.",
+    teaches: [
+      "form with arrange(): the same layers, four sections, each adds or takes one thing",
+      "sound design per layer: filter envelope on the bass, FM pluck for the lead, a 16-bar filter sweep on the pad",
+      "ducking with .velocity(): it multiplies .gain(), so every layer keeps its level and breathes with the kick",
+      "development without new material: .off() an octave in the lift, .slow(2) the answer in the outro, .every(4) a lean-back",
+      "one draw method and nothing else: .pianoroll() on the arrangement",
+    ],
+    code: STILL_WATER,
+  },
 ];
 
-export const GALLERY_IDS = ["first-light", "duet", "petri-dish", "lossy-terminal", "signal-corruption", "weather-machine", "two-decks", "trade-a-beat"] as const;
+export const GALLERY_IDS = ["first-light", "duet", "petri-dish", "lossy-terminal", "signal-corruption", "weather-machine", "two-decks", "trade-a-beat", "still-water"] as const;
 
 /** The plain-text index get-strudel-guide returns for topic "gallery". */
 export function galleryIndex(): string {
@@ -1316,7 +1384,8 @@ export function galleryIndex(): string {
     "jam, start with the shortest piece that matches (line counts below); Trade a Beat is a",
     "drawn grid two players share. They show how the stage runtime (cycle, onFrame, onEvent,",
     "onTap, say), canvases, Hydra and arrange() fit together — and what an idea held all the",
-    "way through looks like.",
+    "way through looks like. Still Water is only music — no controls, no film — for when the",
+    "ask is a track: form, sound design and development, nothing to tap.",
     "",
   ];
   for (const piece of STRUDEL_GALLERY) {
