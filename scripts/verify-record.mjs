@@ -221,10 +221,29 @@ function checkVideo(label, r, wallMs, expectSize) {
   if (r.errors.length) fail(`${label}: ${r.errors.join(" | ")}`);
 }
 
+// Can this engine record a canvas at all? The Linux WebKit port that Playwright
+// ships on CI has no canvas.captureStream()/MediaRecorder video, so the widget
+// hides "Rec video" there by the same feature test (canRecordVideo). macOS
+// WebKit records. The skip is keyed on the PLATFORM capability, not on the
+// button, so a button hidden on a capable engine still fails.
+const VIDEO_SUPPORTED = await (async () => {
+  const ctx = await browser.newContext();
+  const pg = await ctx.newPage();
+  const caps = await pg.evaluate(() => ({
+    capture: typeof HTMLCanvasElement.prototype.captureStream === "function",
+    recorder: typeof MediaRecorder !== "undefined",
+  }));
+  await ctx.close();
+  if (caps.capture && caps.recorder) return true;
+  if (BROWSER !== "webkit") throw new Error(`no canvas video recording in ${BROWSER}: ${JSON.stringify(caps)}`);
+  console.log(`skip: this WebKit build has no canvas video recording (${JSON.stringify(caps)}) — sections 1–2 skipped, the widget hides Rec video here by design`);
+  return false;
+})();
+
 // ---------------------------------------------------------------------------
 // 1. Three seconds of Hydra, in video
 // ---------------------------------------------------------------------------
-{
+if (VIDEO_SUPPORTED) {
   const { context, page, frame } = await openWidget(HYDRA);
   const ui = await frame().evaluate(() => {
     const b = document.getElementById("video-btn");
@@ -286,7 +305,7 @@ function checkVideo(label, r, wallMs, expectSize) {
 // ---------------------------------------------------------------------------
 // 2. Across a live-session swap, with a setlist
 // ---------------------------------------------------------------------------
-{
+if (VIDEO_SUPPORTED) {
   const [, { id }] = await post("/session/new");
   const { context, page, frame } = await openWidget(HYDRA, { session: { id, origin: ORIGIN } });
   for (let i = 0; i < 40; i++) {
@@ -378,8 +397,8 @@ function checkVideo(label, r, wallMs, expectSize) {
     before.watch === "true" && before.stage && !before.code
       ? ok(`${label}: stage only (code hidden)`)
       : fail(`${label}: ${JSON.stringify(before)}`);
-    before.start && before.play && before.video && before.full && before.hidden.length === 0
-      ? ok(`${label}: tap-to-start, Play, Rec video and ⛶ shown; no editing buttons`)
+    before.start && before.play && before.video === VIDEO_SUPPORTED && before.full && before.hidden.length === 0
+      ? ok(`${label}: tap-to-start, Play, ${VIDEO_SUPPORTED ? "Rec video" : "no Rec video (unsupported here)"} and ⛶ shown; no editing buttons`)
       : fail(`${label}: buttons ${JSON.stringify(before)}`);
     before.controls === 0 ? ok(`${label}: no controls strip for a piece without controls`) : fail(`${label}: controls strip present`);
     !before.started ? ok(`${label}: nothing plays before the tap`) : fail(`${label}: playing before any tap`);
