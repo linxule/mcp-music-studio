@@ -19,6 +19,9 @@ const fail = (msg) => {
   console.error(`✗ ${msg}`);
 };
 const check = (cond, msg, detail = "") => (cond ? ok(msg) : fail(detail ? `${msg} — ${detail}` : msg));
+// WebKit (Linux CI) raises this benign layout notice as a page error; it is
+// not a failure of ours (the spec fires it as an error event, harmlessly).
+const real = (message) => !/^ResizeObserver loop/.test(message);
 
 const LEVEL_TAP = `(() => {
   const desc = Object.getOwnPropertyDescriptor(BaseAudioContext.prototype, 'destination');
@@ -41,7 +44,7 @@ const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } }
 await ctx.addInitScript(LEVEL_TAP);
 const page = await ctx.newPage();
 const errors = [];
-page.on("pageerror", (e) => errors.push(e.message));
+page.on("pageerror", (e) => real(e.message) && errors.push(e.message));
 await page.goto(`${BASE}/app-tools.html`);
 const logText = () => page.$eval("#log", (e) => e.innerText);
 const summary = () => page.$eval("#summary", (e) => e.textContent);
@@ -128,7 +131,7 @@ await c3.addInitScript(() => {
 });
 const sp = await c3.newPage();
 const se = [];
-sp.on("pageerror", (e) => se.push(e.message));
+sp.on("pageerror", (e) => real(e.message) && se.push(e.message));
 await sp.goto(`${BASE}/studio.html`);
 const EXPECTED = ["get-studio-state", "open-studio-mode", "explain-selection", "suggest-edit", "set-pattern", "swap-pattern", "set-score", "play-current-music", "stop-music", "undo-studio-edit"];
 await sp.waitForFunction((n) => Object.keys(window.__tools || {}).length >= n, EXPECTED.length, { timeout: 30000 }).catch(() => {});
