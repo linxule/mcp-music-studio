@@ -49,7 +49,7 @@ import {
 } from "./abc-edit";
 import { TapTracker, listenForAudioGestures, resumeAudioContext } from "./audio-unlock";
 import { abcOffsetMap, type AbcOffsetMap } from "./abc-offsets";
-import { auditionNote, type AuditionPitch } from "./note-audition";
+import { auditionNote, stopAudition, type AuditionPitch } from "./note-audition";
 import { PracticeRow } from "./practice-row";
 import {
   VoiceMutes,
@@ -2473,6 +2473,9 @@ app.onerror = console.error;
 
 // Reset playback/highlight state when a compose is cancelled or torn down.
 function stopPlayback(): void {
+  // A clicked note's own sound lives outside the transport: cut it, and drop
+  // one still loading, or it starts after the Stop.
+  stopAudition();
   try {
     if (state.synthControl) pauseTransport(state.synthControl);
   } catch {
@@ -2515,6 +2518,7 @@ app.onteardown = () => {
   cancelPartialRender();
   // A pending edit render must not fire into a discarded widget.
   cancelEditRender();
+  stopAudition();
   // Not just pause(): the timer and primed buffer have to go too, or a late
   // beat callback keeps running against a detached document.
   retireSynthControl();
