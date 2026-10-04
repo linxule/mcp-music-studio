@@ -116,10 +116,12 @@ describe("shapeAnalytics — tool-time prerender", () => {
     { day: "2026-10-04", blob1: "tts", blob2: "prerender-skipped", n: "1", chars: 1 },
     { day: "2026-10-04", blob1: "tts", blob2: "inflight-timeout", n: "1", chars: 9 },
     { day: "2026-10-04", blob1: "tts", blob2: "hit", n: "12", chars: 300 },
+    { day: "2026-10-04", blob1: "tts", blob2: "words-miss", n: "2", chars: 40 },
+    { day: "2026-10-04", blob1: "tts", blob2: "prerender-words-miss", n: "1", chars: 20 },
   ];
   it("counts prerender misses in tts miss / miss chars and in their own prerender column", () => {
     const ae = shapeAnalytics(dates, rows);
-    expect(ae.days[1]).toMatchObject({ ttsMiss: 16, ttsMissChars: 290, ttsPrerender: 6, ttsPrerenderChars: 90, ttsHit: 12, ttsInflightTimeout: 1 });
+    expect(ae.days[1]).toMatchObject({ ttsMiss: 16, ttsMissChars: 290, ttsPrerender: 6, ttsPrerenderChars: 90, ttsHit: 12, ttsInflightTimeout: 1, ttsWordsMiss: 3 });
   });
   it("prints the prerender column", () => {
     const text = renderUsage({

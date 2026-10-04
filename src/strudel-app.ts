@@ -1390,7 +1390,7 @@ function installEvaluateHook(editor: any): void {
     // let its say() clips load, then start — superdough drops a sample that is
     // not decoded by its start time, so a line in bar 0 used to be lost on the
     // first play. (A re-evaluation of a running piece keeps playing.)
-    const holdForVoice = shouldPlay !== false && /\bsay\s*\(/.test(code) && !isSchedulerStarted();
+    const holdForVoice = shouldPlay !== false && /\b(?:say|sing)\s*\(/.test(code) && !isSchedulerStarted();
     // A swap lands on its bar: the scheduler gets the old pattern until the
     // boundary and this one from it (src/shared/splice.ts). Only the
     // evaluation the swap asked for: another run that slips in first must not

@@ -71,6 +71,22 @@ describe("extractSayLines", () => {
     expect(overCap).toBe(3);
   });
 
+  it("reads sing('…') too — options are its THIRD argument — and marks it for word timings", () => {
+    const { lines } = extractSayLines(
+      [
+        `sing('still water', "c4 e4", { voice: 'orion' })`,
+        `say('both ways')`,
+        `sing('both ways', ['c4'])`,
+        `sing("mini", "c4")`,
+        `sing('x', "c4", { voice: v })`,
+      ].join("\n"),
+    );
+    expect(lines).toEqual([
+      { text: "still water", voice: "orion", words: true },
+      { text: "both ways", voice: "luna", words: true },
+    ]);
+  });
+
   it("never throws on code that doesn't parse", () => {
     expect(extractSayLines("say('a'")).toEqual({ lines: [], overCap: 0 });
     expect(texts(`await initHydra()\nsay('top-level await is fine')`)).toEqual(["luna:top-level await is fine"]);

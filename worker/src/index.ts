@@ -23,9 +23,10 @@ import { ABC_GUIDE_TOPICS, ABC_GUIDES } from "../../src/abc-guide.js";
 import { STRUDEL_GUIDE_TOPICS, STRUDEL_GUIDES } from "../../src/strudel-guide.js";
 import { VERSION } from "../../src/version.js";
 import { staticCheckStrudel } from "../../src/shared/strudel-static-check.js";
-import { TTS_MAX_BYTES, TTS_MODEL, normalizeTts, type TtsRequest } from "../../src/shared/tts.js";
+import { TTS_MAX_BYTES, TTS_MODEL, normalizeTts, ttsUrl, type TtsRequest } from "../../src/shared/tts.js";
 import { extractSayLines } from "../../src/shared/say-lines.js";
-import { budgetMicro, dayCapMicro, lineChars, usd, type VoiceLedger } from "../../src/shared/voice-budget.js";
+import { ASR_MODEL, mp3Info, parseWhisperWords } from "../../src/shared/sing.js";
+import { asrChars, budgetMicro, dayCapMicro, lineChars, usd, type VoiceLedger } from "../../src/shared/voice-budget.js";
 import { parseClient } from "../../src/shared/parse-client.js";
 import { mintSessionId, SESSION_ID_RE } from "../../src/shared/session.js";
 import { attachSession, httpSessionBackend, registerSessionTools, type SessionBackend } from "../../src/shared/session-tools.js";
@@ -1150,36 +1151,26 @@ type LineOutcome =
  * instead: enough for a busy shared host, not a scripted client warming 8
  * lines a call up to the global limit. The global limiter and the voice budget
  * apply to both.
+ * `gated`: the limiters already counted this request (a words request counts
+ * once, though it may pay for a clip AND a transcription).
  */
 type LineCaller = {
   ip: string;
   limiter: "TTS_IP_LIMITER" | "TTS_PRERENDER_LIMITER";
   renderOnMiss: boolean;
   label: "" | "prerender-";
+  gated?: boolean;
 };
 
+const tooMany = (message: string, retryAfter = "60"): LineOutcome => ({ ok: false, status: 429, message, retryAfter });
+
 /**
- * One line, start to finish: cache → fairness limits → voice budget → model →
- * cache. GET /tts and the tool-time prerender both come through here, so the
- * gates cannot drift apart. `stored` settles once a fresh clip is in KV.
+ * The fairness gates: Cloudflare's rate-limit bindings, per address, then
+ * everyone. One client can't take the whole budget in a minute. Cost is the
+ * voice budget, in paidRender. Null = pass.
  */
-async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, caller: LineCaller): Promise<LineOutcome> {
-  const key = await ttsCacheKey(line);
-  try {
-    const cached = await env.DOCS_CACHE?.get(key, "arrayBuffer");
-    if (cached) {
-      track(env, { blobs: ["tts", `${caller.label}hit`, line.voice], doubles: [line.text.length], indexes: ["tts"] });
-      return { ok: true, bytes: cached, cached: true };
-    }
-  } catch {
-    /* KV unwell — render instead */
-  }
-  // A miss on HEAD renders nothing: HEAD only answers "is it cached?".
-  if (!caller.renderOnMiss) return { ok: false, status: 404, message: "" };
-  // A miss costs a model call. First gate: Cloudflare's rate-limit bindings
-  // (per address, then everyone). They are about FAIRNESS — one client can't
-  // take the whole budget in a minute. Cost is the voice budget below.
-  const tooMany = (message: string, retryAfter = "60"): LineOutcome => ({ ok: false, status: 429, message, retryAfter });
+async function fairnessGate(env: Env, caller: LineCaller): Promise<LineOutcome | null> {
+  if (caller.gated) return null;
   try {
     const perAddress = env[caller.limiter];
     if (perAddress && !(await perAddress.limit({ key: caller.ip })).success) {
@@ -1191,10 +1182,53 @@ async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, cal
   } catch {
     return tooMany("Speech rendering is busy. Try again in a minute.");
   }
-  // Cost: reserve this line's exact price against the month (and the day's
+  return null;
+}
+
+/** One paid model call whose output is cached under `key`. */
+interface PaidJob {
+  /** KV key of the output; also the in-flight key in the VoiceBudget DO. */
+  key: string;
+  /** What it costs, in Aura-2 characters (the budget's one unit). */
+  chars: number;
+  /** Analytics: blob2 prefix after the caller's label ("" = a clip, "words-"). */
+  kind: "" | "words-";
+  voice: string;
+  /** For the analytics `doubles` (the line's length). */
+  length: number;
+  /** The model call. A throw is a refusal: the reservation is given back. */
+  call(ai: NonNullable<Env["AI"]>): Promise<unknown>;
+  /** The call's output → the bytes to cache. A throw keeps the charge (it may be billed). */
+  bytes(output: unknown): Promise<Uint8Array>;
+  /** Shown as "<failed> failed: <reason>". */
+  failed: string;
+}
+
+/**
+ * Cache → fairness limits → voice budget (with the in-flight hand-over) →
+ * model → cache. Every paid call /tts makes comes through here — a say()
+ * clip and a sing() transcription alike — so the gates cannot drift apart.
+ * `stored` settles once fresh output is in KV.
+ */
+async function paidRender(env: Env, ctx: ExecutionContext, job: PaidJob, caller: LineCaller): Promise<LineOutcome> {
+  const { key, chars } = job;
+  const tag = (what: string) => `${caller.label}${job.kind}${what}`;
+  try {
+    const cached = await env.DOCS_CACHE?.get(key, "arrayBuffer");
+    if (cached) {
+      track(env, { blobs: ["tts", tag("hit"), job.voice], doubles: [job.length], indexes: ["tts"] });
+      return { ok: true, bytes: cached, cached: true };
+    }
+  } catch {
+    /* KV unwell — render instead */
+  }
+  // A miss on HEAD renders nothing: HEAD only answers "is it cached?".
+  if (!caller.renderOnMiss) return { ok: false, status: 404, message: "" };
+  const refused = await fairnessGate(env, caller);
+  if (refused) return refused;
+  // Cost: reserve this call's exact price against the month (and the day's
   // share of it). Fails CLOSED — no budget bound, or a budget that can't be
   // checked, renders nothing; the piece plays without the line and says so.
-  const chars = lineChars(line.text);
   if (!env.VOICE_BUDGET) return tooMany("Speech rendering is not available here (no voice budget).", "3600");
   const budget = budgetStub(env.VOICE_BUDGET);
   const monthBudget = budgetMicro(env.VOICE_BUDGET_USD_PER_MONTH);
@@ -1214,13 +1248,13 @@ async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, cal
     let verdict = await reserveLine(true);
     if (verdict.reason === "inflight") {
       // The tool-time prerender and the player ask for the same line at once:
-      // wait for the other render's clip instead of paying for it twice.
+      // wait for the other render's output instead of paying for it twice.
       const clip = await waitForClip(env, budget, key);
       if (clip) {
-        track(env, { blobs: ["tts", `${caller.label}hit`, line.voice], doubles: [line.text.length], indexes: ["tts"] });
+        track(env, { blobs: ["tts", tag("hit"), job.voice], doubles: [job.length], indexes: ["tts"] });
         return { ok: true, bytes: clip, cached: true };
       }
-      track(env, { blobs: ["tts", "inflight-timeout", line.voice], doubles: [chars], indexes: ["tts"] });
+      track(env, { blobs: ["tts", `${job.kind}inflight-timeout`, job.voice], doubles: [chars], indexes: ["tts"] });
       // No clip: render it ourselves (the first render may have failed and
       // freed the key; if it is still going, this pays twice).
       verdict = await reserveLine(true);
@@ -1266,21 +1300,21 @@ async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, cal
   }
   let output: unknown;
   try {
-    output = await env.AI.run(TTS_MODEL, { text: line.text, speaker: line.voice, encoding: "mp3" });
+    output = await job.call(env.AI);
   } catch (err) {
     giveBack();
-    return { ok: false, status: 502, message: `Speech rendering failed: ${(err as Error)?.message ?? "unknown error"}` };
+    return { ok: false, status: 502, message: `${job.failed} failed: ${(err as Error)?.message ?? "unknown error"}` };
   }
   let bytes: Uint8Array;
   try {
-    bytes = await audioBytes(output);
+    bytes = await job.bytes(output);
   } catch (err) {
     ctx.waitUntil(done());
-    return { ok: false, status: 502, message: `Speech rendering failed: ${(err as Error)?.message ?? "unknown error"}` };
+    return { ok: false, status: 502, message: `${job.failed} failed: ${(err as Error)?.message ?? "unknown error"}` };
   }
   if (bytes.byteLength === 0 || bytes.byteLength > TTS_MAX_BYTES) {
     ctx.waitUntil(done());
-    return { ok: false, status: 502, message: "Speech rendering returned an unusable clip." };
+    return { ok: false, status: 502, message: `${job.failed} returned an unusable ${job.kind ? "result" : "clip"}.` };
   }
   // Waiters get the bytes from the DO straight away, in whatever colo they are.
   const stored = Promise.all([
@@ -1293,8 +1327,92 @@ async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, cal
     })(),
     done(bytes),
   ]).then(() => undefined);
-  track(env, { blobs: ["tts", `${caller.label}miss`, line.voice], doubles: [line.text.length], indexes: ["tts"] });
+  track(env, { blobs: ["tts", tag("miss"), job.voice], doubles: [job.length], indexes: ["tts"] });
   return { ok: true, bytes, cached: false, stored };
+}
+
+/** One say() line's clip: Aura-2, MP3, cached by voice + text. */
+async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, caller: LineCaller): Promise<LineOutcome> {
+  return paidRender(
+    env,
+    ctx,
+    {
+      key: await ttsCacheKey(line),
+      chars: lineChars(line.text),
+      kind: "",
+      voice: line.voice,
+      length: line.text.length,
+      call: (ai) => ai.run(TTS_MODEL, { text: line.text, speaker: line.voice, encoding: "mp3" }),
+      bytes: audioBytes,
+      failed: "Speech rendering",
+    },
+    caller,
+  );
+}
+
+const toBase64 = (bytes: Uint8Array): string => {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+};
+
+/** Longest a clip is assumed to be when its MP3 frames can't be read (240 chars of speech). */
+const ASSUMED_CLIP_SECONDS = 30;
+
+/**
+ * A sing() line: the say() clip plus where each word is in it (Whisper),
+ * cached as JSON under the clip's key + ":words". Counts once against the
+ * fairness limits; pays for the clip (when it isn't cached) and the
+ * transcription (≈ 2% of the clip), each reserved and handed over in flight
+ * like any line. The JSON names no origin — the route adds the clip URL.
+ */
+async function renderWords(env: Env, ctx: ExecutionContext, line: TtsRequest, caller: LineCaller): Promise<LineOutcome> {
+  const key = `${await ttsCacheKey(line)}:words`;
+  try {
+    const cached = await env.DOCS_CACHE?.get(key, "arrayBuffer");
+    if (cached) {
+      track(env, { blobs: ["tts", `${caller.label}words-hit`, line.voice], doubles: [line.text.length], indexes: ["tts"] });
+      return { ok: true, bytes: cached, cached: true };
+    }
+  } catch {
+    /* render */
+  }
+  if (!caller.renderOnMiss) return { ok: false, status: 404, message: "" };
+  const refused = await fairnessGate(env, caller);
+  if (refused) return refused;
+  const gated = { ...caller, gated: true };
+  const clip = await renderLine(env, ctx, line, gated);
+  if (!clip.ok) return clip;
+  const audio = new Uint8Array(clip.bytes);
+  const info = mp3Info(audio);
+  const duration = info?.duration ?? ASSUMED_CLIP_SECONDS;
+  const words = await paidRender(
+    env,
+    ctx,
+    {
+      key,
+      chars: asrChars(duration),
+      kind: "words-",
+      voice: line.voice,
+      length: line.text.length,
+      call: (ai) => ai.run(ASR_MODEL, { audio: toBase64(audio) }),
+      async bytes(output) {
+        const list = parseWhisperWords(output, duration);
+        if (!list.length) throw new Error("no words were recognised");
+        const body = { sampleRate: info?.sampleRate ?? 0, duration: Math.round(duration * 1000) / 1000, words: list };
+        return new TextEncoder().encode(JSON.stringify(body));
+      },
+      failed: "Word timing",
+    },
+    gated,
+  );
+  // A fresh clip's KV write is part of this request's work too.
+  if (words.ok && clip.stored) {
+    const both = words.stored ? Promise.all([words.stored, clip.stored]).then(() => undefined) : clip.stored;
+    return { ...words, stored: both };
+  }
+  if (!words.ok && clip.stored) ctx.waitUntil(clip.stored);
+  return words;
 }
 
 async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -1309,14 +1427,25 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
       headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
     });
   }
-  const outcome = await renderLine(env, ctx, parsed, {
+  const caller: LineCaller = {
     ip: clientBucket(request.headers.get("CF-Connecting-IP") ?? "unknown"),
     limiter: "TTS_IP_LIMITER",
     renderOnMiss: request.method === "GET",
     label: "",
-  });
+  };
+  // words=1: sing() — the clip's URL and where each word is in it.
+  const words = params.get("words") === "1";
+  const outcome = words ? await renderWords(env, ctx, parsed, caller) : await renderLine(env, ctx, parsed, caller);
   if (outcome.ok) {
     if (outcome.stored) ctx.waitUntil(outcome.stored);
+    if (words) {
+      let body: string | null = null;
+      if (request.method !== "HEAD") {
+        const timings = JSON.parse(new TextDecoder().decode(outcome.bytes));
+        body = JSON.stringify({ clip: ttsUrl(new URL(request.url).origin, parsed), ...timings });
+      }
+      return new Response(body, { headers: { ...TTS_HEADERS, "content-type": "application/json" } });
+    }
     return new Response(request.method === "HEAD" ? null : outcome.bytes, { headers: TTS_HEADERS });
   }
   if (outcome.status === 404) return new Response(null, { status: 404, headers: { "access-control-allow-origin": "*" } });
@@ -1359,7 +1488,8 @@ export async function prerenderSayLines(env: Env, ctx: ExecutionContext, code: s
     while (next < lines.length) {
       const line = lines[next++];
       try {
-        const outcome = await renderLine(env, ctx, line, { ip, limiter: "TTS_PRERENDER_LIMITER", renderOnMiss: true, label: "prerender-" });
+        const caller: LineCaller = { ip, limiter: "TTS_PRERENDER_LIMITER", renderOnMiss: true, label: "prerender-" };
+        const outcome = line.words ? await renderWords(env, ctx, line, caller) : await renderLine(env, ctx, line, caller);
         if (!outcome.ok) {
           const why = outcome.reason ?? String(outcome.status);
           track(env, { blobs: ["tts", "prerender-skipped", why], doubles: [1], indexes: ["tts"] });

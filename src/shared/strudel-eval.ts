@@ -47,6 +47,7 @@ import { transpiler } from "@strudel/transpiler";
 import { stageEvent } from "./stage-runtime.js";
 import { createRememberStore } from "./remember-store.js";
 import { normalizeTts, ttsSampleName } from "./tts.js";
+import { buildPhrase, layoutWords, noteSource } from "./sing.js";
 
 type Any = Record<string, any>;
 const C = core as unknown as Any;
@@ -457,6 +458,24 @@ const SANDBOX_STAGE = (
       const request = normalizeTts(text, options?.voice);
       if ("error" in request) throw new TypeError(request.error);
       return C.s(ttsSampleName(request));
+    },
+    // The real word timings come from the Worker; here each whitespace word
+    // gets an even slice of the clip, so the phrase has the widget's structure.
+    sing(line: unknown, notes: unknown, options?: { voice?: unknown; octave?: unknown }) {
+      const request = normalizeTts(line, options?.voice);
+      if ("error" in request) throw new TypeError(request.error.replace(/^say\(\)/, "sing()"));
+      const octave = options?.octave ?? 0;
+      if (typeof octave !== "number" || !Number.isInteger(octave) || Math.abs(octave) > 2) {
+        throw new RangeError("sing(): octave is a whole number from -2 to 2");
+      }
+      const source = noteSource(notes, (hap: Any) => stageEvent(hap, Number(hap?.whole?.begin ?? 0)).midi, (v) => C.reify(v));
+      const words = request.text.split(" ").length;
+      const kit = { sound: (name: string) => C.s(name), timecat: (...pairs: Any[]) => C.stepcat(...pairs), silence: C.silence };
+      return buildPhrase(kit, ttsSampleName(request), layoutWords(words, source), (p) => ({
+        begin: p.index / words,
+        end: (p.index + 1) / words,
+        speed: 1,
+      }));
     },
     remember(name: unknown, init: unknown, options?: Any) {
       const id = stageName("remember", name);

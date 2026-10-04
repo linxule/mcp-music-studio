@@ -32,6 +32,7 @@ each have a trap (below).
   onTap(fn)             fn({ x, y, cycle, next }) for taps on the stage; x, y in 0..1
                         next(16) = the first 16th the scheduler can still play
   say(text, { voice })  a PATTERN that plays the spoken line (see topic "interactive")
+  sing(line, notes)     a PATTERN that sings the line, one word per note ("interactive")
 
 All of them belong to the evaluation that created them: re-running the code
 replaces the old loop instead of stacking a second one, a failed re-run keeps
@@ -324,6 +325,34 @@ stack(
   and play the returned pattern by keeping it in state that a signal() reads —
   or simpler, prepare every line up front and choose between them.
 - Don't use speechSynthesis: it never plays in the Claude mobile app.
+
+## Singing — sing(line, notes)
+sing(line, notes, { voice, octave }) is talk-singing: the server speaks the
+line once (as say() would) and finds where each word is; the player puts word
+i on note i, sped up or slowed down so its spoken pitch lands on the note. It
+returns a PATTERN: .slow(), .gain(), .room() and stack() work as usual.
+
+const line = sing('still water runs deep', "c4 e4 g4 c5", { voice: 'luna' })
+stack(
+  note("<[c3,e3,g3] [a2,c3,e3]>").s("gm_epiano1").gain(0.35),
+  line.slow(2).room(0.4)
+)
+
+- notes: one per step, notes.length steps per cycle; tempo with .slow().
+  Double-quoted notes are mini-notation ("c4 [d4 e4] ~ g4"); a ~ rests and
+  takes no word. More words than notes: they wrap onto the next cycle; the
+  phrase always fills whole cycles, leftover notes rest.
+- octave: shift every note by whole octaves (-2…2).
+- It sounds like a robot singing, not a singer: the voice's character moves
+  with the pitch, so keep notes near the speaking voice (about f3–d4); an
+  octave above it turns cartoonish.
+- A word lasts as long as it was spoken (÷ its speed): long notes end early.
+  Give a line short notes, or let .room() carry the tail.
+- Silent until the line has loaded (about 2 s the first time; cached after).
+- Costs about 2% more of the voice budget than say() for the same line (the
+  server also transcribes it). Same voices, same 240-character limit, English.
+- Write the line in single quotes, as for say(). The gallery piece "lullaby"
+  is a whole song built on it.
 
 ## Controls — an instrument the listener plays
 fader(), pad() and xy() put real controls on a strip at the bottom of the

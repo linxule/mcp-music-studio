@@ -232,7 +232,7 @@ export function reportEvaluation(
  * "speech is blocked" from "speech was never attempted".
  */
 function stageCapabilityNote(code: string): string {
-  const voiced = /\bsay\s*\(/.test(code);
+  const voiced = /\b(?:say|sing)\s*\(/.test(code);
   const rawSpeech = /speechSynthesis/.test(code);
   const taps = /\bonTap\s*\(|pointerdown|addEventListener\s*\(\s*['"](?:click|touch|pointer)/.test(code);
   const parts: string[] = [];

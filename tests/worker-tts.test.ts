@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import worker, { createMusicServer, ttsCacheKey } from "../worker/src/index";
 import { VoiceBudget } from "../worker/src/voice-budget-do";
 import { TTS_MAX_CHARS, TTS_MODEL, ttsUrl } from "../src/shared/tts";
+import { ASR_MODEL } from "../src/shared/sing";
 
 const ORIGIN = "https://music-studio.linxule.com";
 const waits: Promise<unknown>[] = [];
@@ -408,6 +409,21 @@ describe("say() prerender — tool calls warm /tts (0.12)", () => {
     expect(ai.calls).toHaveLength(0);
   });
 
+  it("sing('…') lines are warmed WITH their word timings, so /tts?words=1 then hits", async () => {
+    const kv = fakeKv();
+    const ai = singingAi();
+    const b = budgetNs();
+    const env = { DOCS_CACHE: kv, AI: ai, VOICE_BUDGET: b.ns };
+    await callTool(env, "play-live-pattern", {
+      code: `stack(sing('still water runs deep', "c4 e4 g4 c5", { voice: 'orion' }), say('still water runs deep', { voice: 'orion' }))`,
+    });
+    expect(ai.calls.map(([model]) => model)).toEqual([TTS_MODEL, ASR_MODEL]);
+    const res = await get(`${line("still water runs deep", "orion")}&words=1`, env);
+    expect(res.status).toBe(200);
+    expect((await res.json()).words).toHaveLength(4);
+    expect(ai.calls).toHaveLength(2);
+  });
+
   it("renders at most 8 lines per call, 3 at a time", async () => {
     let inFlight = 0;
     let peak = 0;
@@ -477,5 +493,120 @@ describe("say() prerender — tool calls warm /tts (0.12)", () => {
     await callTool(env, "play-live-pattern", { code: `say('again')` }, "198.51.100.8");
     await callTool(env, "play-live-pattern", { code: `say('again')` }, "198.51.100.8");
     expect(keys).toEqual(["198.51.100.8"]);
+  });
+});
+
+// sing(): the clip plus where each word is in it.
+/** Aura-2 answers MP3 frames (81 × 576 samples at 24 kHz = 1.944 s); Whisper answers words. */
+function singingAi() {
+  const clip = new Uint8Array(81 * 144);
+  for (let f = 0; f < 81; f++) clip.set([0xff, 0xf3, 0x64, 0xc4], f * 144);
+  const calls: Array<[string, Record<string, unknown>]> = [];
+  return {
+    clip,
+    calls,
+    run: async (model: string, input: Record<string, unknown>) => {
+      calls.push([model, input]);
+      if (model === ASR_MODEL) {
+        return {
+          text: " Still water runs deep.",
+          segments: [{ words: ["Still", "water", "runs", "deep."].map((word, i) => ({ word: ` ${word}`, start: i * 0.4, end: i * 0.4 + 0.4 })) }],
+        };
+      }
+      return new ReadableStream({ start: (c) => { c.enqueue(clip); c.close(); } });
+    },
+  };
+}
+
+describe("GET /tts?…&words=1 — sing()", () => {
+  const ledgerOf = async (b: ReturnType<typeof budgetNs>) =>
+    (await (await b.instance.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger;
+
+  it("renders the clip, sends the SAME bytes to Whisper, answers JSON, caches it, charges clip + ASR once", async () => {
+    const kv = fakeKv();
+    const ai = singingAi();
+    const b = budgetNs();
+    const env = { DOCS_CACHE: kv, AI: ai, VOICE_BUDGET: b.ns };
+    const res = await get(`${line("still water runs deep")}&words=1`, env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(await res.json()).toEqual({
+      clip: `${ORIGIN}${line("still water runs deep")}`,
+      sampleRate: 24000,
+      duration: 1.944,
+      words: [
+        { word: "Still", start: 0, end: 0.4 },
+        { word: "water", start: 0.4, end: 0.8 },
+        { word: "runs", start: 0.8, end: 1.2 },
+        { word: "deep.", start: 1.2, end: 1.6 },
+      ],
+    });
+    expect(ai.calls.map(([model]) => model)).toEqual([TTS_MODEL, ASR_MODEL]);
+    const audio = ai.calls[1][1].audio as string;
+    expect(Uint8Array.from(atob(audio), (c) => c.charCodeAt(0))).toEqual(ai.clip);
+    await Promise.all(waits);
+    const key = await ttsCacheKey({ text: "still water runs deep", voice: "luna" });
+    expect(kv.store.has(key)).toBe(true);
+    expect(kv.store.has(`${key}:words`)).toBe(true);
+    // 21 characters for the clip + 1 for 1.944 s of transcription.
+    expect((await ledgerOf(b)).monthMicro).toBe((21 + 1) * 30);
+    // Cached: no model call, no charge — and the clip itself is say()'s.
+    expect((await get(`${line("still water runs deep")}&words=1`, env)).status).toBe(200);
+    expect((await get(line("still water runs deep"), env)).status).toBe(200);
+    expect(ai.calls).toHaveLength(2);
+    expect((await ledgerOf(b)).monthMicro).toBe(22 * 30);
+  });
+
+  it("a line say() already rendered pays only for the transcription", async () => {
+    const ai = singingAi();
+    const b = budgetNs();
+    const env = { DOCS_CACHE: fakeKv(), AI: ai, VOICE_BUDGET: b.ns };
+    await get(line("still water runs deep"), env);
+    await Promise.all(waits);
+    await get(`${line("still water runs deep")}&words=1`, env);
+    expect(ai.calls.map(([model]) => model)).toEqual([TTS_MODEL, ASR_MODEL]);
+    expect((await ledgerOf(b)).monthMicro).toBe(22 * 30);
+  });
+
+  it("counts once against the per-address limit, though it may pay for two model calls", async () => {
+    const used: string[] = [];
+    const limiter = { limit: async ({ key }: { key: string }) => (used.push(key), { success: true }) };
+    const env = { DOCS_CACHE: fakeKv(), AI: singingAi(), TTS_IP_LIMITER: limiter };
+    expect((await get(`${line("one request")}&words=1`, env)).status).toBe(200);
+    expect(used).toEqual(["203.0.113.20"]);
+  });
+
+  it("a refused transcription is given back; an empty one keeps its charge and says so", async () => {
+    const b = budgetNs();
+    const refusing = singingAi();
+    const run = refusing.run;
+    refusing.run = async (model, input) => {
+      if (model === ASR_MODEL) throw new Error("capacity");
+      return run(model, input);
+    };
+    const res = await get(`${line("still water runs deep")}&words=1`, { DOCS_CACHE: fakeKv(), AI: refusing, VOICE_BUDGET: b.ns });
+    expect(res.status).toBe(502);
+    expect(await res.text()).toMatch(/Word timing failed: capacity/);
+    await Promise.all(waits);
+    expect((await ledgerOf(b)).monthMicro).toBe(21 * 30); // the clip stays charged (and cached)
+
+    const b2 = budgetNs();
+    const empty = singingAi();
+    const run2 = empty.run;
+    empty.run = async (model, input) => (model === ASR_MODEL ? { text: "", segments: [] } : run2(model, input));
+    const res2 = await get(`${line("still water runs deep")}&words=1`, { DOCS_CACHE: fakeKv(), AI: empty, VOICE_BUDGET: b2.ns });
+    expect(res2.status).toBe(502);
+    expect(await res2.text()).toMatch(/no words were recognised/);
+    expect((await ledgerOf(b2)).monthMicro).toBe(22 * 30);
+  });
+
+  it("HEAD answers only whether the words are cached", async () => {
+    const ai = singingAi();
+    const env = { DOCS_CACHE: fakeKv(), AI: ai };
+    const head = (path: string) =>
+      worker.fetch(new Request(`${ORIGIN}${path}`, { method: "HEAD" }), { ...env, VOICE_BUDGET: budgetNs().ns } as never, CTX);
+    expect((await head(`${line("hush")}&words=1`)).status).toBe(404);
+    expect(ai.calls).toHaveLength(0);
   });
 });

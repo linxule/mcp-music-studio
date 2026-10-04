@@ -14,6 +14,10 @@
 // refuses — warming those would pay for lines that never play. The same goes
 // for a voice written in double quotes.
 //
+// sing('words', notes, { voice: 'orion' }) is read the same way (its options
+// are the THIRD argument) and marked `words`: the Worker then warms the clip
+// AND its word timings, so a sung line is ready when the pattern evaluates.
+//
 // Anything not a literal is skipped, by design: say(SPEECH.bar) where
 // SPEECH = { bar: 'x' }, say(lines[i]), say('a' + b), a voice from a variable,
 // an options object with a spread. Those still play; their first fetch renders
@@ -26,9 +30,12 @@ import { normalizeTts, type TtsRequest } from "./tts.js";
 /** Most distinct lines one tool call warms. Each one is a paid render on a miss. */
 export const PRERENDER_MAX_LINES = 8;
 
+/** A line to warm; `words` = a sing() line (warm its word timings too). */
+export type SayLine = TtsRequest & { words?: true };
+
 export type SayLines = {
   /** Distinct (voice, normalized text) pairs, in source order, at most `max`. */
-  lines: TtsRequest[];
+  lines: SayLine[];
   /** Distinct renderable lines left out because of the cap. */
   overCap: number;
 };
@@ -68,8 +75,8 @@ export function extractSayLines(code: string, max = PRERENDER_MAX_LINES): SayLin
   } catch {
     return { lines: [], overCap: 0 };
   }
-  const seen = new Set<string>();
-  const lines: TtsRequest[] = [];
+  const seen = new Map<string, SayLine | null>();
+  const lines: SayLine[] = [];
   let overCap = 0;
   const stack: unknown[] = [ast];
   // Depth-first, children pushed in reverse so lines come out in source order.
@@ -83,16 +90,24 @@ export function extractSayLines(code: string, max = PRERENDER_MAX_LINES): SayLin
     if (node.type === "CallExpression") {
       const callee = node.callee as Node & { name?: string };
       const args = node.arguments as unknown[];
-      const text = callee.type === "Identifier" && callee.name === "say" ? singleQuoted(args[0]) : undefined;
-      const voice = text === undefined ? undefined : voiceOf(args[1]);
+      const name = callee.type === "Identifier" ? callee.name : undefined;
+      const sung = name === "sing";
+      const text = name === "say" || sung ? singleQuoted(args[0]) : undefined;
+      const voice = text === undefined ? undefined : voiceOf(args[sung ? 2 : 1]);
       if (text !== undefined && voice !== undefined) {
-        const line = normalizeTts(text, voice ?? undefined);
+        const line: SayLine | { error: string } = normalizeTts(text, voice ?? undefined);
         if (!("error" in line)) {
+          if (sung) line.words = true;
           const id = `${line.voice}\u0000${line.text}`;
           if (!seen.has(id)) {
-            seen.add(id);
-            if (lines.length < max) lines.push(line);
+            const kept = lines.length < max ? line : null;
+            seen.set(id, kept);
+            if (kept) lines.push(kept);
             else overCap++;
+          } else if (sung) {
+            // Said and sung: warming the words warms the clip too.
+            const kept = seen.get(id);
+            if (kept) kept.words = true;
           }
         }
       }

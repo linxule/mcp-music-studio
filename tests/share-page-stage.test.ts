@@ -15,6 +15,8 @@ const INPUTS = [
   "src/shared/tts.ts",
   "src/shared/sample-url-fix.ts",
   "src/shared/remember-store.ts",
+  "src/shared/sing.ts",
+  "src/shared/sing-dsp.ts",
 ];
 
 /** Every local file the bundle imports, transitively (what its hash must cover). */
