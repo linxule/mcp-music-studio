@@ -1,7 +1,7 @@
 // sing() signal processing (src/shared/sing-dsp.ts) on synthetic signals:
 // pitch of a word, and its start snapped to where the sound begins.
 import { describe, expect, it } from "vitest";
-import { analyseWords, detectPitch, snapOffset, snapOnset } from "../src/shared/sing-dsp";
+import { analyseWords, anchorPitch, detectPitch, pitchWindows, snapOffset, snapOnset } from "../src/shared/sing-dsp";
 
 /** Seconds of a tone (fundamental + optional harmonics) after `lead` seconds of silence. */
 function tone(sampleRate: number, seconds: number, hz: number, { lead = 0, harmonics = 1 } = {}): Float32Array {
@@ -59,6 +59,34 @@ describe("detectPitch", () => {
 
   it("is null for a slice too short to hold one window", () => {
     expect(detectPitch(tone(24_000, 0.5, 220), 24_000, 0.1, 0.11)).toBeNull();
+  });
+});
+
+describe("the pitch a word is heard at", () => {
+  const scaled = (x: Float32Array, k: number) => x.map((v) => v * k);
+  it("is the LOUD part's pitch when a word jumps (asteria's \"deep.\": 178 Hz quiet, then 266 Hz loud)", () => {
+    const rate = 48_000;
+    const word = concat(scaled(tone(rate, 0.12, 178, { harmonics: 4 }), 0.45), tone(rate, 0.12, 266, { harmonics: 4 }));
+    expect(Math.abs(detectPitch(word, rate)! - 266) / 266).toBeLessThan(0.01);
+    // The plain median sits wherever the window count tips — not what is heard.
+    expect(anchorPitch(pitchWindows(word, rate), "weighted")).toBeCloseTo(detectPitch(word, rate)!, 5);
+  });
+  it("measures a word with only 0.08 s of voice", () => {
+    const hz = detectPitch(tone(24_000, 0.08, 230, { harmonics: 4 }), 24_000);
+    expect(Math.abs(hz! - 230)).toBeLessThan(3);
+  });
+  it("anchors: weighted = energy-weighted median, loudest = median of the loudest 40%, median = plain", () => {
+    const w = [
+      { hz: 100, energy: 1 },
+      { hz: 110, energy: 1 },
+      { hz: 120, energy: 1 },
+      { hz: 200, energy: 10 },
+      { hz: 210, energy: 2 },
+    ];
+    expect(anchorPitch(w, "median")).toBe(120);
+    expect(anchorPitch(w, "weighted")).toBe(200);
+    expect(anchorPitch(w, "loudest")).toBe(205);
+    expect(anchorPitch([], "weighted")).toBeNull();
   });
 });
 

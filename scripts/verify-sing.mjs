@@ -12,22 +12,33 @@
 //   (cd worker && bunx wrangler dev --env lab --port 8841 --inspector-port 9341)
 //   bunx vite --config dev/vite.config.ts --port 5177
 //   bun scripts/verify-sing.mjs          # BROWSER=webkit for Safari's engine
+//   LINE='one two three four' NOTES='c4 e4 g4 c5' VOICE=orion bun scripts/verify-sing.mjs
+//   SUMMARY=out.jsonl appends one JSON line per run (for a lines × voices matrix)
 //
 // Requests to the hosted /tts are routed to the local Worker (TTS_ORIGIN).
+import { appendFileSync } from "node:fs";
 import { engine, BROWSER } from "./lib/engine.mjs";
-import { detectPitch } from "../src/shared/sing-dsp.ts";
+import { yin } from "../src/shared/sing-dsp.ts";
 import { midiToHz } from "../src/shared/sing.ts";
+import { noteNameToMidi } from "../src/shared/hap-number.ts";
 
 const HARNESS = process.env.HARNESS ?? "http://localhost:5177/";
 const TTS_ORIGIN = process.env.TTS_ORIGIN ?? "http://127.0.0.1:8841";
 const LINE = process.env.LINE ?? "still water runs deep";
-const NOTES = ["c4", "e4", "g4", "c5"];
-const TARGETS = [60, 64, 67, 72];
+const NOTES = (process.env.NOTES ?? "c4 e4 g4 c5").trim().split(/\s+/);
+const TARGETS = NOTES.map((n) => {
+  const midi = noteNameToMidi(n);
+  if (midi === null) throw new Error(`NOTES: "${n}" is not a note name`);
+  return midi;
+});
+const VOICE = process.env.VOICE ?? "luna";
+/** Optional: append one JSON line per run (line, voice, engine, cents) — for a matrix. */
+const SUMMARY = process.env.SUMMARY;
 // One step per second: a spoken word (~0.4 s ÷ its speed) ends well inside it.
 const CPS = 0.25;
 const CYCLES = 4;
 const CODE = `setcps(${CPS})
-sing('${LINE}', "${NOTES.join(" ")}")`;
+sing('${LINE}', "${NOTES.join(" ")}", { voice: '${VOICE}' })`;
 
 /**
  * A second opinion that shares no code with the widget: the strongest
@@ -51,6 +62,41 @@ function autocorrelationHz(x, rate) {
     }
   }
   return bestLag ? rate / bestLag : null;
+}
+
+/**
+ * The yardstick, fixed on purpose: YIN (the unchanged single-window function)
+ * on 10 ms hops across the whole voiced span at the native rate. `median` is
+ * the plain median of the voiced windows (asserted); `weighted` weights each
+ * window by its energy (RMS²) — closer to what is heard. It does not use the
+ * widget's anchor, so changing that anchor doesn't move the yardstick.
+ */
+function measure(x, rate) {
+  let window = Math.round(rate * 0.04);
+  const tau = Math.ceil(rate / 60);
+  if (x.length < window + tau + 1) window = Math.round(rate * 0.02);
+  const hop = Math.round(rate * 0.01);
+  const found = [];
+  for (let at = 0; at + window + tau + 1 <= x.length; at += hop) {
+    const hz = yin(x, rate, at, window);
+    if (hz === null) continue;
+    let e = 0;
+    for (let i = at; i < at + window; i++) e += x[i] * x[i];
+    found.push([hz, e]);
+  }
+  if (!found.length) return { median: null, weighted: null, windows: 0 };
+  const sorted = found.map(([hz]) => hz).sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const byHz = [...found].sort((a, b) => a[0] - b[0]);
+  const total = byHz.reduce((n, [, e]) => n + e, 0);
+  let acc = 0;
+  let weighted = byHz[byHz.length - 1][0];
+  for (const [hz, e] of byHz) {
+    acc += e;
+    if (acc >= total / 2) { weighted = hz; break; }
+  }
+  return { median, weighted, windows: found.length };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -181,24 +227,43 @@ for (let c = 0; c <= CYCLES; c++) {
       for (let j = i; j < i + hop; j++) sum += step[j] * step[j];
       if (Math.sqrt(sum / hop) > peak * 0.1) { if (first < 0) first = i; last = i + hop; }
     }
-    const hz = first >= 0 ? detectPitch(step, rate, first / rate, last / rate) : null;
+    const m = first >= 0 ? measure(step.subarray(first, last), rate) : { median: null, weighted: null, windows: 0 };
+    const hz = m.median;
     const acf = first >= 0 ? autocorrelationHz(step.subarray(first, last), rate) : null;
     const target = midiToHz(TARGETS[k]);
     const cents = hz ? 1200 * Math.log2(hz / target) : null;
-    rows.push({ cycle: c, step: k, note: NOTES[k], peak, hz, acf, target, cents, sounded: first >= 0 ? ((last - first) / rate) : 0 });
+    const weighted = m.weighted ? 1200 * Math.log2(m.weighted / target) : null;
+    rows.push({ cycle: c, step: k, note: NOTES[k], peak, hz, acf, target, cents, weighted, sounded: first >= 0 ? ((last - first) / rate) : 0 });
   }
 }
 for (const r of rows) {
   console.log(
     `  cycle ${r.cycle} step ${r.step} ${r.note.padEnd(3)} target ${r.target.toFixed(1).padStart(6)} Hz → ` +
       `${r.hz ? r.hz.toFixed(1).padStart(6) : "  none"} Hz ` +
-      `(${r.cents === null ? "—" : `${r.cents >= 0 ? "+" : ""}${r.cents.toFixed(0)} cents`}; autocorrelation ${r.acf ? r.acf.toFixed(1) : "none"} Hz), peak ${r.peak.toFixed(3)}, voiced ${r.sounded.toFixed(2)} s`,
+      `(${r.cents === null ? "—" : `${r.cents >= 0 ? "+" : ""}${r.cents.toFixed(0)} cents`}; energy-weighted ${r.weighted === null ? "—" : `${r.weighted >= 0 ? "+" : ""}${r.weighted.toFixed(0)}`}; autocorrelation ${r.acf ? r.acf.toFixed(1) : "none"} Hz), peak ${r.peak.toFixed(3)}, voiced ${r.sounded.toFixed(2)} s`,
   );
 }
 const first = rows.filter((r) => r.cycle === 0);
 console.log(`  first cycle (not asserted): ${first.filter((r) => r.peak >= 0.02).length} of ${first.length} steps audible`);
 rows.splice(0, first.length);
 const silent = rows.filter((r) => r.peak < 0.02);
+const abs = (key) => rows.filter((r) => r[key] !== null).map((r) => Math.abs(r[key])).sort((a, b) => a - b);
+const mid = (xs) => (xs.length ? (xs.length % 2 ? xs[xs.length >> 1] : (xs[(xs.length >> 1) - 1] + xs[xs.length >> 1]) / 2) : null);
+const plain = abs("cents");
+const perceived = abs("weighted");
+const fmt = (x) => (x === null || x === undefined ? "—" : x.toFixed(0));
+console.log(
+  `  median cents ${fmt(mid(plain))} (worst ${fmt(plain.at(-1))}); energy-weighted median ${fmt(mid(perceived))} (worst ${fmt(perceived.at(-1))}); ` +
+    `unmeasured ${rows.length - plain.length} of ${rows.length}`,
+);
+if (SUMMARY) {
+  appendFileSync(SUMMARY, JSON.stringify({
+    line: LINE, voice: VOICE, notes: NOTES.join(" "), engine: BROWSER,
+    median: mid(plain), worst: plain.at(-1) ?? null, weightedMedian: mid(perceived), weightedWorst: perceived.at(-1) ?? null,
+    unmeasured: rows.length - plain.length, steps: rows.length,
+    perNote: NOTES.map((n, k) => ({ note: n, cents: rows.find((r) => r.step === k)?.cents ?? null })),
+  }) + "\n");
+}
 const off = rows.filter((r) => r.cents === null || Math.abs(r.cents) > 100);
 rows.length === CYCLES * NOTES.length ? ok(`captured ${rows.length} steps`) : fail(`captured ${rows.length} of ${CYCLES * NOTES.length} steps`);
 silent.length === 0 ? ok("every step is audible") : fail(`${silent.length} silent steps: ${silent.map((r) => `${r.cycle}.${r.step}`).join(", ")}`);
