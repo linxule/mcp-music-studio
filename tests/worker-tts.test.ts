@@ -274,11 +274,12 @@ describe("GET /tts — the voice budget (one dollar number, exact, fails closed)
 });
 
 describe("say() prerender — tool calls warm /tts (0.12)", () => {
-  async function callTool(env: unknown, name: string, args: Record<string, unknown>) {
+  async function callTool(env: unknown, name: string, args: Record<string, unknown>, ip?: string) {
     const pending: Promise<unknown>[] = [];
     const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} } as never;
     const client = new Client({ name: "prerender-test", version: "0.0.0" });
-    const server = createMusicServer(env as never, ORIGIN, undefined, ctx);
+    const request = ip ? new Request(`${ORIGIN}/mcp`, { method: "POST", headers: { "CF-Connecting-IP": ip } }) : undefined;
+    const server = createMusicServer(env as never, ORIGIN, request, ctx);
     const [c, s] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(c), server.connect(s)]);
     try {
@@ -424,5 +425,57 @@ describe("say() prerender — tool calls warm /tts (0.12)", () => {
     await callTool({ DOCS_CACHE: fakeKv(), AI: ai, VOICE_BUDGET: budgetNs().ns }, "play-live-pattern", { code });
     expect(calls).toHaveLength(8);
     expect(peak).toBe(3);
+  });
+
+  // Kimi review: /mcp has no per-caller limit, so warming once skipped every
+  // per-address check — a scripted client could warm 8 lines a call up to the
+  // global 240/min. Each warmed line now counts against its address.
+  it("each warmed line counts against the tool call's address: the 61st in a minute is skipped, another address is not", async () => {
+    const used = new Map<string, number>();
+    const prerenderLimiter = {
+      limit: async ({ key }: { key: string }) => {
+        used.set(key, (used.get(key) ?? 0) + 1);
+        return { success: used.get(key)! <= 60 };
+      },
+    };
+    const points: Array<{ blobs: string[]; doubles?: number[] }> = [];
+    const ai = fakeAi();
+    const env = {
+      DOCS_CACHE: fakeKv(),
+      AI: ai,
+      VOICE_BUDGET: budgetNs().ns,
+      TTS_PRERENDER_LIMITER: prerenderLimiter,
+      ANALYTICS: { writeDataPoint: (p: { blobs: string[]; doubles?: number[] }) => void points.push(p) },
+    };
+    // 8 calls × 8 distinct lines = 64 lines, one address (an IPv6 /64 is one address).
+    for (let call = 0; call < 8; call++) {
+      const code = Array.from({ length: 8 }, (_, i) => `say('call ${call} line ${i}')`).join("\n");
+      const result = await callTool(env, "play-live-pattern", { code }, `2001:db8:1:2::${call + 1}`);
+      expect(result.isError).toBeFalsy();
+    }
+    expect(ai.calls).toHaveLength(60);
+    expect([...used.keys()]).toEqual(["2001:db8:1:2::/64"]);
+    // Refused, the call stops taking lines; only the (≤ 3) already in flight are asked for.
+    const skipped = points.filter((p) => p.blobs[1] === "prerender-skipped");
+    expect(skipped.length).toBeGreaterThanOrEqual(1);
+    expect(skipped.length).toBeLessThanOrEqual(3);
+    expect(skipped.every((p) => p.blobs[2] === "ip-limit")).toBe(true);
+    expect(used.get("2001:db8:1:2::/64")).toBe(60 + skipped.length);
+    await callTool(env, "play-live-pattern", { code: `say('from elsewhere')` }, "198.51.100.7");
+    expect(ai.calls.at(-1)?.[1].text).toBe("from elsewhere");
+    expect(used.get("198.51.100.7")).toBe(1);
+  });
+
+  it("cached lines don't count against the address", async () => {
+    const keys: string[] = [];
+    const env = {
+      DOCS_CACHE: fakeKv(),
+      AI: fakeAi(),
+      VOICE_BUDGET: budgetNs().ns,
+      TTS_PRERENDER_LIMITER: { limit: async ({ key }: { key: string }) => (keys.push(key), { success: true }) },
+    };
+    await callTool(env, "play-live-pattern", { code: `say('again')` }, "198.51.100.8");
+    await callTool(env, "play-live-pattern", { code: `say('again')` }, "198.51.100.8");
+    expect(keys).toEqual(["198.51.100.8"]);
   });
 });

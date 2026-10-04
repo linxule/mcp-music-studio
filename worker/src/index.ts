@@ -130,6 +130,8 @@ type Env = {
   /** Cloudflare rate-limit bindings for /tts misses (see wrangler.jsonc). */
   TTS_IP_LIMITER?: RateLimiterBinding;
   TTS_GLOBAL_LIMITER?: RateLimiterBinding;
+  /** Per-address limit on lines a tool call warms (say() prerender). */
+  TTS_PRERENDER_LIMITER?: RateLimiterBinding;
   /** The month's voice spend — one VoiceBudget Durable Object (worker/src/voice-budget-do.ts). */
   VOICE_BUDGET?: DurableObjectNamespace;
   /** Dollars per month new spoken lines may cost (src/shared/voice-budget.ts). */
@@ -896,7 +898,7 @@ export function createMusicServer(
       // error comes back with its line:column in the code the model sent.
       const syntaxError = staticCheckStrudel(args.code);
       if (syntaxError) return withViewId(buildPlayLiveResult(args, { ok: false, error: syntaxError }));
-      warmSayLines(env, ctx, args.code);
+      warmSayLines(env, ctx, request, args.code);
       const played = withViewId(
         attachPlayLink(
           buildPlayLiveResult(args, undefined, PLAY_LIVE_UNVALIDATED_REMOTE),
@@ -917,7 +919,7 @@ export function createMusicServer(
   // Code that parses is about to be sent to the player: warm its say() lines.
   registerSessionTools(server, sessions, async (code) => {
     const problem = staticCheckStrudel(code);
-    if (!problem) warmSayLines(env, ctx, code);
+    if (!problem) warmSayLines(env, ctx, request, code);
     return problem;
   });
 
@@ -1138,16 +1140,23 @@ async function waitForClip(env: Env, budget: DurableObjectStub, key: string): Pr
 /** What became of one line: the clip, or the status and reason the player is told. */
 type LineOutcome =
   | { ok: true; bytes: ArrayBuffer | Uint8Array; cached: boolean; stored?: Promise<void> }
-  | { ok: false; status: number; message: string; retryAfter?: string };
+  | { ok: false; status: number; message: string; retryAfter?: string; reason?: "ip-limit" };
 
 /**
- * Who is asking for a line. `ip` is the player's address (GET /tts); null is a
- * tool call warming its own lines (say-lines prerender), which skips the
- * per-address limiter: a tool call's address is the MCP client's — for
- * claude.ai, servers every user shares — so per-address fairness means nothing
- * there. The global limiter and the voice budget apply to both.
+ * Who is asking for a line, and which per-address limiter counts it. The
+ * player (GET /tts) is held to TTS_IP_LIMITER. A tool call warming its own
+ * lines (say() prerender) has the MCP client's address — for claude.ai,
+ * servers every user shares — so it gets the looser TTS_PRERENDER_LIMITER
+ * instead: enough for a busy shared host, not a scripted client warming 8
+ * lines a call up to the global limit. The global limiter and the voice budget
+ * apply to both.
  */
-type LineCaller = { ip: string | null; renderOnMiss: boolean; label: "" | "prerender-" };
+type LineCaller = {
+  ip: string;
+  limiter: "TTS_IP_LIMITER" | "TTS_PRERENDER_LIMITER";
+  renderOnMiss: boolean;
+  label: "" | "prerender-";
+};
 
 /**
  * One line, start to finish: cache → fairness limits → voice budget → model →
@@ -1172,8 +1181,9 @@ async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, cal
   // take the whole budget in a minute. Cost is the voice budget below.
   const tooMany = (message: string, retryAfter = "60"): LineOutcome => ({ ok: false, status: 429, message, retryAfter });
   try {
-    if (caller.ip !== null && env.TTS_IP_LIMITER && !(await env.TTS_IP_LIMITER.limit({ key: caller.ip })).success) {
-      return tooMany("Too many new spoken lines from this address. Try again in a minute.");
+    const perAddress = env[caller.limiter];
+    if (perAddress && !(await perAddress.limit({ key: caller.ip })).success) {
+      return { ok: false, status: 429, message: "Too many new spoken lines from this address. Try again in a minute.", retryAfter: "60", reason: "ip-limit" };
     }
     if (env.TTS_GLOBAL_LIMITER && !(await env.TTS_GLOBAL_LIMITER.limit({ key: "all" })).success) {
       return tooMany("Speech rendering is busy. Try again in a minute.");
@@ -1301,6 +1311,7 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
   }
   const outcome = await renderLine(env, ctx, parsed, {
     ip: clientBucket(request.headers.get("CF-Connecting-IP") ?? "unknown"),
+    limiter: "TTS_IP_LIMITER",
     renderOnMiss: request.method === "GET",
     label: "",
   });
@@ -1339,7 +1350,8 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
 /** Lines rendered at once per tool call. */
 const PRERENDER_PARALLEL = 3;
 
-export async function prerenderSayLines(env: Env, ctx: ExecutionContext, code: string): Promise<void> {
+/** `ip` is the tool call's address, already bucketed (clientBucket). */
+export async function prerenderSayLines(env: Env, ctx: ExecutionContext, code: string, ip: string): Promise<void> {
   const { lines, overCap } = extractSayLines(code);
   if (overCap) track(env, { blobs: ["tts", "prerender-skipped", "cap"], doubles: [overCap], indexes: ["tts"] });
   let next = 0;
@@ -1347,9 +1359,10 @@ export async function prerenderSayLines(env: Env, ctx: ExecutionContext, code: s
     while (next < lines.length) {
       const line = lines[next++];
       try {
-        const outcome = await renderLine(env, ctx, line, { ip: null, renderOnMiss: true, label: "prerender-" });
+        const outcome = await renderLine(env, ctx, line, { ip, limiter: "TTS_PRERENDER_LIMITER", renderOnMiss: true, label: "prerender-" });
         if (!outcome.ok) {
-          track(env, { blobs: ["tts", "prerender-skipped", String(outcome.status)], doubles: [1], indexes: ["tts"] });
+          const why = outcome.reason ?? String(outcome.status);
+          track(env, { blobs: ["tts", "prerender-skipped", why], doubles: [1], indexes: ["tts"] });
           // Refused by a limit or the budget: the rest would be too.
           if (outcome.status === 429) next = lines.length;
         } else if (outcome.stored) {
@@ -1364,10 +1377,11 @@ export async function prerenderSayLines(env: Env, ctx: ExecutionContext, code: s
 }
 
 /** Start warming without holding the reply; no-op without a context (tests, local). */
-function warmSayLines(env: Env, ctx: ExecutionContext | undefined, code: string): void {
+function warmSayLines(env: Env, ctx: ExecutionContext | undefined, request: Request | undefined, code: string): void {
   if (!ctx) return;
   try {
-    ctx.waitUntil(prerenderSayLines(env, ctx, code).catch(() => undefined));
+    const ip = clientBucket(request?.headers.get("CF-Connecting-IP") ?? "unknown");
+    ctx.waitUntil(prerenderSayLines(env, ctx, code, ip).catch(() => undefined));
   } catch {
     /* never fail the tool call */
   }

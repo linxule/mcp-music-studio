@@ -12,6 +12,7 @@ import {
   shapeDurableObjects,
   shapeWorker,
   table,
+  wranglerConfigCandidates,
 } from "../scripts/lib/usage-format.mjs";
 
 const dates = ["2026-10-03", "2026-10-04"];
@@ -181,5 +182,33 @@ describe("rendering", () => {
     expect(text).toMatch(/month 2026-10\s+\$0\.0007\s+\$10\.00\s+0%/);
     expect(text).toContain("No tool calls in this window.");
     expect(text).toContain("- a note");
+  });
+});
+
+describe("wranglerConfigCandidates", () => {
+  const tail = ".wrangler/config/default.toml";
+  it("macOS: legacy ~/.wrangler, then Library/Preferences", () => {
+    expect(wranglerConfigCandidates({ home: "/Users/a", platform: "darwin" })).toEqual([
+      `/Users/a/${tail}`,
+      `/Users/a/Library/Preferences/${tail}`,
+    ]);
+  });
+  it("Linux: legacy, then $XDG_CONFIG_HOME, then ~/.config", () => {
+    expect(wranglerConfigCandidates({ home: "/home/a", env: { XDG_CONFIG_HOME: "/xdg" }, platform: "linux" })).toEqual([
+      `/home/a/${tail}`,
+      `/xdg/${tail}`,
+      `/home/a/.config/${tail}`,
+    ]);
+    expect(wranglerConfigCandidates({ home: "/home/a", env: {}, platform: "linux" })).toEqual([
+      `/home/a/${tail}`,
+      `/home/a/.config/${tail}`,
+    ]);
+  });
+  it("Windows: %APPDATA%/xdg.config; an XDG dir equal to the default isn't listed twice", () => {
+    expect(wranglerConfigCandidates({ home: "C:/u", env: { APPDATA: "C:/u/AD" }, platform: "win32" })).toEqual([
+      `C:/u/${tail}`,
+      `C:/u/AD/xdg.config/${tail}`,
+    ]);
+    expect(wranglerConfigCandidates({ home: "/home/a", env: { XDG_CONFIG_HOME: "/home/a/.config" }, platform: "linux" })).toHaveLength(2);
   });
 });

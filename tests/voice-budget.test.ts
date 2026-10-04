@@ -288,6 +288,8 @@ describe("the deployed config keeps the budget wired", () => {
   ])("%s", (_name, c) => {
     expect(c.durable_objects.bindings).toContainEqual({ name: "VOICE_BUDGET", class_name: "VoiceBudget" });
     expect(Number(c.vars.VOICE_BUDGET_USD_PER_MONTH)).toBeGreaterThan(0);
+    // Unbound, a scripted MCP client could warm lines up to the global limit.
+    expect(c.ratelimits).toContainEqual({ name: "TTS_PRERENDER_LIMITER", namespace_id: "7105", simple: { limit: 60, period: 60 } });
   });
   it("migrates the class", () => {
     expect(config.migrations.some((m: { new_sqlite_classes?: string[] }) => m.new_sqlite_classes?.includes("VoiceBudget"))).toBe(true);

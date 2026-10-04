@@ -189,6 +189,25 @@ export function redact(message, token) {
   return text.replace(/Bearer[\s\S]*/gi, "Bearer [redacted]");
 }
 
+/**
+ * Where `wrangler login` may have left its token, in wrangler's own order: the
+ * legacy `~/.wrangler` (wins when present), then `$XDG_CONFIG_HOME/.wrangler`,
+ * then the platform default (macOS ~/Library/Preferences, Windows
+ * %APPDATA%/xdg.config, elsewhere ~/.config). The caller reads the first that
+ * exists. Paths are joined with "/" — the caller normalises them.
+ */
+export function wranglerConfigCandidates({ home, env = {}, platform }) {
+  const file = (dir) => `${dir}/.wrangler/config/default.toml`;
+  const fallback =
+    platform === "darwin"
+      ? `${home}/Library/Preferences`
+      : platform === "win32"
+        ? `${env.APPDATA || `${home}/AppData/Roaming`}/xdg.config`
+        : `${home}/.config`;
+  const dirs = [home, env.XDG_CONFIG_HOME, fallback].filter(Boolean);
+  return [...new Set(dirs.map(file))];
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------

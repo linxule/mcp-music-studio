@@ -7,7 +7,7 @@
 //
 // The API token is read into memory only. Never print it or write it anywhere.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,11 +23,11 @@ import {
   shapeAnalytics,
   shapeDurableObjects,
   shapeWorker,
+  wranglerConfigCandidates,
 } from "./lib/usage-format.mjs";
 
 const API = "https://api.cloudflare.com/client/v4";
 const BUDGET_URL = "https://music-studio.linxule.com/tts/budget";
-const WRANGLER_CONFIG = path.join(homedir(), "Library/Preferences/.wrangler/config/default.toml");
 const LOGIN_HINT = process.env.CLOUDFLARE_API_TOKEN
   ? "CLOUDFLARE_API_TOKEN was refused: check it is valid and can read Account Analytics + Workers."
   : "Cloudflare login expired or missing: run `cd worker && bunx wrangler whoami` (refreshes it), then retry.";
@@ -53,9 +53,11 @@ function readToken() {
 
 function readRawToken() {
   if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
+  const candidates = wranglerConfigCandidates({ home: homedir(), env: process.env, platform: process.platform });
+  const config = candidates.map((p) => path.normalize(p)).find((p) => existsSync(p));
   let toml;
   try {
-    toml = readFileSync(WRANGLER_CONFIG, "utf8");
+    toml = readFileSync(config, "utf8");
   } catch {
     throw new AuthError(LOGIN_HINT);
   }
@@ -123,9 +125,11 @@ const WORKER_QUERY = `query ($account: string!, $start: Time!, $end: Time!, $scr
   } }
 }`;
 
-const DO_QUERY = `query ($account: string!, $start: Time!, $end: Time!, $filter: AccountDurableObjectsPeriodicGroupsFilter_InputObject!) {
+// The filter carries the date range itself: an `{AND: [range, {}]}` for the
+// account-wide fallback is refused ("subfilters of AND: expects at least one argument").
+const DO_QUERY = `query ($account: string!, $filter: AccountDurableObjectsPeriodicGroupsFilter_InputObject!) {
   viewer { accounts(filter: {accountTag: $account}) {
-    durableObjectsPeriodicGroups(limit: 10000, filter: {AND: [{datetime_geq: $start, datetime_lt: $end}, $filter]}, orderBy: [date_ASC]) {
+    durableObjectsPeriodicGroups(limit: 10000, filter: $filter, orderBy: [date_ASC]) {
       dimensions { date namespaceId }
       sum { activeTime duration }
     }
@@ -195,19 +199,19 @@ async function main() {
       attempt(async () => shapeWorker(win.dates, (await graphql(token, WORKER_QUERY, { ...vars, script: SCRIPT_NAME })).workersInvocationsAdaptive)),
       attempt(async () => {
         let classes = {};
-        let filter = {};
+        let filter = { datetime_geq: win.start, datetime_lt: win.end };
         let scope = `${SCRIPT_NAME} namespaces`;
         try {
           classes = await doNamespaces(token, account);
           if (!Object.keys(classes).length) throw new Error(`no namespaces belong to ${SCRIPT_NAME}`);
-          filter = { namespaceId_in: Object.keys(classes) };
+          filter = { ...filter, namespaceId_in: Object.keys(classes) };
         } catch (err) {
           if (err instanceof AuthError) throw err;
           classes = {};
           scope = "whole account (namespace lookup failed)";
           notes.push(`Durable Object namespaces could not be listed (${clean(err?.message)}); the DO table is account-wide.`);
         }
-        const rows = (await graphql(token, DO_QUERY, { ...vars, filter })).durableObjectsPeriodicGroups;
+        const rows = (await graphql(token, DO_QUERY, { account, filter })).durableObjectsPeriodicGroups;
         return { scope, ...shapeDurableObjects(win.dates, rows, classes) };
       }),
       attempt(async () => {
