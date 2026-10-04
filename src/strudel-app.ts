@@ -51,6 +51,7 @@ import { detectViz } from "./shared/viz-detect";
 import { hapNumber } from "./shared/hap-number";
 import { injectTempo } from "./shared/tempo";
 import { createBrowserStageEnv, createStage } from "./shared/stage-runtime";
+import { describeSung } from "./shared/sing";
 import { installSampleUrlFix } from "./shared/sample-url-fix";
 import { sourceLineNote } from "./shared/line-map";
 import { DEFAULT_SHARE_ORIGIN } from "./shared/share-url";
@@ -188,6 +189,8 @@ initRecording({
 initReports({
   app, getEditor, currentPlaybackState, isSchedulerStarted, audioIsBlockedNow,
   renderPlayButton, updatePlayState, setStatus, showPlayingStatus, sensorNotes,
+  // Read at report time (after the stage below exists).
+  singNote: () => describeSung(stage.sung()),
 });
 initMissingSounds({ setStatus, reportToModel });
 

@@ -464,9 +464,10 @@ const SANDBOX_STAGE = (
     sing(line: unknown, notes: unknown, options?: { voice?: unknown; octave?: unknown }) {
       const request = normalizeTts(line, options?.voice);
       if ("error" in request) throw new TypeError(request.error.replace(/^say\(\)/, "sing()"));
-      const octave = options?.octave ?? 0;
-      if (typeof octave !== "number" || !Number.isInteger(octave) || Math.abs(octave) > 2) {
-        throw new RangeError("sing(): octave is a whole number from -2 to 2");
+      // 'auto' (the default) depends on the voice, measured in the player.
+      const octave = options?.octave ?? "auto";
+      if (octave !== "auto" && (typeof octave !== "number" || !Number.isInteger(octave) || Math.abs(octave) > 2)) {
+        throw new RangeError("sing(): octave is 'auto' or a whole number from -2 to 2");
       }
       const source = noteSource(notes, (hap: Any) => stageEvent(hap, Number(hap?.whole?.begin ?? 0)).midi, (v) => C.reify(v));
       const words = request.text.split(" ").length;

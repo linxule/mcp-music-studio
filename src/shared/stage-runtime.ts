@@ -45,7 +45,17 @@
 import { noteNameToMidi } from "./hap-number.js";
 import { normalizeTts, ttsSampleName, ttsUrl, type TtsRequest } from "./tts.js";
 import { analyseWords, type AnalysedWord } from "./sing-dsp.js";
-import { buildPhrase, layoutWords, noteSource, ttsWordsUrl, wordSpeeds, type SungWord } from "./sing.js";
+import {
+  autoOctave,
+  buildPhrase,
+  layoutWords,
+  noteSource,
+  spokenMedianHz,
+  ttsWordsUrl,
+  wordSpeeds,
+  type SungReport,
+  type SungWord,
+} from "./sing.js";
 import {
   createRememberStore,
   type RememberChange,
@@ -232,8 +242,14 @@ export interface SayOptions {
 }
 
 export interface SingOptions extends SayOptions {
-  /** Shift every note by whole octaves (−2…2). Default 0. */
-  octave?: number;
+  /**
+   * 'auto' (default): once the line is measured, move the whole melody by
+   * −1, 0 or +1 octave, whichever brings its median closest to the voice's
+   * speaking pitch, never taking the lowest note under 80 Hz when a higher
+   * shift avoids it (src/shared/sing.ts autoOctave) — the shape is kept.
+   * A number (−2…2): exactly that many octaves; 0 = the notes as written.
+   */
+  octave?: number | "auto";
   // `hold` (loop a word's voiced middle to fill a long note) is not built:
   // superdough has no per-event loop points for a slice, so it would take
   // re-rendering the word into its own buffer. Long notes end early instead.
@@ -362,6 +378,8 @@ export interface Stage {
   rollback(token?: number): void;
   /** remember() values as stored now (a live session's snapshot). */
   remembered(): RememberedEntry[];
+  /** What each sing() of the committed evaluation became: octave, voice, words at the speed limit. */
+  sung(): SungReport[];
   /** Teardown: end everything, for good — later registrations are ignored. */
   stop(): void;
   /** How many registrations are live (tests, diagnostics). */
@@ -681,6 +699,10 @@ export function createStage(env: StageEnv): Stage {
     return entry;
   };
 
+  // What each sing() call of the committed evaluation became (the model's report).
+  let activeSung: SungReport[] = [];
+  let pendingSung: SungReport[] | null = null;
+
   const requireFunction = (api: string, fn: unknown): void => {
     if (typeof fn !== "function") throw new TypeError(`${api} needs a function, got ${typeof fn}`);
   };
@@ -722,18 +744,27 @@ export function createStage(env: StageEnv): Stage {
       if (!loadSung || !lazyPattern || !timecat || !sound || !env.ttsOrigin) {
         throw new Error("sing() is not available on this page");
       }
-      const octave = finite(options.octave) ?? 0;
-      if (!Number.isInteger(octave) || Math.abs(octave) > 2) throw new RangeError("sing(): octave is a whole number from -2 to 2");
+      const auto = options.octave === undefined || options.octave === "auto";
+      const fixed = auto ? 0 : finite(options.octave);
+      if (fixed === undefined || !Number.isInteger(fixed) || Math.abs(fixed) > 2) {
+        throw new RangeError("sing(): octave is 'auto' or a whole number from -2 to 2");
+      }
       const source = noteSource(notes, (hap) => stageEvent(hap, Number(hap?.whole?.begin ?? 0)).midi, env.toPattern);
       const name = ttsSampleName(request);
       const sung = loadSungLine(request);
       let phrase: unknown = null;
+      const report: SungReport = { line: request.text, voice: request.voice, ready: false };
+      (pendingSung ?? activeSung).push(report);
       const build = (words: AnalysedWord[], duration: number) => {
         const layout = layoutWords(words.length, source);
-        const speeds = wordSpeeds(
-          words.map((w) => w.hz),
+        const spokenHz = words.map((w) => w.hz);
+        const voice = spokenMedianHz(spokenHz);
+        const octave = auto ? autoOctave(layout.placed.map((p) => p.midi), voice) : fixed;
+        const { speeds, clamped } = wordSpeeds(
+          spokenHz,
           layout.placed.map((p) => p.midi + 12 * octave),
         );
+        Object.assign(report, { ready: true, octave, auto, spokenHz: voice, words: layout.placed.length, clamped });
         phrase = buildPhrase({ sound, timecat, silence: lazyPattern(() => null) } as any, name, layout, (p) => ({
           begin: words[p.index].start / duration,
           end: words[p.index].end / duration,
@@ -874,6 +905,7 @@ export function createStage(env: StageEnv): Stage {
     begin() {
       pending = new Set();
       pendingControls = new Map();
+      pendingSung = [];
       stageAskedPending = false;
       remembering.begin(generation + 1);
       return ++generation;
@@ -884,6 +916,8 @@ export function createStage(env: StageEnv): Stage {
       pending = null;
       if (pendingControls) controlSpecs = pendingControls;
       pendingControls = null;
+      if (pendingSung) activeSung = pendingSung;
+      pendingSung = null;
       remembering.commit(generation, options?.deferState === true);
       stageAskedActive = stageAskedPending;
       stageAskedPending = false;
@@ -911,6 +945,7 @@ export function createStage(env: StageEnv): Stage {
       if (token !== undefined && token !== generation) return;
       pending = null;
       pendingControls = null;
+      pendingSung = null;
       stageAskedPending = false;
       remembering.rollback(generation);
       sync();
@@ -921,6 +956,8 @@ export function createStage(env: StageEnv): Stage {
       pending = null;
       pendingControls = null;
       controlSpecs = new Map();
+      activeSung = [];
+      pendingSung = null;
       remembering.stop();
       syncSensors();
       renderControls();
@@ -928,6 +965,7 @@ export function createStage(env: StageEnv): Stage {
       sync();
     },
     remembered: () => remembering.entries(),
+    sung: () => activeSung.map((r) => ({ ...r })),
     size: () => active.size,
     controls: () =>
       [...controlSpecs.values()].map((spec) => ({ spec: sourceOf(spec), value: controlValues.get(spec.name) ?? spec.init })),

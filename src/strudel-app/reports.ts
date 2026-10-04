@@ -16,6 +16,8 @@ interface ReportsHost {
   setStatus(text: string, type?: StatusType): void;
   showPlayingStatus(text: string, type: StatusType): void;
   sensorNotes(code: string): string;
+  /** What the committed evaluation's sing() lines became ("" when none). */
+  singNote(): string;
 }
 
 /** Evaluation reports and debounced transitions share one reporting history. */
@@ -29,13 +31,14 @@ let updatePlayState: ReportsHost["updatePlayState"];
 let setStatus: ReportsHost["setStatus"];
 let showPlayingStatus: ReportsHost["showPlayingStatus"];
 let sensorNotes: ReportsHost["sensorNotes"];
+let singNote: ReportsHost["singNote"];
 
 export function initReports(host: ReportsHost): void {
   ({
     app, getEditor, currentPlaybackState,
     isSchedulerStarted, audioIsBlockedNow, renderPlayButton,
     updatePlayState, setStatus, showPlayingStatus,
-    sensorNotes,
+    sensorNotes, singNote,
   } = host);
 }
 
@@ -238,10 +241,12 @@ function stageCapabilityNote(code: string): string {
   const parts: string[] = [];
   if (voiced) {
     parts.push(
-      "voice: say() lines are rendered by the server and play as samples (the widget waits " +
+      "voice: say() and sing() lines are rendered by the server and play as samples (the widget waits " +
         "for them before starting); a line that can't be rendered is reported separately",
     );
   }
+  const sung = singNote();
+  if (sung) parts.push(sung);
   if (rawSpeech) {
     parts.push(
       "browser speechSynthesis: does NOT play in the Claude mobile app's webview and can't be " +
