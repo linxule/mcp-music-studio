@@ -213,7 +213,7 @@ describe("audioBufferToWavBytesAsync", () => {
 
 describe("strudel widget export", () => {
   const STRUDEL = readFileSync(
-    fileURLToPath(new URL("../src/strudel-app.ts", import.meta.url)),
+    fileURLToPath(new URL("../src/strudel-app/recording.ts", import.meta.url)),
     "utf8",
   );
   const start = STRUDEL.indexOf("async function handleDownload()");

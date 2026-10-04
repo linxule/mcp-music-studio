@@ -103,7 +103,10 @@ describe("neither widget can be panned sideways on a phone", () => {
     // A phone host whose frame is wider than the screen still counts as compact.
     const compact = STRUDEL.slice(STRUDEL.indexOf("function isCompactStage("));
     expect(compact).toContain('app.getHostContext()?.platform === "mobile"');
-    expect(STRUDEL).toMatch(/new ResizeObserver\(\(\) => \{\s*syncVizCanvasSize\(\);\s*syncEditorToWidth\(\);/);
+    expect(STRUDEL).toContain("observeVisualSize(syncEditorToWidth);");
+    expect(read("src/strudel-app/layers.ts")).toMatch(
+      /new ResizeObserver\(\(\) => \{\s*syncVizCanvasSize\(\);\s*onResize\(\);/,
+    );
   });
 
   it("applies the editor theme without persisting it for later widgets", () => {

@@ -1,3 +1,23 @@
+import {
+  initLayers, fixLayout, syncVizCanvasSize, getHydraCanvas, adoptHydraCanvas,
+  syncHydraCanvasSize, pruneDrawLayers, clearDrawLayers, applyVizVisibility,
+  syncVizTheme, applyStageMode, syncStageAffordance, stageVisuals,
+  observeVisualSize, disconnectVisualObservers, removeDrawLayers,
+} from "./strudel-app/layers";
+import {
+  initAudioReactive, installAudioReactiveGlobals, startAnalyserLoop, teardownAudioAnalyser, hasAudioApi,
+} from "./strudel-app/audio-reactive";
+import {
+  initReports, readEvalError, reportToModel, cancelStateReport, scheduleStateReport, reportEvaluation,
+} from "./strudel-app/reports";
+import {
+  initMissingSounds, installConsoleWatch, removeConsoleWatch, resetMissingSounds, cancelMissingSoundReport,
+} from "./strudel-app/missing-sounds";
+import {
+  initRecording, startRecording, stopRecording, handleDownload, teardownRecording, disconnectRecordingTap,
+} from "./strudel-app/recording";
+import * as widgetState from "./strudel-app/state";
+import type { StatusType } from "./strudel-app/state";
 import { liveStudioSchemas } from "./studio-live-schemas";
 import { bindSourceLink } from "./source-link.js";
 import { createStudioSession, installStudioBridge, type StudioSwapHooks } from "./studio-session";
@@ -26,9 +46,8 @@ import {
   applyHostStyleVariables,
   type McpUiHostContext,
 } from "@modelcontextprotocol/ext-apps";
-import { detectViz, drawLayerIds } from "./shared/viz-detect";
+import { detectViz } from "./shared/viz-detect";
 import { hapNumber } from "./shared/hap-number";
-import { AUDIO_ANALYSER, bandLevels, stepBands } from "./shared/audio-bands";
 import { injectTempo } from "./shared/tempo";
 import { createBrowserStageEnv, createStage } from "./shared/stage-runtime";
 import { installSampleUrlFix } from "./shared/sample-url-fix";
@@ -45,9 +64,7 @@ import {
   resolveFrameSize,
   screenAvailHeight,
 } from "./frame-size";
-import { audioBufferToWavBytesAsync } from "./wav-encoder";
-import { bytesToBase64Async, sanitizeFileStem } from "./bytes-to-base64";
-import { nativeExportStatus, planRecordingExport } from "./recording-export";
+import { sanitizeFileStem } from "./bytes-to-base64";
 import {
   GestureAudioLatch,
   listenForAudioGestures,
@@ -104,9 +121,6 @@ let playPressIntent = false;
 let playPressed = false;
 let editorEl: HTMLElement | null = null;
 let currentCode = "";
-/** The code exactly as the tool call sent it — before bpm/visuals added lines. */
-let sentCode = "";
-let isPlaying = false;
 
 /**
  * Bumped by every renderPattern() and by teardown. Async work reads its own
@@ -131,31 +145,10 @@ function prefersReducedMotion(): boolean {
   return reducedMotionQuery?.matches === true;
 }
 
-// Visualization panel. The pattern's code decides whether a visual shows: the
-// panel auto-reveals when the code contains a viz method or initHydra(), unless
-// the user has manually toggled it (vizManual sticks their choice across
-// re-renders). Detection lives in src/shared/viz-detect.ts (pure, unit-tested).
-let vizVisible = false;
-let vizManual = false;
-let vizResizeObserver: ResizeObserver | null = null;
-// True while the current pattern uses Hydra (WebGL layer under #test-canvas).
-let hydraActive = false;
-// Pending late re-apply of the Hydra resolution (see syncVizCanvasSize).
-let hydraLateResize: ReturnType<typeof setTimeout> | null = null;
-// Hydra renders at this many CSS px wide at most, then upscales (pixelated).
-// 960px is plenty for a widget backdrop and keeps the GPU cost low inside the
-// inline iframe; strudel.cc itself defaults to pixelRatio 1 at window size.
-const HYDRA_MAX_WIDTH = 960;
-
 // Host capabilities (populated after connect)
-let canDownload = false;
-let canUpdateModelContext = false;
+
 let canSendMessage = false;
 
-// Live session (src/session-client.ts) — set when the tool result names one.
-let session: SessionClient | null = null;
-/** The last report text, so an "applied" answer can carry this evaluation's. */
-let lastReportText = "";
 /** Code WE put in the editor (tool input, a session update); anything else the human ran is an edit. */
 let lastProgrammaticCode = "";
 let lastLoggedEdit = "";
@@ -180,14 +173,16 @@ let sessionApplySeq = 0;
 // Last args from renderPattern, so a CDN retry can re-run the same pattern
 let lastRenderArgs: Record<string, unknown> | null = null;
 
-// Recording state
-let mediaRecorder: MediaRecorder | null = null;
-let isRecording = false;
-let recordingStream: MediaStream | null = null;
-// The master-output node the tap is connected to, and the tap destination,
-// so teardown can disconnect precisely the tap (not the speakers).
-let recordingMasterGain: AudioNode | null = null;
-let recordingDest: AudioNode | null = null;
+initRecording({
+  app, recordBtn, downloadBtn, setStatus, showPlayingStatus,
+  replAudioContext, ensureLimiter, currentLimiter, recordingFileStem,
+});
+
+initReports({
+  app, getEditor, currentPlaybackState, isSchedulerStarted, audioIsBlockedNow,
+  renderPlayButton, updatePlayState, setStatus, showPlayingStatus, sensorNotes,
+});
+initMissingSounds({ setStatus, reportToModel });
 
 // Hint to the OS that this app produces audio playback
 if ("audioSession" in navigator) {
@@ -215,9 +210,6 @@ function getLiveCode(): string {
   } catch { /* fall through to tracked code */ }
   return currentCode;
 }
-
-// Set when prebake() soundfont registration fails — audio may be silent/absent.
-let soundfontWarning = false;
 
 /**
  * Load the Strudel REPL bundle.
@@ -282,12 +274,10 @@ function watchPrebake(editor: any): void {
   const prebaked = editor?.prebaked;
   if (!prebaked || typeof prebaked.then !== "function") return;
   prebaked.then(
-    () => { soundfontWarning = false; companion?.refresh(); },
-    () => { soundfontWarning = true; },
+    () => { widgetState.setSoundfontWarning(false); companion?.refresh(); },
+    () => { widgetState.setSoundfontWarning(true); },
   );
 }
-
-type StatusType = "normal" | "playing" | "error";
 
 function setStatus(text: string, type: StatusType = "normal") {
   statusEl.textContent = text;
@@ -296,7 +286,7 @@ function setStatus(text: string, type: StatusType = "normal") {
 
 function updatePlayState(playing: boolean) {
   // The session's heartbeat rides on its poll; re-poll so it hears this now.
-  if (playing !== isPlaying) session?.nudge();
+  if (playing !== widgetState.isPlaying) widgetState.session?.nudge();
   // Audio may only now exist (a start after a blocked autoplay): limit it.
   if (playing) {
     try {
@@ -311,11 +301,11 @@ function updatePlayState(playing: boolean) {
       stageSpeech.cancel();
     } catch { /* not initialised yet */ }
   }
-  isPlaying = playing;
-  audioBlocked = playing && audioIsBlockedNow();
+  widgetState.setIsPlaying(playing);
+  widgetState.setAudioBlocked(playing && audioIsBlockedNow());
   audibleStatus = null;
   renderPlayButton();
-  if (!isRecording) {
+  if (!widgetState.isRecording) {
     if (playing) showPlayingStatus("Playing...", "playing");
     else setStatus("Ready", "normal");
   }
@@ -323,7 +313,7 @@ function updatePlayState(playing: boolean) {
 
 /** "Playing" only when it can be heard: over blocked audio the tap is still Play. */
 function renderPlayButton(): void {
-  const audible = isPlaying && !audioBlocked;
+  const audible = widgetState.isPlaying && !widgetState.audioBlocked;
   playBtn.classList.toggle("playing", audible);
   playBtn.textContent = audible ? "Playing" : "Play";
 }
@@ -355,8 +345,6 @@ const AUDIO_RESUME_TIMEOUT_MS = 1500;
 const AUDIO_SETTLE_MS = 300;
 const AUDIO_BLOCKED_STATUS = "Tap Play to start audio";
 
-/** True while the scheduler runs over a context that is not running. */
-let audioBlocked = false;
 /** The status an evaluation wanted to show, held back while audio is blocked. */
 let audibleStatus: { text: string; type: StatusType } | null = null;
 const gestureLatch = new GestureAudioLatch();
@@ -408,7 +396,7 @@ function ensureAudioRunning(timeoutMs = AUDIO_RESUME_TIMEOUT_MS): Promise<boolea
 
 /** A status that promises sound — held back behind "Tap Play" while it can't. */
 function showPlayingStatus(text: string, type: StatusType): void {
-  if (audioBlocked) {
+  if (widgetState.audioBlocked) {
     audibleStatus = { text, type };
     setStatus(AUDIO_BLOCKED_STATUS, "normal");
   } else {
@@ -422,13 +410,13 @@ function showPlayingStatus(text: string, type: StatusType): void {
  * One debounced model report per real transition, like the stop reports.
  */
 function syncAudioState(): void {
-  const blocked = isPlaying && audioIsBlockedNow();
-  if (blocked === audioBlocked) return;
-  audioBlocked = blocked;
+  const blocked = widgetState.isPlaying && audioIsBlockedNow();
+  if (blocked === widgetState.audioBlocked) return;
+  widgetState.setAudioBlocked(blocked);
   renderPlayButton();
   if (blocked) {
     const text = statusEl.textContent ?? "";
-    if (!isRecording && !statusEl.classList.contains("error") && text !== AUDIO_BLOCKED_STATUS) {
+    if (!widgetState.isRecording && !statusEl.classList.contains("error") && text !== AUDIO_BLOCKED_STATUS) {
       showPlayingStatus(text || "Playing...", "playing");
     }
   } else {
@@ -471,20 +459,20 @@ const {
     // A tap that changed remembered state is logged as that change (its label
     // says what it meant); logging the raw tap too would count it twice.
     if (info?.changedState) return;
-    session?.log({ t: "tap", ...tap });
+    widgetState.session?.log({ t: "tap", ...tap });
   },
   observeRemembered(change) {
-    session?.remembered(change);
+    widgetState.session?.remembered(change);
   },
   observeRememberedState() {
     // The session client throttles and keeps only the latest list.
-    session?.rememberedState(stage.remembered());
+    widgetState.session?.rememberedState(stage.remembered());
   },
   requestStage() {
     requestStageFromPiece();
   },
   observeControl(change) {
-    session?.log({ t: "control", ...change });
+    widgetState.session?.log({ t: "control", ...change });
   },
   observeSurface() {
     logControlSurface();
@@ -524,7 +512,7 @@ publishStageGlobals();
 
 const stopGestureUnlock = listenForAudioGestures(document, {
   press(kind) {
-    gestureLatch.begin(isPlaying && audioIsBlockedNow());
+    gestureLatch.begin(widgetState.isPlaying && audioIsBlockedNow());
     if (kind !== "touch") {
       void ensureAudioRunning();
       // Speech needs a speak() inside the gesture itself on WebKit.
@@ -532,7 +520,7 @@ const stopGestureUnlock = listenForAudioGestures(document, {
     }
   },
   activate() {
-    gestureLatch.extend(isPlaying && audioIsBlockedNow());
+    gestureLatch.extend(widgetState.isPlaying && audioIsBlockedNow());
     void ensureAudioRunning();
     stageSpeech.unlock();
   },
@@ -595,282 +583,13 @@ function waitForEditor(timeout = 8000): Promise<any> {
   });
 }
 
-/**
- * Fix the strudel-editor layout:
- * - Hide the position:fixed canvas that covers the viewport
- * - Ensure the CodeMirror sibling div is visible
- */
-function fixLayout(): void {
-  // Canvases prepended to document.body by @strudel/draw's getDrawContext.
-  // #hydra-canvas belongs in the widget, so adopt it (the MutationObserver
-  // normally gets there first; this is the backstop). Anything else full-viewport
-  // is a stray overlay — hide it. #test-canvas is pre-created in .repl-section
-  // and is never a body child.
-  document.querySelectorAll("body > canvas").forEach((canvas) => {
-    const el = canvas as HTMLCanvasElement;
-    if (el.id === "hydra-canvas") {
-      adoptHydraCanvas(el);
-      return;
-    }
-    if (el.id === "test-canvas") return;
-    // A getDrawContext('id') layer: adopt it (the observer's backstop).
-    if (isDrawLayer(el)) adoptDrawLayer(el);
-  });
+initAudioReactive({ replSection, isHydraLive });
 
-  // The editor content is a sibling AFTER <strudel-editor>. Its size is owned
-  // by strudel-app.css (it fills the stage and scrolls inside it); an inline
-  // min-height here used to let a long pattern grow the whole frame.
-}
-
-// =============================================================================
-// Visualization panel
-// =============================================================================
-
-/**
- * Match the canvas backing store to the panel's CSS size × devicePixelRatio so
- * Strudel's pianoroll/scope render crisply (it reads canvas.width/height every
- * frame and clears with clearRect). The ext-apps iframe makes window.innerWidth
- * unreliable, so we measure the panel element directly (+ ResizeObserver).
- */
-function syncVizCanvasSize(): void {
-  if (!vizVisible) return;
-  // The backdrop canvas fills the repl section; measure that element directly.
-  const w = replSection.clientWidth;
-  const h = replSection.clientHeight;
-  if (w === 0 || h === 0) return;
-  const dpr = window.devicePixelRatio || 1;
-  const bw = Math.round(w * dpr);
-  const bh = Math.round(h * dpr);
-  if (vizCanvas.width !== bw) vizCanvas.width = bw;
-  if (vizCanvas.height !== bh) vizCanvas.height = bh;
-  syncDrawLayerSizes();
-  if (!hydraActive) return;
-  syncHydraCanvasSize(w, h);
-  // getDrawContext installed its own debounced (200ms) window-resize handler
-  // that rewrites the Hydra canvas to innerWidth × innerHeight without telling
-  // hydra-synth, which would leave the viewport stretched. Re-apply after it.
-  if (hydraLateResize !== null) clearTimeout(hydraLateResize);
-  hydraLateResize = setTimeout(() => {
-    hydraLateResize = null;
-    if (hydraActive && vizVisible) {
-      syncHydraCanvasSize(replSection.clientWidth, replSection.clientHeight);
-    }
-  }, 320);
-}
-
-// -----------------------------------------------------------------------------
-// Hydra (WebGL) layer
-//
-// @strudel/hydra@1.3.0's initHydra() reads (verified against the live bundle,
-// and pinned by tests/hydra-contract.test.ts against the real source):
-//
-//   async function initHydra(opts = {}) {
-//     if (latestOptions && JSON.stringify(latestOptions) !== JSON.stringify(opts))
-//       document.getElementById("hydra-canvas")?.remove();
-//     latestOptions = opts;
-//     if (!document.getElementById("hydra-canvas")) {
-//       const { canvas } = getDrawContext("hydra-canvas", { contextType: "webgl", ... });
-//       await import("https://unpkg.com/hydra-synth");
-//       hydra = new Hydra({ ...opts, canvas });
-//       if (feedStrudel) { getDrawContext().canvas.style.display = "none"; ... }
-//     }
-//     return hydra;
-//   }
-//
-// Note what the guard covers: with UNCHANGED options the whole block is skipped
-// and the existing instance is returned as-is. So anything that block does —
-// the feedStrudel hide, and the engine construction that starts a render loop —
-// must be re-established by our wrapper, or a second Ctrl+Enter on the same
-// pattern silently loses it.
-//
-// So the ELEMENT'S EXISTENCE is Hydra's own "already initialised" flag. Any
-// pre-created #hydra-canvas turns initHydra() into a silent no-op: no engine, no
-// osc/o0 globals, and the pattern dies on "osc is not defined". We therefore let
-// getDrawContext() create the canvas (it prepends a position:fixed, full-viewport
-// element to <body>) and ADOPT it into .repl-section the instant it appears.
-//
-// Adoption runs from a MutationObserver, whose callback is a microtask queued
-// during the synchronous getDrawContext() call — comfortably before the
-// `await import(...)` that precedes `new Hydra(...)`. That matters because
-// hydra-synth reads canvas.width/height in its constructor, so the capped
-// backing-store size must be in place by then.
-//
-// Teardown goes through clearHydra() (also in eval scope), which hushes the
-// synth, REMOVES the canvas, and restores the Strudel `speed` / `shape` globals
-// that hydra-synth's makeGlobal clobbered. We must NOT put a canvas back
-// afterwards, or the next initHydra() no-ops again.
-// -----------------------------------------------------------------------------
-
-function getHydraCanvas(): HTMLCanvasElement | null {
-  return document.getElementById("hydra-canvas") as HTMLCanvasElement | null;
-}
-
-/** Panel size capped at HYDRA_MAX_WIDTH CSS px, aspect preserved. */
-function cappedHydraSize(w: number, h: number): [number, number] {
-  const scale = Math.min(1, HYDRA_MAX_WIDTH / Math.max(1, w));
-  return [Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale))];
-}
-
-/**
- * Pull Hydra's freshly created canvas out of <body> and into the visuals stack,
- * under the 2D #test-canvas, and give it the capped backing-store size before
- * hydra-synth's constructor reads it.
- *
- * getDrawContext() writes an inline `position:fixed; top:0; left:0; width:100%;
- * height:100%` style; dropping the whole attribute (our CSS class re-applies
- * image-rendering:pixelated) is what turns it from a viewport overlay into an
- * in-flow backdrop.
- */
-function adoptHydraCanvas(c: HTMLCanvasElement): void {
-  if (c.parentElement !== replSection) {
-    c.removeAttribute("style");
-    c.className = "viz-canvas hydra-canvas";
-    replSection.insertBefore(c, vizCanvas);
-  }
-  const [rw, rh] = cappedHydraSize(replSection.clientWidth, replSection.clientHeight);
-  if (c.width !== rw || c.height !== rh) {
-    c.width = rw;
-    c.height = rh;
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Extra 2D layers — getDrawContext('layer2')
-//
-// Every 2D painter clears its canvas each frame, so two visuals on the default
-// #test-canvas erase each other. Strudel's answer is a canvas per visual:
-// `.pianoroll({ ctx: getDrawContext('layer2') })`. getDrawContext() creates
-// that canvas the same way it creates Hydra's — a position:fixed, full-viewport
-// child of <body> — and our stray-canvas rule used to hide it, so the second
-// layer never showed. Now it is adopted like #hydra-canvas: into the visuals
-// stack, over #test-canvas, sized with it. A layer the next pattern no longer
-// names is removed (only #test-canvas is cleared upstream, so a stale layer
-// would otherwise sit over the new pattern), and a stop clears them all.
-// -----------------------------------------------------------------------------
-
-/** Canvases a pattern created with getDrawContext('id'), adopted into the stack. */
-const drawLayers = new Set<HTMLCanvasElement>();
-/** Pending re-apply after getDrawContext's own debounced resize handler. */
-let drawLayerLateResize: ReturnType<typeof setTimeout> | null = null;
-
-function isDrawLayer(node: Node): node is HTMLCanvasElement {
-  return (
-    node instanceof HTMLCanvasElement &&
-    node.id !== "hydra-canvas" &&
-    node.id !== "test-canvas" &&
-    node.parentElement === document.body
-  );
-}
-
-function adoptDrawLayer(c: HTMLCanvasElement): void {
-  if (c.parentElement !== replSection) {
-    c.removeAttribute("style");
-    c.className = "viz-canvas viz-layer";
-    c.setAttribute("aria-hidden", "true");
-    // Over #test-canvas, under the code, in creation order.
-    replSection.insertBefore(c, strudelContainerEl());
-  }
-  drawLayers.add(c);
-  sizeDrawLayer(c);
-}
-
-function strudelContainerEl(): Element | null {
-  return replSection.querySelector(".strudel-container");
-}
-
-function sizeDrawLayer(c: HTMLCanvasElement): void {
-  if (c.width === vizCanvas.width && c.height === vizCanvas.height) return;
-  const w = replSection.clientWidth;
-  const h = replSection.clientHeight;
-  if (w === 0 || h === 0) return;
-  const dpr = window.devicePixelRatio || 1;
-  c.width = Math.round(w * dpr);
-  c.height = Math.round(h * dpr);
-}
-
-/** Size every layer like #test-canvas, now and after getDrawContext's resize handler. */
-function syncDrawLayerSizes(): void {
-  if (drawLayers.size === 0) return;
-  drawLayers.forEach(sizeDrawLayer);
-  if (drawLayerLateResize !== null) clearTimeout(drawLayerLateResize);
-  drawLayerLateResize = setTimeout(() => {
-    drawLayerLateResize = null;
-    drawLayers.forEach(sizeDrawLayer);
-  }, 320);
-}
-
-/**
- * After an evaluation: hide (and clear) the layers this pattern no longer
- * names, and show the ones it does. Hidden, not removed: getDrawContext()
- * finds a canvas by id and reuses it, while a removed one is re-created with a
- * SECOND window-resize listener (upstream never removes the first, which keeps
- * the detached canvas alive — Codex).
- */
-function pruneDrawLayers(code: string): void {
-  const keep = drawLayerIds(code);
-  for (const layer of Array.from(drawLayers)) {
-    if (!layer.isConnected) {
-      drawLayers.delete(layer);
-      continue;
-    }
-    // A computed id (null) — can't tell which are in use, so show them all.
-    const used = keep === null || keep.includes(layer.id);
-    if (!used) clearLayer(layer);
-    layer.classList.toggle("viz-layer-idle", !used);
-  }
-}
-
-function clearLayer(layer: HTMLCanvasElement): void {
-  try {
-    layer.getContext("2d")?.clearRect(0, 0, layer.width, layer.height);
-  } catch { /* a layer used as a WebGL context has no 2d; hiding it is enough */ }
-}
-
-/** A stop: the layers' last frames would otherwise stay painted. */
-function clearDrawLayers(): void {
-  drawLayers.forEach(clearLayer);
-}
-
-// Catch the canvases the moment @strudel/hydra or getDrawContext('id')
-// prepends them to <body>.
-const hydraCanvasObserver = new MutationObserver((records) => {
-  for (const record of records) {
-    for (const node of Array.from(record.addedNodes)) {
-      if (node instanceof HTMLCanvasElement && node.id === "hydra-canvas") {
-        adoptHydraCanvas(node);
-      } else if (isDrawLayer(node)) {
-        adoptDrawLayer(node);
-      }
-    }
-  }
+initLayers({
+  replSection, vizCanvas, vizBtn, stageBtn,
+  hasAudioApi, installAudioReactiveGlobals, startAnalyserLoop,
+  setHydraActive, prefersReducedMotion,
 });
-hydraCanvasObserver.observe(document.body, { childList: true });
-
-/**
- * Resize the live Hydra layer. Once hydra-synth is running, writing
- * canvas.width/height behind its back desyncs its viewport, so go through the
- * setResolution() global it installs.
- *
- * getDrawContext() also registered its OWN debounced (200ms) window-resize
- * handler that resets the canvas to innerWidth × innerHeight without telling
- * Hydra. syncVizCanvasSize() schedules a late re-apply so ours lands last.
- */
-function syncHydraCanvasSize(w: number, h: number): void {
-  const c = getHydraCanvas();
-  if (!c) return;
-  const [rw, rh] = cappedHydraSize(w, h);
-  const setRes = (window as any).setResolution;
-  if (typeof setRes === "function") {
-    try {
-      setRes(rw, rh);
-      return;
-    } catch { /* fall through to a direct resize */ }
-  }
-  if (c.width !== rw || c.height !== rh) {
-    c.width = rw;
-    c.height = rh;
-  }
-}
 
 // -----------------------------------------------------------------------------
 // Eval-scope patches
@@ -973,6 +692,18 @@ const CLOBBERED_GLOBALS = ["time", "speed", "shape", "hush"] as const;
 
 let evalScopeHooked = false;
 let hydraInstance: any = null;
+
+/**
+ * Hydra is live exactly when its canvas exists — @strudel/hydra uses the same
+ * fact as its own "already initialised" flag.
+ *
+ * `hydraInstance` is captured by the initHydra() wrapper; the canvas check
+ * covers the window between adoption and the wrapper resolving.
+ */
+function isHydraLive(): boolean {
+  if (hydraInstance || widgetState.hydraActive) return true;
+  return document.getElementById("hydra-canvas") !== null;
+}
 
 /**
  * Bumped every time the Hydra layer is struck — a pattern that no longer uses
@@ -1211,7 +942,7 @@ function stopHydraInstance(): void {
 
 /** Stage or strike the Hydra layer for the pattern about to run. */
 function setHydraActive(active: boolean): void {
-  hydraActive = active;
+  widgetState.setHydraActive(active);
   replSection.classList.toggle("hydra-on", active);
   // A previous `initHydra({ feedStrudel: true })` sets an INLINE display:none on
   // #test-canvas to hide the piano roll it is texturing. Nothing upstream ever
@@ -1236,28 +967,6 @@ function setHydraActive(active: boolean): void {
   stopHydraInstance();
   restoreStrudelGlobals();
   getHydraCanvas()?.remove();
-}
-
-/** Reflect viz visibility on the backdrop + editor scrim + toggle button. */
-function applyVizVisibility(): void {
-  // .viz-on reveals the backdrop canvas and makes the editor translucent (CSS).
-  replSection.classList.toggle("viz-on", vizVisible);
-  vizBtn.classList.toggle("active", vizVisible);
-  vizBtn.setAttribute("aria-pressed", String(vizVisible));
-  if (vizVisible) {
-    // Backdrop just gained layout — size the backing store on the next frame.
-    requestAnimationFrame(syncVizCanvasSize);
-    // The analyser loop stops itself a second after the visuals go; showing
-    // them again must restart it, or an onPaint() reading `a` froze (Codex).
-    if (audioApi) startAnalyserLoop();
-  }
-  // Stage mode shows ONLY the visuals; with the visuals off it would be a blank
-  // rectangle, so leaving them takes the stage down too.
-  if (!vizVisible && stageMode) {
-    stageMode = false;
-    applyStageMode();
-  }
-  syncStageAffordance();
 }
 
 // =============================================================================
@@ -1373,365 +1082,6 @@ function syncEditorToWidth(): void {
   } catch { /* cosmetic — the editor still works at its own settings */ }
 }
 
-/** `#abc` / `#aabbcc` / `rgb()` / `rgba()` → [r, g, b], or null if unparseable. */
-function parseCssColor(value: string): [number, number, number] | null {
-  const text = value.trim();
-  const hex = /^#([0-9a-f]{3,8})$/i.exec(text);
-  if (hex) {
-    let digits = hex[1];
-    if (digits.length === 3 || digits.length === 4) {
-      digits = digits.slice(0, 3).split("").map((c) => c + c).join("");
-    }
-    if (digits.length < 6) return null;
-    return [
-      parseInt(digits.slice(0, 2), 16),
-      parseInt(digits.slice(2, 4), 16),
-      parseInt(digits.slice(4, 6), 16),
-    ];
-  }
-  const fn = /^rgba?\(([^)]+)\)$/i.exec(text);
-  if (fn) {
-    const parts = fn[1].split(/[\s,/]+/).filter(Boolean).map(Number);
-    if (parts.length >= 3 && parts.slice(0, 3).every((n) => Number.isFinite(n))) {
-      return [parts[0], parts[1], parts[2]];
-    }
-  }
-  return null;
-}
-
-/**
- * Rebuild the visuals stage + readability scrim from the ACTIVE editor theme.
- *
- * The v0.4.2 scrim was a hard-coded near-black. Under a light theme
- * (githubLight, xcodeLight, solarizedLight, …) that put dark syntax colours on
- * a dark veil — unreadable. Deriving both from the theme's own `--background`
- * keeps one rule working in both directions: the stage IS the editor background
- * and the veil is that same colour, so only the animation shows through.
- */
-function syncVizTheme(): void {
-  const background = getComputedStyle(document.documentElement)
-    .getPropertyValue("--background");
-  const rgb = parseCssColor(background);
-  if (!rgb) return;
-  const [r, g, b] = rgb;
-  // Rec. 709 relative luminance, 0..1.
-  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-  const isLight = luminance > 0.5;
-  const style = replSection.style;
-  style.setProperty("--viz-stage", `rgb(${r}, ${g}, ${b})`);
-  // A light theme needs a HEAVIER veil: dark code over a bright moving image is
-  // a worse contrast case than light code over a dark one.
-  style.setProperty("--viz-scrim", `rgba(${r}, ${g}, ${b}, ${isLight ? 0.72 : 0.5})`);
-  style.setProperty("--viz-gutter-scrim", `rgba(${r}, ${g}, ${b}, ${isLight ? 0.58 : 0.3})`);
-  // The glow that lifts code off the animation has to flip with it, or it turns
-  // into a dark smear around dark text.
-  style.setProperty(
-    "--viz-code-shadow",
-    isLight ? "0 1px 2px rgba(255, 255, 255, 0.95)" : "0 1px 2px rgba(0, 0, 0, 0.95)",
-  );
-}
-
-// =============================================================================
-// Audio-reactive visuals — `a`, driven by Strudel's OWN output
-//
-// hydra-synth's `a` comes from `new Audio(...)`, which opens the MICROPHONE via
-// getUserMedia and runs Meyda over it. @strudel/hydra passes `detectAudio:false`
-// (so `a` is simply undefined in the REPL) — which is right: we do not want a
-// permission prompt, and the mic hears the room, not the pattern.
-//
-// So we build the same object over an AnalyserNode tapped off the SAME master
-// bus the recorder taps (`getSuperdoughAudioController().output.destinationGain`).
-// Every hydra tutorial that reads `a.fft[0]`, `a0()`, `a.setBins(6)`,
-// `a.setSmooth(...)`, `a.setCutoff(...)`, `a.setScale(...)`, `a.show()/hide()`
-// works verbatim — but reacting to the music the widget is playing.
-//
-// Value semantics are ported from hydra-synth 1.4.0 src/lib/audio.js:
-//   bins[i]  = raw[i] * (1 - smooth) + prevBins[i] * smooth
-//   fft[i]   = max(0, (bins[i] - settings[i].cutoff) / settings[i].scale)
-// with the same defaults (4 bins, cutoff 2, scale 10, smooth 0.4, max 15).
-// The one deviation: hydra SUMS Meyda's bark-band loudness per band, which has
-// no meaning for an FFT magnitude array, so `raw` here is the band's mean
-// magnitude normalised 0..1 and then scaled by `max` into hydra's units — which
-// is what puts a loud band near fft ≈ 1.3 and silence at 0, the range the
-// cutoff/scale defaults were tuned for.
-// =============================================================================
-
-// 2048 → 1024 bins of ~23 Hz at 48 kHz, fine enough to give the kick its own
-// band. (256 gave 187 Hz bins, so "band 0" ran 0–6 kHz and "band 1" 6–12 kHz —
-// the guide's "bass band" was listening to hi-hats.)
-const ANALYSER_FFT_SIZE = AUDIO_ANALYSER.fftSize;
-const ANALYSER_SMOOTHING = AUDIO_ANALYSER.smoothing;
-/** Musical range. The -100..-30 dB default squashes Strudel's output flat. */
-const ANALYSER_MIN_DB = AUDIO_ANALYSER.minDecibels;
-const ANALYSER_MAX_DB = AUDIO_ANALYSER.maxDecibels;
-/** How long to keep looking for Hydra after a render asks for it. */
-const ANALYSER_WAIT_MS = 20000;
-
-interface AudioBandSetting {
-  cutoff: number;
-  scale: number;
-  smooth: number;
-}
-
-interface StrudelAudioApi {
-  vol: number;
-  cutoff: number;
-  scale: number;
-  smooth: number;
-  max: number;
-  bins: number[];
-  prevBins: number[];
-  fft: number[];
-  settings: AudioBandSetting[];
-  isDrawing: boolean;
-  setBins(count: number): void;
-  setCutoff(value: number): void;
-  setSmooth(value: number): void;
-  setScale(value: number): void;
-  setMax(value: number): void;
-  show(): void;
-  hide(): void;
-  tick(): void;
-}
-
-let audioApi: StrudelAudioApi | null = null;
-let analyserNode: AnalyserNode | null = null;
-let analyserTapSource: AudioNode | null = null;
-let analyserBytes: Uint8Array<ArrayBuffer> | null = null;
-let analyserRaf: number | null = null;
-let analyserDeadline = 0;
-let audioMeterCanvas: HTMLCanvasElement | null = null;
-/** `a0`…`aN` globals we installed, so teardown can take them back off. */
-let installedBandGlobals: string[] = [];
-
-/**
- * Hydra is live exactly when its canvas exists — @strudel/hydra uses the same
- * fact as its own "already initialised" flag.
- *
- * `hydraInstance` is captured by the initHydra() wrapper; the canvas check
- * covers the window between adoption and the wrapper resolving.
- */
-function isHydraLive(): boolean {
-  if (hydraInstance || hydraActive) return true;
-  return document.getElementById("hydra-canvas") !== null;
-}
-
-/** Tap the master bus with an AnalyserNode. Idempotent; false until audio exists. */
-function ensureAnalyser(): boolean {
-  if (analyserNode) return true;
-  try {
-    // The AudioContext is lazy — it only exists once something has played.
-    const ctx: AudioContext | undefined = (window as any).getAudioContext?.();
-    if (!ctx) return false;
-    const controller = (window as any).getSuperdoughAudioController?.();
-    const master: AudioNode | undefined = controller?.output?.destinationGain;
-    if (!master?.connect) return false;
-    const node = ctx.createAnalyser();
-    node.fftSize = ANALYSER_FFT_SIZE;
-    node.smoothingTimeConstant = ANALYSER_SMOOTHING;
-    node.minDecibels = ANALYSER_MIN_DB;
-    node.maxDecibels = ANALYSER_MAX_DB;
-    // Tap only: the analyser is never connected onward, so it reads the bus
-    // without adding a second path to the speakers.
-    master.connect(node);
-    analyserTapSource = master;
-    analyserNode = node;
-    analyserBytes = new Uint8Array(node.frequencyBinCount);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** hydra-synth's debug meter, ported — `a.show()` draws the live band levels. */
-function drawAudioMeter(api: StrudelAudioApi): void {
-  if (!audioMeterCanvas) return;
-  const ctx = audioMeterCanvas.getContext("2d");
-  if (!ctx) return;
-  const { width, height } = audioMeterCanvas;
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#DFFFFF";
-  const spacing = width / Math.max(1, api.bins.length);
-  const scale = height / (api.max * 2);
-  api.bins.forEach((bin, index) => {
-    const barHeight = bin * scale;
-    ctx.fillRect(index * spacing, height - barHeight, spacing - 1, barHeight);
-  });
-}
-
-function createAudioApi(): StrudelAudioApi {
-  const api: StrudelAudioApi = {
-    vol: 0,
-    cutoff: 2,
-    scale: 10,
-    smooth: 0.4,
-    max: 15,
-    bins: [],
-    prevBins: [],
-    fft: [],
-    settings: [],
-    isDrawing: false,
-
-    setBins(count: number) {
-      const n = Math.max(1, Math.floor(count) || 1);
-      api.bins = new Array(n).fill(0);
-      api.prevBins = new Array(n).fill(0);
-      api.fft = new Array(n).fill(0);
-      api.settings = new Array(n).fill(0).map(() => ({
-        cutoff: api.cutoff,
-        scale: api.scale,
-        smooth: api.smooth,
-      }));
-      // hydra installs a0()…aN() alongside a.fft; tutorials use both forms.
-      for (const name of installedBandGlobals) delete (window as any)[name];
-      installedBandGlobals = [];
-      for (let i = 0; i < n; i++) {
-        const name = `a${i}`;
-        (window as any)[name] = (scale = 1, offset = 0) => () => api.fft[i] * scale + offset;
-        installedBandGlobals.push(name);
-      }
-    },
-
-    setCutoff(value: number) {
-      api.cutoff = value;
-      api.settings = api.settings.map((s) => ({ ...s, cutoff: value }));
-    },
-    setSmooth(value: number) {
-      api.smooth = value;
-      api.settings = api.settings.map((s) => ({ ...s, smooth: value }));
-    },
-    setScale(value: number) {
-      api.scale = value;
-      api.settings = api.settings.map((s) => ({ ...s, scale: value }));
-    },
-    setMax(value: number) {
-      api.max = value;
-    },
-
-    show() {
-      api.isDrawing = true;
-      if (!audioMeterCanvas) {
-        const canvas = document.createElement("canvas");
-        canvas.width = 100;
-        canvas.height = 80;
-        canvas.className = "audio-meter";
-        replSection.appendChild(canvas);
-        audioMeterCanvas = canvas;
-      }
-      audioMeterCanvas.style.display = "block";
-    },
-    hide() {
-      api.isDrawing = false;
-      if (audioMeterCanvas) audioMeterCanvas.style.display = "none";
-    },
-
-    tick() {
-      const node = analyserNode;
-      const bytes = analyserBytes;
-      if (!node || !bytes) return;
-      node.getByteFrequencyData(bytes);
-      // Log-spaced bands, so fft[0] is the kick/sub band and fft[3] the hats —
-      // not four equal slices of a linear spectrum (src/shared/audio-bands.ts).
-      const levels = bandLevels(bytes, node.context.sampleRate, node.fftSize, api.bins.length);
-      api.prevBins = api.bins.slice(0);
-      api.vol = stepBands(levels, api.prevBins, api.settings, api.max, api.bins, api.fft);
-      if (api.isDrawing) drawAudioMeter(api);
-    },
-  };
-  api.setBins(4);
-  return api;
-}
-
-/**
- * Publish `a` (and a0…a3) into the REPL's eval scope. Installed eagerly once an
- * editor exists, so a shader's `() => a.fft[0] * 4` never sees an undefined `a`
- * on Hydra's first frame — the analyser attaches later, and until it does the
- * bands simply read 0.
- */
-function installAudioReactiveGlobals(): void {
-  if (!audioApi) audioApi = createAudioApi();
-  (window as any).a = audioApi;
-}
-
-/**
- * Drive the band analysis. Runs while Hydra is up or the visuals backdrop is
- * showing — both can react to `a` (a shader, or a hand-drawn onPaint()). With
- * neither there is nothing to react, so the loop stops itself.
- */
-function startAnalyserLoop(): void {
-  analyserDeadline = performance.now() + ANALYSER_WAIT_MS;
-  if (analyserRaf !== null) return;
-  const frame = (now: number) => {
-    if (isHydraLive() || vizVisible) {
-      // Keep the window open while something can react; close it once not.
-      analyserDeadline = now + 1000;
-      if (analyserNode || ensureAnalyser()) audioApi?.tick();
-    } else if (now > analyserDeadline) {
-      analyserRaf = null;
-      return;
-    }
-    analyserRaf = requestAnimationFrame(frame);
-  };
-  analyserRaf = requestAnimationFrame(frame);
-}
-
-function stopAnalyserLoop(): void {
-  if (analyserRaf !== null) {
-    cancelAnimationFrame(analyserRaf);
-    analyserRaf = null;
-  }
-}
-
-function teardownAudioAnalyser(): void {
-  stopAnalyserLoop();
-  if (analyserTapSource && analyserNode) {
-    try {
-      (analyserTapSource as any).disconnect(analyserNode);
-    } catch { /* edge may already be gone */ }
-  }
-  analyserTapSource = null;
-  analyserNode = null;
-  analyserBytes = null;
-  for (const name of installedBandGlobals) delete (window as any)[name];
-  installedBandGlobals = [];
-  delete (window as any).a;
-  audioApi = null;
-  audioMeterCanvas?.remove();
-  audioMeterCanvas = null;
-}
-
-// =============================================================================
-// Stage mode — the visuals without the code
-//
-// Composes with the host's fullscreen display mode rather than replacing it:
-// "Stage" hides #strudel-container so the backdrop canvases (already absolutely
-// filling .repl-section) become the whole frame, and "⛶" asks the host for more
-// frame to fill. Either is useful alone; together they are a projector.
-// =============================================================================
-
-let stageMode = false;
-
-function applyStageMode(): void {
-  replSection.classList.toggle("stage-on", stageMode);
-  stageBtn.classList.toggle("active", stageMode);
-  stageBtn.setAttribute("aria-pressed", String(stageMode));
-  stageBtn.textContent = stageMode ? "Code" : "Stage";
-  stageBtn.title = stageMode
-    ? "Show the code again (Esc)"
-    : "Stage mode — hide the code and let the visuals fill the frame";
-  if (stageMode) requestAnimationFrame(syncVizCanvasSize);
-}
-
-/**
- * Dim the button when there is nothing to stage, but leave it CLICKABLE so the
- * click can say why — same choice the "Visuals" toggle already makes. A
- * genuinely disabled button just swallows the question.
- */
-function syncStageAffordance(): void {
-  const usable = vizVisible || stageMode;
-  stageBtn.setAttribute("aria-disabled", String(!usable));
-}
-
 // =============================================================================
 // Pattern title  (`title` tool parameter)
 // =============================================================================
@@ -1770,325 +1120,9 @@ function recordingFileStem(): string {
 // reports the real outcome to the status line and to the model.
 // =============================================================================
 
-// -----------------------------------------------------------------------------
-// Missing sounds
-//
-// An unknown sound name does NOT fail evaluation — the pattern is valid, and
-// superdough only discovers the sample is missing when it tries to trigger it,
-// a cycle later. It reports through Strudel's logger, which writes to
-// console.LOG (styled with %c), not console.error, so the only way to see it is
-// to watch the console. We pass everything through untouched and just pick the
-// sound name out.
-// -----------------------------------------------------------------------------
-
-const MISSING_SOUND_RE = /sound\s+(\S+?)\s+not found/i;
-const missingSounds = new Set<string>();
-let missingSoundTimer: ReturnType<typeof setTimeout> | null = null;
-let missingSoundReported = false;
-let consoleWatchInstalled = false;
-
-function noteMissingSound(name: string): void {
-  // say() clips register when they load and report their own failures.
-  if (name.startsWith("say_")) return;
-  if (missingSoundReported || missingSounds.has(name)) return;
-  missingSounds.add(name);
-  if (missingSoundTimer !== null) return;
-  // Collect for a beat so several missing sounds become ONE report.
-  missingSoundTimer = setTimeout(() => {
-    missingSoundTimer = null;
-    missingSoundReported = true;
-    const list = [...missingSounds].join(", ");
-    setStatus(`Playing — sound not found: ${list}`, "error");
-    reportToModel(
-      `Strudel widget: sound not found: ${list}. The pattern is running, but that ` +
-        "part is silent — use a sound name from the guide's 'sounds' topic.",
-    );
-  }, 900);
-}
-
-/** Console methods as they were before installConsoleWatch(), for teardown. */
-const originalConsole: Partial<Record<"log" | "error", (...args: any[]) => void>> = {};
-
-function installConsoleWatch(): void {
-  if (consoleWatchInstalled) return;
-  consoleWatchInstalled = true;
-  for (const level of ["log", "error"] as const) {
-    const original = console[level].bind(console);
-    originalConsole[level] = console[level];
-    console[level] = (...args: unknown[]) => {
-      try {
-        const match = MISSING_SOUND_RE.exec(args.map(String).join(" "));
-        if (match) noteMissingSound(match[1]);
-      } catch { /* never let the watch break logging */ }
-      original(...args);
-    };
-  }
-}
-
-/** Hand the console back untouched when the host discards this widget. */
-function removeConsoleWatch(): void {
-  if (!consoleWatchInstalled) return;
-  consoleWatchInstalled = false;
-  for (const level of ["log", "error"] as const) {
-    const original = originalConsole[level];
-    if (original) console[level] = original;
-    delete originalConsole[level];
-  }
-}
-
-/** Reveal/stage the visual layers the given pattern asks for. */
-function stageVisuals(code: string): void {
-  const intent = detectViz(code);
-  // Stage the Hydra layer BEFORE evaluation so the canvas Hydra creates is
-  // adopted and sized while hydra-synth is still importing.
-  setHydraActive(intent.hydra);
-  if (intent.any) {
-    // Make `a` resolvable before the first frame, and start reading the master
-    // bus (see the audio-reactive section). Any visual, not only Hydra: a
-    // hand-drawn onPaint() reading a.fft used to see zeros.
-    installAudioReactiveGlobals();
-    startAnalyserLoop();
-  }
-  if (!vizManual) {
-    // Reduced motion: never reveal a moving backdrop on our own initiative.
-    // The "Visuals" button still works — that is the user asking.
-    vizVisible = intent.any && !prefersReducedMotion();
-    applyVizVisibility();
-  }
-  if (intent.any && vizVisible) {
-    // applyVizVisibility() defers sizing to the next frame; Hydra may init
-    // sooner than that (it only awaits the hydra-synth import), so size now.
-    syncVizCanvasSize();
-  }
-}
-
-/** The Error @strudel/repl parked from the last evaluation, if it failed. */
-function readEvalError(): Error | null {
-  const state = getEditor()?.repl?.state;
-  const err = state?.evalError ?? state?.schedulerError;
-  return err instanceof Error ? err : err ? new Error(String(err)) : null;
-}
-
-/**
- * Whether the pattern the REPL just accepted produces NO events.
- *
- * "Playing…" with a pattern that is `silence` is the widget's most misleading
- * state: evaluation succeeded, the scheduler runs, nothing sounds. The REPL
- * plays the LAST expression, so `pattern; all(...)` or `pattern; setcps(...)`
- * hands it undefined → silence, without an error. Query-time errors are
- * swallowed by queryArc() the same way (an empty result), so both shapes land
- * here. Bounded to a few cycles; a slow-building pattern (`<~ ~ ~ x>`) that
- * genuinely rests through the window is a false positive we accept, which is
- * why the wording is "produces no events", not "is broken".
- */
-const SILENCE_CHECK_CYCLES = 4;
-function patternIsSilent(): boolean {
-  const pattern = getEditor()?.repl?.state?.pattern;
-  if (!pattern || typeof pattern.queryArc !== "function") return false;
-  try {
-    return pattern.queryArc(0, SILENCE_CHECK_CYCLES).length === 0;
-  } catch {
-    return true;
-  }
-}
-
-/** Set when a hydra `visuals` preset was dropped for prefers-reduced-motion. */
-let hydraPresetSkippedForMotion = false;
-
 /** Whether the scheduler is actually running (not what we hoped it would do). */
 function isSchedulerStarted(): boolean {
   return getEditor()?.repl?.state?.started === true;
-}
-
-/**
- * Tell the model what the widget is actually doing, without needing a user turn.
- * Exactly one call per evaluation — never per frame.
- */
-function reportToModel(text: string): void {
-  // A live session hears every report, whatever the host does with them —
-  // claude.ai had no tool to read widget context (2026-10-02 field test).
-  lastReportText = text;
-  session?.log({ t: "report", text }, true);
-  if (!canUpdateModelContext) return;
-  void app
-    .updateModelContext({ content: [{ type: "text", text }] })
-    .catch(() => { /* context updates are best-effort */ });
-}
-
-// -----------------------------------------------------------------------------
-// Playback-state reports
-//
-// Evaluation reports itself (reportEvaluation below). What used to go
-// unreported is everything that stops playback WITHOUT an evaluation: the user
-// pressing Stop, a pattern calling hush(), the scheduler falling over. Those
-// only flipped the Play button, so the model's last known state stayed
-// "playing" — and it would answer questions about a silent widget as if the
-// music were still running.
-//
-// One bounded message per real transition: coalesced by a 500ms debounce (the
-// `update` event can arrive in bursts), and suppressed entirely when the state
-// is the one already reported. Never per frame.
-// -----------------------------------------------------------------------------
-
-const MODEL_STATE_DEBOUNCE_MS = 500;
-
-let modelStateTimer: ReturnType<typeof setTimeout> | null = null;
-/** Playback state the model has been told about, so we only send transitions. */
-let lastReportedState: PlaybackState | null = null;
-/** Error text from the last failed evaluation, carried into stop reports. */
-let lastEvalErrorText: string | null = null;
-
-function cancelStateReport(): void {
-  if (modelStateTimer !== null) {
-    clearTimeout(modelStateTimer);
-    modelStateTimer = null;
-  }
-}
-
-/** Note a state we have just reported ourselves, so the debounce won't repeat it. */
-function markReportedPlaying(state: PlaybackState, errorText: string | null): void {
-  cancelStateReport();
-  lastReportedState = state;
-  lastEvalErrorText = errorText;
-}
-
-/** Report a stop/start/unlock that no evaluation announced. Debounced, deduplicated. */
-function scheduleStateReport(): void {
-  if (!canUpdateModelContext) return;
-  cancelStateReport();
-  modelStateTimer = setTimeout(() => {
-    modelStateTimer = null;
-    const state = currentPlaybackState();
-    // Nothing reported yet reads as "stopped": the model has heard of no music.
-    if (state === (lastReportedState ?? "stopped")) return;
-    const previous = lastReportedState;
-    lastReportedState = state;
-    const errorNote = lastEvalErrorText ? ` (last error: ${lastEvalErrorText})` : "";
-    reportToModel(
-      state === "playing"
-        ? previous === "audio-blocked"
-          ? `Strudel widget: audio started — the pattern is audible now${errorNote}`
-          : `Strudel widget: playing again${errorNote}`
-        : state === "audio-blocked"
-          ? `Strudel widget: audio is suspended — the pattern is running but silent until the user taps Play${errorNote}`
-          : `Strudel widget: playback stopped — nothing is sounding now${errorNote}`,
-    );
-  }, MODEL_STATE_DEBOUNCE_MS);
-}
-
-/** Status line + model context for one finished evaluation. */
-function reportEvaluation(
-  code: string,
-  thrown: Error | null,
-  tempoAtRuntime = false,
-): void {
-  const err = thrown ?? readEvalError();
-  const soundfontNote = soundfontWarning
-    ? " (soundfonts unavailable — audio may be silent)"
-    : "";
-  const tempoNote = tempoAtRuntime
-    ? " — tempo applied at runtime: the pattern defines its own setcps"
-    : "";
-
-  if (err) {
-    const msg = err.message || String(err);
-    setStatus(`Error: ${msg}`, "error");
-    // Correct the play state from the scheduler rather than assuming: a failed
-    // re-evaluation leaves the PREVIOUS pattern running.
-    const playing = isSchedulerStarted();
-    isPlaying = playing;
-    audioBlocked = playing && audioIsBlockedNow();
-    renderPlayButton();
-    const state = currentPlaybackState();
-    markReportedPlaying(state, msg);
-    // Positions are in the buffer that ran; say where that is in the code the
-    // model sent, when bpm/visuals added lines above it.
-    const lineNote = sentCode ? sourceLineNote(msg, code, sentCode) : "";
-    reportToModel(
-      `Strudel widget: pattern failed to evaluate — ${msg}${lineNote}` +
-        (state === "playing"
-          ? " (the previous pattern is still playing)"
-          : state === "audio-blocked"
-            ? " (the previous pattern is still running, but not audible until the user taps Play)"
-            : " (nothing is playing)"),
-    );
-    return;
-  }
-
-  updatePlayState(isSchedulerStarted());
-  const state = currentPlaybackState();
-  markReportedPlaying(state, null);
-  if (isPlaying && patternIsSilent()) {
-    setStatus("Playing — but the pattern produces no events (silent)", "error");
-    reportToModel(
-      "Strudel widget: the pattern evaluated and the scheduler is running, but it " +
-        `produces NO events in the first ${SILENCE_CHECK_CYCLES} cycles — nothing will sound. ` +
-        "The REPL plays the LAST expression: make sure the pattern is the final statement " +
-        "(all(), setcps() and helpers go before it), and that every layer yields events.",
-    );
-    return;
-  }
-  if ((soundfontWarning || tempoAtRuntime) && isPlaying) {
-    showPlayingStatus(`Playing...${soundfontNote}${tempoNote}`, "playing");
-  }
-  const intent = detectViz(code);
-  const layers = [
-    intent.hydra ? "hydra shader" : null,
-    intent.strudelViz ? "strudel draw canvas" : null,
-  ].filter(Boolean);
-  const motionNote = hydraPresetSkippedForMotion
-    ? " — hydra preset skipped: this viewer prefers reduced motion"
-    : "";
-  // Blocked audio is NOT "playing": the scheduler runs, but nothing can be
-  // heard until the user taps Play — the model must not answer as if it could.
-  const what =
-    state === "playing"
-      ? "playing"
-      : state === "audio-blocked"
-        ? "loaded and running but NOT audible — the browser has not started audio " +
-          "(no user gesture in the widget yet); the widget asks the user to tap Play, " +
-          "and sound starts on that tap"
-        : "loaded, not playing";
-  reportToModel(
-    `Strudel widget: ${what}` +
-      ` (visuals: ${layers.length ? layers.join(" + ") : "none"}${motionNote})${soundfontNote}${tempoNote}` +
-      stageCapabilityNote(code),
-  );
-}
-
-/**
- * For pieces that speak or listen: what this frame can actually do, measured
- * from inside it. The host sets the iframe's sandbox/allow attributes, so this
- * is the only honest source — the 2026-10-01 DUET field test could not tell
- * "speech is blocked" from "speech was never attempted".
- */
-function stageCapabilityNote(code: string): string {
-  const voiced = /\bsay\s*\(/.test(code);
-  const rawSpeech = /speechSynthesis/.test(code);
-  const taps = /\bonTap\s*\(|pointerdown|addEventListener\s*\(\s*['"](?:click|touch|pointer)/.test(code);
-  const parts: string[] = [];
-  if (voiced) {
-    parts.push(
-      "voice: say() lines are rendered by the server and play as samples (the widget waits " +
-        "for them before starting); a line that can't be rendered is reported separately",
-    );
-  }
-  if (rawSpeech) {
-    parts.push(
-      "browser speechSynthesis: does NOT play in the Claude mobile app's webview and can't be " +
-        "put on the beat — use say(text) instead, which returns a pattern",
-    );
-  }
-  const sensorParts = sensorNotes(code);
-  if (sensorParts) parts.push(sensorParts);
-  if (taps) {
-    parts.push(
-      stageMode
-        ? "taps: stage mode, the whole frame is the stage"
-        : "taps: the code editor covers the stage — taps on code lines go to the editor; the Stage button hides it",
-    );
-  }
-  return parts.length ? ` — ${parts.join("; ")}` : "";
 }
 
 /**
@@ -2216,8 +1250,8 @@ function evaluationSuperseded(editor: any, generation: number, seq: number): boo
   if (seq === evaluationSeq && isSchedulerStarted()) {
     // Not playing FIRST, so the stop's `update` event is a no-op for the state
     // listener and cannot write "Ready" over the canceller's status.
-    isPlaying = false;
-    audioBlocked = false;
+    widgetState.setIsPlaying(false);
+    widgetState.setAudioBlocked(false);
     audibleStatus = null;
     try {
       editor.stop?.();
@@ -2343,12 +1377,7 @@ function installEvaluateHook(editor: any): void {
     const code = typeof editor.code === "string" ? editor.code : currentCode;
     stageVisuals(code);
     // A fresh pattern gets a fresh missing-sound report.
-    missingSounds.clear();
-    missingSoundReported = false;
-    if (missingSoundTimer !== null) {
-      clearTimeout(missingSoundTimer);
-      missingSoundTimer = null;
-    }
+    resetMissingSounds();
     // superdough loads its AudioWorklets (supersaw, pulse, crush, djf, …) only
     // on the first mousedown AFTER Strudel loaded — so a piece that started
     // without one played those silent, and a .djf() anywhere silenced its
@@ -2467,11 +1496,11 @@ function installStateListener(element: HTMLElement): void {
   (element as any).__musicStudioStateHooked = true;
   element.addEventListener("update", (event) => {
     const started = (event as CustomEvent).detail?.started;
-    if (typeof started !== "boolean" || started === isPlaying) return;
-    isPlaying = started;
+    if (typeof started !== "boolean" || started === widgetState.isPlaying) return;
+    widgetState.setIsPlaying(started);
     // The scheduler's clock has created the context by now; follow its state.
     if (started) watchAudioContext(replAudioContext());
-    audioBlocked = started && audioIsBlockedNow();
+    widgetState.setAudioBlocked(started && audioIsBlockedNow());
     if (!started) {
       audibleStatus = null;
       // A stop from the editor itself (Ctrl+., hush()) — clear the layers too.
@@ -2481,275 +1510,11 @@ function installStateListener(element: HTMLElement): void {
     // A stop nobody announced (hush(), the editor's own stop key) left the
     // status reading "Playing..." over silence. An error stays up, and so does
     // the recording status.
-    if (!started && !isRecording && !statusEl.classList.contains("error")) {
+    if (!started && !widgetState.isRecording && !statusEl.classList.contains("error")) {
       setStatus("Ready", "normal");
     }
     scheduleStateReport();
   });
-}
-
-// =============================================================================
-// Recording — tap Strudel's audio graph via MediaRecorder
-//
-// Container negotiation: WebM/Opus is what Chromium gives us, but Safari and
-// WKWebView (which is what an ext-apps host is on macOS/iOS) record MP4/AAC and
-// support NO webm at all — the old code tried two webm types and gave up, so
-// "Record" was simply dead there. Walk a candidate list through
-// MediaRecorder.isTypeSupported() instead, and keep whichever type was actually
-// negotiated so decodeAudioData() is handed a blob whose type is true.
-//
-// A recording also owns its own chunk array. The chunks used to live in a
-// module-level `recordedChunks` that startRecording() reset, so a late
-// `ondataavailable` from the PREVIOUS recorder appended into the new
-// recording's buffer and the WAV came out spliced.
-// =============================================================================
-
-/** Tried in order; the first supported one wins. "" = let the UA choose. */
-const RECORDING_MIME_CANDIDATES = [
-  "audio/webm;codecs=opus",
-  "audio/webm",
-  "audio/ogg;codecs=opus",
-  "audio/mp4;codecs=mp4a.40.2", // Safari / WKWebView
-  "audio/mp4",
-  "",
-];
-
-/** Bounds. A recording is decoded whole into memory, so it cannot be open-ended. */
-const MAX_RECORDING_MINUTES = 5;
-const MAX_RECORDING_MS = MAX_RECORDING_MINUTES * 60_000;
-const MAX_RECORDING_BYTES = 50 * 1024 * 1024;
-
-interface Recording {
-  chunks: Blob[];
-  mimeType: string;
-  bytes: number;
-}
-
-/** The recorder currently filling, and the finished one the ↓ button exports. */
-let activeRecording: Recording | null = null;
-let lastRecording: Recording | null = null;
-let recordingLimitTimer: ReturnType<typeof setTimeout> | null = null;
-
-/**
- * The MIME type to record in — `""` meaning "let the UA choose" — or null when
- * this browser has no MediaRecorder at all.
- *
- * The null case is why the `typeof` check is spelled out rather than folded
- * into the loop's `MediaRecorder?.isTypeSupported`: optional chaining does NOT
- * protect an UNDECLARED identifier. On a browser without MediaRecorder that
- * expression threw a ReferenceError, and it ran BEFORE the constructor's
- * try/catch — so the one handler written for exactly this case ("Recording not
- * supported on this browser") never saw it and the Record click died silently.
- */
-function pickRecordingMime(): string | null {
-  if (typeof MediaRecorder === "undefined") return null;
-  const canCheck = typeof MediaRecorder.isTypeSupported === "function";
-  for (const mime of RECORDING_MIME_CANDIDATES) {
-    if (mime === "") break;
-    if (!canCheck || MediaRecorder.isTypeSupported(mime)) return mime;
-  }
-  return ""; // no named type claimed support — let the UA pick its default
-}
-
-function setupRecordingTap(): MediaStream | null {
-  try {
-    // After prebake(), audio functions are on globalThis, NOT window.strudel
-    const audioCtx: AudioContext | undefined = (window as any).getAudioContext?.();
-    if (!audioCtx) return null;
-
-    const dest = audioCtx.createMediaStreamDestination();
-    // Master output: superdough controller's destinationGain node
-    const controller = (window as any).getSuperdoughAudioController?.();
-    // Record what is HEARD: after the master limiter when there is one
-    // (Codex review — the export skipped the limiting playback had).
-    ensureLimiter();
-    const masterGain: AudioNode | undefined = currentLimiter() ?? controller?.output?.destinationGain;
-    if (masterGain?.connect) {
-      masterGain.connect(dest);
-      recordingMasterGain = masterGain;
-      recordingDest = dest;
-      return dest.stream;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function startRecording(): void {
-  if (!recordingStream) {
-    recordingStream = setupRecordingTap();
-  }
-  if (!recordingStream) {
-    setStatus("Recording not available", "error");
-    return;
-  }
-
-  const mime = pickRecordingMime();
-  if (mime === null) {
-    setStatus("Recording not supported on this browser", "error");
-    return;
-  }
-  try {
-    mediaRecorder = mime
-      ? new MediaRecorder(recordingStream, { mimeType: mime })
-      : new MediaRecorder(recordingStream);
-  } catch {
-    setStatus("Recording not supported on this browser", "error");
-    return;
-  }
-
-  // Closed over, so a late callback from a PREVIOUS recorder fills its own
-  // buffer and can never splice itself into this recording.
-  const recorder = mediaRecorder;
-  const recording: Recording = {
-    chunks: [],
-    mimeType: recorder.mimeType || mime || "audio/webm",
-    bytes: 0,
-  };
-  activeRecording = recording;
-
-  recorder.ondataavailable = (e) => {
-    if (e.data.size === 0) return;
-    recording.chunks.push(e.data);
-    recording.bytes += e.data.size;
-    if (recording.bytes >= MAX_RECORDING_BYTES && activeRecording === recording) {
-      stopRecording("size");
-    }
-  };
-
-  recorder.onstop = () => {
-    // The negotiated type is only reliably readable once recording has begun.
-    recording.mimeType = recorder.mimeType || recording.mimeType;
-    if (recording.chunks.length > 0) lastRecording = recording;
-    downloadBtn.disabled = !lastRecording;
-  };
-
-  recorder.start(100);
-  isRecording = true;
-  recordBtn.classList.add("recording");
-  recordBtn.textContent = "Stop Rec";
-  setStatus("Recording...", "playing");
-
-  if (recordingLimitTimer !== null) clearTimeout(recordingLimitTimer);
-  recordingLimitTimer = setTimeout(() => {
-    recordingLimitTimer = null;
-    if (activeRecording === recording) stopRecording("time");
-  }, MAX_RECORDING_MS);
-}
-
-/** `reason` is set when a bound tripped, so the status can say why it ended. */
-function stopRecording(reason?: "time" | "size"): void {
-  if (recordingLimitTimer !== null) {
-    clearTimeout(recordingLimitTimer);
-    recordingLimitTimer = null;
-  }
-  if (mediaRecorder?.state === "recording") {
-    mediaRecorder.stop();
-  }
-  if (!isRecording) return;
-  isRecording = false;
-  activeRecording = null;
-  recordBtn.classList.remove("recording");
-  recordBtn.textContent = "Record";
-  if (reason === "time") {
-    setStatus(
-      `Recording stopped at the ${MAX_RECORDING_MINUTES}-minute limit — ready to download`,
-      "normal",
-    );
-    return;
-  }
-  if (reason === "size") {
-    setStatus("Recording stopped at the size limit — ready to download", "normal");
-    return;
-  }
-  if (isPlaying) {
-    showPlayingStatus("Playing...", "playing");
-  } else {
-    setStatus("Ready", "normal");
-  }
-}
-
-/**
- * Resolve once the browser has had a chance to paint — a frame, then a task —
- * so a "..." set just before heavy work is on screen. Capped, because
- * requestAnimationFrame never fires in a hidden or throttled frame.
- */
-function afterNextPaint(): Promise<void> {
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      resolve();
-    };
-    requestAnimationFrame(() => setTimeout(finish, 0));
-    setTimeout(finish, 100);
-  });
-}
-
-/**
- * Export the last recording through ONE `ui/download-file` message (#32).
- *
- * WAV when it fits under MAX_WAV_BASE64_CHARS (≈ 2 min of 48 kHz stereo),
- * otherwise the recorder's native container as-is (src/recording-export.ts).
- * The size is known from the decoded buffer before anything is encoded, and
- * the encoding yields between time slices, so the frame keeps painting and
- * taking input instead of freezing while minutes of audio are converted.
- */
-async function handleDownload(): Promise<void> {
-  const recording = lastRecording;
-  if (!recording || recording.chunks.length === 0) return;
-  if (!canDownload) {
-    setStatus("Download not supported on this host", "error");
-    return;
-  }
-
-  downloadBtn.disabled = true;
-  downloadBtn.textContent = "...";
-  try {
-    await afterNextPaint();
-    const blob = new Blob(recording.chunks, { type: recording.mimeType });
-    const audioCtx = replAudioContext();
-    if (!audioCtx) throw new Error("No audio context");
-    // decodeAudioData() detaches the buffer it is handed; the blob keeps the
-    // bytes for a native export.
-    let decoded: AudioBuffer | null = await audioCtx.decodeAudioData(await blob.arrayBuffer());
-    const plan = planRecordingExport(decoded, recording.mimeType);
-    let bytes: Uint8Array;
-    if (plan.format === "wav") {
-      bytes = await audioBufferToWavBytesAsync(decoded);
-    } else {
-      bytes = new Uint8Array(await blob.arrayBuffer());
-    }
-    // Let the decoded float samples go before the base64 exists, rather than
-    // holding all three at once.
-    decoded = null;
-    const base64 = await bytesToBase64Async(bytes);
-
-    const result = await app.downloadFile({
-      contents: [
-        {
-          type: "resource",
-          resource: {
-            uri: `file:///${recordingFileStem()}.${plan.extension}`,
-            mimeType: plan.mimeType,
-            blob: base64,
-          },
-        },
-      ],
-    });
-    if (result?.isError) {
-      setStatus("Download was cancelled or refused by the host", "normal");
-    } else if (plan.format === "native") {
-      setStatus(nativeExportStatus(plan), "normal");
-    }
-  } catch (err) {
-    setStatus(`Download failed: ${(err as Error).message}`, "error");
-  } finally {
-    downloadBtn.textContent = "↓";
-    downloadBtn.disabled = !lastRecording;
-  }
 }
 
 // =============================================================================
@@ -2926,9 +1691,9 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
       reduced && typeof args.visuals === "string" && args.visuals.startsWith("hydra-");
     finalCode = applyVisualPreset(finalCode, args.visuals, { allowHydra: !reduced });
     const commitSource = () => {
-      sentCode = code;
+      widgetState.setSentCode(code);
       runtimeCps = nextRuntimeCps;
-      hydraPresetSkippedForMotion = skippedForMotion;
+      widgetState.setHydraPresetSkippedForMotion(skippedForMotion);
       currentCode = finalCode;
       pendingPartialCode = "";
       stageVisuals(finalCode);
@@ -2965,7 +1730,7 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
 
     // Surface a non-blocking warning if soundfont registration failed —
     // explains silent/absent audio rather than swallowing it.
-    const soundfontNote = soundfontWarning
+    const soundfontNote = widgetState.soundfontWarning
       ? " (soundfonts unavailable — audio may be silent)"
       : "";
 
@@ -3007,7 +1772,7 @@ playBtn.addEventListener("click", async (event) => {
   const audioRunning = ensureAudioRunning();
   // The capture-phase gesture listener may already have unlocked audio before
   // this click arrived, so ask what the gesture STARTED over, not the live state.
-  const action = playTapAction(isPlaying, gestureLatch.consume() || audioBlocked);
+  const action = playTapAction(widgetState.isPlaying, gestureLatch.consume() || widgetState.audioBlocked);
   try {
     if (action === "resume-audio") {
       // The pattern is already running over a suspended context: this tap means
@@ -3016,7 +1781,7 @@ playBtn.addEventListener("click", async (event) => {
       await audioRunning;
       syncAudioState();
     } else if (action === "stop") {
-      if (isRecording) stopRecording();
+      if (widgetState.isRecording) stopRecording();
       editor.stop();
       updatePlayState(false);
       // The model was last told "playing"; say the music has stopped.
@@ -3053,7 +1818,7 @@ container.addEventListener(
 );
 
 recordBtn.addEventListener("click", () => {
-  if (isRecording) {
+  if (widgetState.isRecording) {
     stopRecording();
   } else {
     startRecording();
@@ -3155,15 +1920,15 @@ async function toggleDisplayMode(): Promise<void> {
 // turning them on for a plain pattern would show an empty dark stage. Turning
 // OFF always works; turning ON requires a draw method (else nudge the user).
 vizBtn.addEventListener("click", () => {
-  if (!vizVisible && !detectViz(getLiveCode()).any) {
+  if (!widgetState.vizVisible && !detectViz(getLiveCode()).any) {
     setStatus(
       "Add .pianoroll(), .scope() or `await initHydra()` to the pattern to see visuals",
       "normal",
     );
     return;
   }
-  vizManual = true;
-  vizVisible = !vizVisible;
+  widgetState.setVizManual(true);
+  widgetState.setVizVisible(!widgetState.vizVisible);
   applyVizVisibility();
 });
 
@@ -3179,37 +1944,37 @@ vizBtn.addEventListener("click", () => {
 const pieceStage = createPieceStagePolicy();
 function requestStageFromPiece(attempt = 0): void {
   const code = getEditor()?.code ?? currentCode;
-  if (!pieceStage.requested(code, stageMode)) return;
+  if (!pieceStage.requested(code, widgetState.stageMode)) return;
   if (document.activeElement?.closest?.(".cm-editor")) return;
   // The visuals the stage shows may appear a moment after the evaluation (Hydra).
-  if (!vizVisible) {
+  if (!widgetState.vizVisible) {
     if (attempt < 10) setTimeout(() => requestStageFromPiece(attempt + 1), 100);
     return;
   }
-  stageMode = true;
+  widgetState.setStageMode(true);
   pieceStage.opened(code);
   applyStageMode();
 }
 
 stageBtn.addEventListener("click", () => {
-  if (stageMode) pieceStage.left();
-  if (!stageMode && !vizVisible) {
+  if (widgetState.stageMode) pieceStage.left();
+  if (!widgetState.stageMode && !widgetState.vizVisible) {
     setStatus(
       "Stage mode needs a visual — add .pianoroll() or `await initHydra()`, or set the visuals parameter",
       "normal",
     );
     return;
   }
-  stageMode = !stageMode;
+  widgetState.setStageMode(!widgetState.stageMode);
   applyStageMode();
 });
 
 // Escape leaves the stage, the way it leaves any other "took over the frame"
 // mode. Bound on the document so it works with focus inside CodeMirror.
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && stageMode) {
+  if (event.key === "Escape" && widgetState.stageMode) {
     pieceStage.left();
-    stageMode = false;
+    widgetState.setStageMode(false);
     applyStageMode();
   } else if (event.key === "Escape" && !event.defaultPrevented && displayMode === "fullscreen") {
     // Leave fullscreen too: a share page's window fill never hears keys typed in
@@ -3220,12 +1985,7 @@ document.addEventListener("keydown", (event) => {
 
 syncStageAffordance();
 
-// Keep the canvas backing store DPR-correct as the editor/iframe resizes.
-vizResizeObserver = new ResizeObserver(() => {
-  syncVizCanvasSize();
-  syncEditorToWidth();
-});
-vizResizeObserver.observe(replSection);
+observeVisualSize(syncEditorToWidth);
 
 // =============================================================================
 // Live session — one player the model keeps changing (src/shared/session.ts)
@@ -3281,7 +2041,7 @@ function setSessionBadge(status: SessionStatus = sessionStatus): void {
  * with get-session) and was a second button writing into the chat: hidden.
  */
 function syncChatButtons(): void {
-  const inSession = !!session && sessionStatus !== "gone" && sessionStatus !== "ended";
+  const inSession = !!widgetState.session && sessionStatus !== "gone" && sessionStatus !== "ended";
   sendBtn.hidden = !canSendMessage || inSession;
   passBtn.hidden = !inSession;
   endBtn.hidden = !inSession;
@@ -3297,8 +2057,8 @@ function syncChatButtons(): void {
 }
 
 function startSession(id: string, origin: string, startRev = 0): void {
-  if (session || !SESSION_ID_RE.test(id) || !/^https:\/\/|^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return;
-  session = new SessionClient(origin.replace(/\/+$/, ""), id, {
+  if (widgetState.session || !SESSION_ID_RE.test(id) || !/^https:\/\/|^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return;
+  widgetState.setSession(new SessionClient(origin.replace(/\/+$/, ""), id, {
     fetch: (url, init) => fetch(url, init),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
@@ -3319,11 +2079,11 @@ function startSession(id: string, origin: string, startRev = 0): void {
         "playing",
       );
     },
-  }, startRev);
+  }, startRev));
   const ctx = app.getHostContext() as { platform?: string } | undefined;
   const host = (app as unknown as { getHostVersion?: () => { name?: string; version?: string } | undefined })
     .getHostVersion?.();
-  session.start({
+  widgetState.session!.start({
     host: host?.name ? `${host.name}${host.version ? ` ${host.version}` : ""}` : undefined,
     platform: ctx?.platform,
     caps: Object.keys(app.getHostCapabilities() ?? {}),
@@ -3331,12 +2091,12 @@ function startSession(id: string, origin: string, startRev = 0): void {
     widget: VERSION,
   });
   // The first report this widget made may have come before the session existed.
-  if (lastReportText) session.log({ t: "report", text: lastReportText }, true);
+  if (widgetState.lastReportText) widgetState.session!.log({ t: "report", text: widgetState.lastReportText }, true);
   lastControlSurface = "";
   logControlSurface();
   // State a piece already remembers when the session starts.
   const remembered = stage.remembered();
-  if (remembered.length) session.rememberedState(remembered);
+  if (remembered.length) widgetState.session!.rememberedState(remembered);
 }
 
 /**
@@ -3378,11 +2138,11 @@ function scheduleSpliceSweep(): void {
 }
 
 function applySessionPattern(pattern: QueuedPattern): Promise<ApplyOutcome> {
-  return quantizedSwap(pattern.code, pattern.quantize, () => (session ? null : "the player closed"), {
+  return quantizedSwap(pattern.code, pattern.quantize, () => (widgetState.session ? null : "the player closed"), {
     // Tell the service at once which bar THIS player picked: update-session
     // reports it instead of the server's estimate (a field run said "cycle 40"
     // for a swap the player put on 48).
-    onQueued: (boundary) => session?.log({ t: "scheduled", rev: pattern.rev, boundary }, true),
+    onQueued: (boundary) => widgetState.session?.log({ t: "scheduled", rev: pattern.rev, boundary }, true),
   });
 }
 
@@ -3411,7 +2171,7 @@ async function quantizedSwap(
   if (mine !== sessionApplySeq) return replaced;
   hooks.beforeLoad?.();
   lastProgrammaticCode = code;
-  sentCode = code;
+  widgetState.setSentCode(code);
   currentCode = code;
   editor.setCode(code);
   if (!isSchedulerStarted()) {
@@ -3456,7 +2216,7 @@ async function quantizedSwap(
   if (typeof editor.code === "string" && editor.code !== code) {
     return { ok: false, cycle: null, error: "the code was edited before the bar; not swapped" };
   }
-  lastReportText = "";
+  widgetState.setLastReportText("");
   const ranBefore = evaluationSeq;
   const mark: SwapEvaluation = { code, seq: mine, boundary, refused: false };
   swapEvaluation = mark;
@@ -3473,7 +2233,7 @@ async function quantizedSwap(
     error: msg === null ? null : msg + sourceLineNote(msg, code, code),
     cancelled: cancelled(),
     cycle: boundary ?? stageEnv.audibleCycle(),
-    report: lastReportText || undefined,
+    report: widgetState.lastReportText || undefined,
     replaced,
   });
 }
@@ -3491,24 +2251,24 @@ function logControlSurface(): void {
   const key = JSON.stringify(list.map(({ name, kind, source }) => [name, kind, source]));
   if (key === lastControlSurface) return;
   lastControlSurface = key;
-  session?.log({ t: "controls", list }, true);
+  widgetState.session?.log({ t: "controls", list }, true);
 }
 
 /** A successful evaluation of code we did not put there is the human's edit. */
 function noteHumanEdit(code: string): void {
-  if (!session) return;
+  if (!widgetState.session) return;
   if (code.trim() === lastProgrammaticCode.trim() || code === lastLoggedEdit) return;
   lastLoggedEdit = code;
-  session.log({ t: "edit", cycle: stageEnv.audibleCycle(), code, chars: code.length }, true);
+  widgetState.session.log({ t: "edit", cycle: stageEnv.audibleCycle(), code, chars: code.length }, true);
 }
 
 // End session: the listener closes it. The pattern keeps playing locally;
 // the service is told (a listening model hears it at once) and this player
 // stops polling and logging.
 endBtn.addEventListener("click", async () => {
-  if (!session) return;
+  if (!widgetState.session) return;
   endBtn.disabled = true;
-  const ok = await session.end(stageEnv.audibleCycle()).finally(() => (endBtn.disabled = false));
+  const ok = await widgetState.session.end(stageEnv.audibleCycle()).finally(() => (endBtn.disabled = false));
   setStatus(
     ok
       ? "Session ended — the music keeps playing here"
@@ -3518,11 +2278,11 @@ endBtn.addEventListener("click", async () => {
 });
 
 passBtn.addEventListener("click", async () => {
-  if (!session) return;
+  if (!widgetState.session) return;
   passBtn.disabled = true;
   // A model listening with get-session(wait) reads the Pass straight away:
   // no chat message (one could not land mid-turn anyway).
-  const heard = await session.pass(stageEnv.audibleCycle()).finally(() => (passBtn.disabled = false));
+  const heard = await widgetState.session.pass(stageEnv.audibleCycle()).finally(() => (passBtn.disabled = false));
   if (heard) {
     setStatus("Passed — Claude is answering", "playing");
     return;
@@ -3539,7 +2299,7 @@ passBtn.addEventListener("click", async () => {
         {
           type: "text",
           text:
-            `Your turn (live session ${session.id}). Read what I just did with get-session, ` +
+            `Your turn (live session ${widgetState.session.id}). Read what I just did with get-session, ` +
             "then answer on the player with update-session.",
         },
       ],
@@ -3621,7 +2381,7 @@ app.ontoolcancelled = (params) => {
   viewIds.abandon();
   pendingPartialCode = "";
   streamingBoot = null;
-  if (isRecording) stopRecording();
+  if (widgetState.isRecording) stopRecording();
   getEditor()?.stop?.();
   updatePlayState(false);
   const reason = params?.reason ? ` (${params.reason})` : "";
@@ -3632,45 +2392,19 @@ app.ontoolcancelled = (params) => {
 // tears this instance down, so a discarded widget leaves nothing running.
 app.onteardown = () => {
   try {
-    session?.stop();
-    session = null;
+    widgetState.session?.stop();
+    widgetState.setSession(null);
     studioSession.dispose();
     // Invalidate any in-flight render/boot so a late `await` can't repopulate
     // the DOM of a widget the host has already discarded.
     renderGeneration++;
-    if (isRecording) stopRecording();
-    if (mediaRecorder?.state === "recording") mediaRecorder.stop();
-    mediaRecorder = null;
-    activeRecording = null;
-    if (recordingLimitTimer !== null) {
-      clearTimeout(recordingLimitTimer);
-      recordingLimitTimer = null;
-    }
+    teardownRecording();
     const editor = getEditor();
     editor?.stop?.();
     updatePlayState(false);
-    // Disconnect ONLY the recording tap from the master output (not the
-    // speakers): masterGain.disconnect(dest) targets just our tap edge.
-    if (recordingMasterGain && recordingDest) {
-      try {
-        (recordingMasterGain as any).disconnect(recordingDest);
-      } catch { /* edge may already be gone */ }
-    }
-    recordingMasterGain = null;
-    recordingDest = null;
-    recordingStream?.getTracks().forEach((t) => t.stop());
-    recordingStream = null;
-    vizResizeObserver?.disconnect();
-    vizResizeObserver = null;
-    hydraCanvasObserver.disconnect();
-    if (hydraLateResize !== null) {
-      clearTimeout(hydraLateResize);
-      hydraLateResize = null;
-    }
-    if (missingSoundTimer !== null) {
-      clearTimeout(missingSoundTimer);
-      missingSoundTimer = null;
-    }
+    disconnectRecordingTap();
+    disconnectVisualObservers();
+    cancelMissingSoundReport();
     // A pending state report would fire into a host that has already let go.
     cancelStateReport();
     removeConsoleWatch();
@@ -3683,8 +2417,7 @@ app.onteardown = () => {
     stopGestureUnlock();
     // Its loops, tap listener and speech end with it.
     stage.stop();
-    drawLayers.forEach((layer) => layer.remove());
-    drawLayers.clear();
+    removeDrawLayers();
     watchedAudioContext?.removeEventListener("statechange", syncAudioState);
     watchedAudioContext = null;
   } catch { /* best-effort cleanup */ }
@@ -3754,7 +2487,7 @@ const studioSession = createStudioSession({
     // Any waiting swap or session update stands down (it answers "replaced").
     sessionApplySeq++;
     // A replacement is staged stopped; Play is a separate, explicit action.
-    if (isRecording) stopRecording();
+    if (widgetState.isRecording) stopRecording();
     getEditor()?.stop?.();
     updatePlayState(false);
     const before = getLiveCode();
@@ -3783,15 +2516,15 @@ const studioSession = createStudioSession({
       () => (isCancelled() ? "replaced before it played by a newer edit, swap, play, undo or stop" : null),
       hooks,
     );
-    if (outcome.ok && session) {
+    if (outcome.ok && widgetState.session) {
       // The booth's other side sees it like a human edit (it came from the
       // user's page — e.g. their browser agent), and /s/<id> follows it.
-      session.log({
+      widgetState.session.log({
         t: "report",
         text: `swap-pattern (a tool on the user's page) swapped new code in${outcome.cycle !== null ? ` at cycle ${outcome.cycle.toFixed(1)}` : ""}.`,
       });
       lastLoggedEdit = code;
-      session.log({ t: "edit", cycle: outcome.cycle, code, chars: code.length }, true);
+      widgetState.session.log({ t: "edit", cycle: outcome.cycle, code, chars: code.length }, true);
     }
     return outcome;
   },
@@ -3808,7 +2541,7 @@ const studioSession = createStudioSession({
     sessionApplySeq++;
     renderGeneration++;
     playPresses++;
-    if (isRecording) stopRecording();
+    if (widgetState.isRecording) stopRecording();
     getEditor()?.stop?.();
     updatePlayState(false);
     scheduleStateReport();
@@ -3825,10 +2558,10 @@ app.connect().then(() => {
 
   // Download is host-mediated; if unsupported (e.g. mobile), hide the
   // download/record flow so users don't hit a raw -32601 error.
-  canDownload = !!caps?.downloadFile;
+  widgetState.setCanDownload(!!caps?.downloadFile);
   // Runtime feedback to the model (eval failures, what's actually playing).
-  canUpdateModelContext = !!caps?.updateModelContext;
-  if (!canDownload) {
+  widgetState.setCanUpdateModelContext(!!caps?.updateModelContext);
+  if (!widgetState.canDownload) {
     downloadBtn.hidden = true;
     recordBtn.hidden = true;
     recordBtn.title = "Recording export not supported on this host";
@@ -3849,7 +2582,7 @@ if (document.documentElement.dataset.audition) container.inert = true;
 if (document.documentElement.dataset.studio === "true" && !document.documentElement.dataset.audition) {
   companion = installStrudelCompanion({
     container, stage: replSection, status: statusEl, editor: getEditor,
-    playing: isSchedulerStarted, recording: () => isRecording,
+    playing: isSchedulerStarted, recording: () => widgetState.isRecording,
   });
   // Host teardown, not only pagehide: a host can unmount the frame without one (Kimi review).
   studioSession.onDispose(() => companion?.dispose());

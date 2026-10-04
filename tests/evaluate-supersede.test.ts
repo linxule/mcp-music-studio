@@ -104,13 +104,14 @@ async function loadHook() {
     let swapEvaluation = null;
     const applySplice = (_editor, _previous, boundary) => { log.splices.push(boundary); };
     let renderGeneration = 0;
-    let isPlaying = false;
-    let audioBlocked = false;
+    const widgetState = {
+      isPlaying: false, audioBlocked: false,
+      setIsPlaying(value) { this.isPlaying = value; },
+      setAudioBlocked(value) { this.audioBlocked = value; },
+    };
     let audibleStatus = null;
     let currentCode = "";
-    let missingSoundReported = false;
-    let missingSoundTimer = null;
-    const missingSounds = new Set();
+    const resetMissingSounds = () => {};
     const AUDIO_SETTLE_MS = 300;
     const installEvalScopeHooks = () => {};
     const snapshotStrudelGlobals = () => {};
@@ -144,7 +145,7 @@ async function loadHook() {
       playPressed: () => playPressed,
       installEvaluateHook,
       cancel: () => { renderGeneration++; },
-      isPlaying: () => isPlaying,
+      isPlaying: () => widgetState.isPlaying,
     };
     `,
     ctx,
