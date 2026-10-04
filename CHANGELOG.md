@@ -4,6 +4,9 @@ Notable changes per release, newest first. Every release, including those not li
 
 ## Unreleased
 
+- **Point at a note.** Click a note on the score to hear it and select its ABC in the source pane. The review tools ("explain this", "suggest an edit") then work on that selection, so you can point instead of typing bar numbers. Shift-click extends the selection. On a phone, a finger that scrolls the score no longer counts as a click.
+- **Practice row** under the sheet-music transport. **Loop selection** plays the selected notes over and over, including a stretch that runs to the end of the tune. A score with two or more voices gets one toggle per voice to mute it, and muting keeps your place. The tempo field slows the tune down as before.
+- **Fixed: pausing after a jump on the progress bar resumed at the wrong place.** After clicking the progress bar while a tune played, pause and ▶ restarted the audio from where it would have been without the jump (measured: 1.15 s instead of 3.6 s), while the notes lit up at the right place. abcjs's backup timer also stacked up on every such jump (measured: 61 → 306 ticks a second after 14 loop passes). Both are worked around in the widget.
 - Gallery: **Still Water — just the music** (`still-water`), a ninth piece with no controls, film or drawing: a 48-bar downtempo track (arrange, per-layer sound design, `.velocity()` ducking, development from one four-bar idea). The gallery index says when to reach for it.
 
 ## 0.11.3 — October 4, 2026

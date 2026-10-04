@@ -162,9 +162,7 @@ describe("sheet music widget", () => {
     const engrave = fn.slice(0, fn.indexOf("\n}\n"));
     expect(engrave.match(/ABCJS\.renderAbc\(/g)).toHaveLength(2);
     expect(engrave).toContain("{ ...SCORE_RENDER_OPTIONS, paddingright }");
-    expect(ABC).toContain(
-      'const SCORE_RENDER_OPTIONS = { responsive: "resize", add_classes: true } as const;',
-    );
+    expect(ABC).toMatch(/const SCORE_RENDER_OPTIONS = \{\s*responsive: "resize",\s*add_classes: true,/);
     // Full renders, the editor and the streaming preview all use it.
     expect(ABC).toContain("state.visualObj = engraveScore(abcWithStyle);");
     expect(ABC).toContain("const visualObj = engraveScore(effective);");

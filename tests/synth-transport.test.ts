@@ -16,14 +16,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   TransportQueue,
   carryWarp,
+  fixRunningSeek,
   keepLoopLitThroughWarp,
   noteGestureStart,
+  oneJogger,
   pauseTransport,
   queueWarp,
   readTransport,
   reprime,
   restoreLoop,
+  seekTransport,
   trackTransport,
+  transportPosition,
   warpedTempo,
   whenTransportIdle,
 } from "../src/synth-transport";
@@ -945,5 +949,159 @@ describe("carrying the transport into a new controller (#26)", () => {
     const cancelled = await playingWithLoop();
     pauseTransport(cancelled.ctrl); // ontoolcancelled → stopPlayback()
     expect(readTransport(cancelled.ctrl).wasPlaying).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Practice mode: seeking, the playhead through a voice mute, the timer's jogger
+// -----------------------------------------------------------------------------
+
+describe("a running seek keeps the audio clock (abcjs CreateSynth)", () => {
+  /** abcjs's real CreateSynth, past init/prime: running, no real sources. */
+  function runningBuffer(startedAt: number) {
+    const buffer = new ABCJS.synth.CreateSynth() as unknown as Record<string, any>;
+    buffer.audioBufferPossible = true;
+    buffer.isRunning = true;
+    buffer.startTimeSec = startedAt;
+    buffer.directSource = [];
+    buffer._kickOffSound = () => {
+      buffer.isRunning = true;
+    };
+    return buffer;
+  }
+
+  function withClock<T>(run: (ctx: { currentTime: number }) => T): T {
+    const g = globalThis as { window: Record<string, any> };
+    const saved = g.window.abcjsAudioContext;
+    const ctx = { state: "running", resume: () => Promise.resolve(), currentTime: 0 };
+    g.window.abcjsAudioContext = ctx;
+    try {
+      return run(ctx);
+    } finally {
+      g.window.abcjsAudioContext = saved;
+    }
+  }
+
+  it("pins abcjs: pause after a running seek resumes from the OLD clock", () =>
+    withClock((ctx) => {
+      ctx.currentTime = 10;
+      const buffer = runningBuffer(9); // 1 s in
+      buffer.seek(3, "seconds"); // jump to 3 s
+      ctx.currentTime = 10.5; // half a second later: really at 3.5 s
+      expect(buffer.pause()).toBeCloseTo(1.5); // abcjs: 1.5 s (fails the day abcjs fixes it)
+    }));
+
+  it("fixRunningSeek: the pause after it lands where the audio is", () =>
+    withClock((ctx) => {
+      ctx.currentTime = 10;
+      const buffer = runningBuffer(9);
+      expect(fixRunningSeek(buffer, () => ctx.currentTime)).toBe(true);
+      buffer.seek(3, "seconds");
+      ctx.currentTime = 10.5;
+      expect(buffer.pause()).toBeCloseTo(3.5);
+    }));
+
+  it("…in percent too (the progress bar), and a paused seek is left alone", () =>
+    withClock((ctx) => {
+      ctx.currentTime = 10;
+      const buffer = runningBuffer(9);
+      buffer.duration = 4.5;
+      buffer.fadeLength = 500;
+      fixRunningSeek(buffer, () => ctx.currentTime);
+      buffer.seek(0.5); // (4.5 - 0.5) * 0.5 = 2 s
+      ctx.currentTime = 11;
+      expect(buffer.pause()).toBeCloseTo(3);
+      buffer.seek(1, "seconds"); // paused: abcjs's own pausedTimeSec is right
+      expect(buffer.pausedTimeSec).toBe(1);
+    }));
+});
+
+describe("oneJogger", () => {
+  it("lets one 60 ms chain through and ends the duplicates", () => {
+    let ticks = 0;
+    let now = 0;
+    const timer = { animationJogger: () => void ticks++ };
+    expect(oneJogger(timer, () => now)).toBe(true);
+    // Two chains, 10 ms apart: only one tick per interval survives.
+    for (const t of [0, 10, 60, 70, 120, 130]) {
+      now = t;
+      timer.animationJogger();
+    }
+    expect(ticks).toBe(3);
+    expect(oneJogger(timer, () => now)).toBe(true); // idempotent
+  });
+});
+
+describe("transportPosition", () => {
+  it("reads the running timer's clock, a paused timer's percent, and 0 otherwise", () => {
+    expect(transportPosition({ timer: null })).toBe(0);
+    expect(
+      transportPosition({ timer: { isRunning: true, startTime: 1000, lastMoment: 6000 } }, 3500),
+    ).toBeCloseTo(2.5);
+    expect(
+      transportPosition({ timer: { isRunning: false, pausedPercent: 0.5, lastMoment: 6000 } }),
+    ).toBeCloseTo(3);
+    expect(
+      transportPosition({ timer: { isRunning: false, pausedPercent: null, lastMoment: 6000 } }),
+    ).toBe(0);
+  });
+});
+
+describe("reprime keepPosition (a voice mute keeps the playhead)", () => {
+  /** A harness whose go() builds a timer that records seeks and starts. */
+  function seekable() {
+    const h = harness();
+    const go = h.ctrl.go;
+    const seeks: Array<[number, string | undefined]> = [];
+    const starts: unknown[] = [];
+    h.ctrl.go = () =>
+      go().then((result: unknown) => {
+        h.ctrl.timer = {
+          start: (p: unknown) => starts.push(p),
+          pause: noop,
+          stop: noop,
+          reset: noop,
+          setProgress: (p: number, u?: string) => seeks.push([p, u]),
+          lastMoment: 6000,
+        };
+        return result;
+      });
+    return { ...h, seeks, starts };
+  }
+
+  it("seeks the re-primed tune back to where it was, BEFORE playing on", async () => {
+    const h = seekable();
+    await h.ctrl.setTune(TUNE, false);
+    await h.ctrl.play();
+    Object.assign(h.ctrl.timer, { isRunning: true, startTime: performance.now() - 2500 });
+    h.seeks.length = 0;
+    h.starts.length = 0;
+    await reprime(h.ctrl, {
+      prime: () => h.ctrl.setTune(TUNE, true),
+      stillWanted: () => true,
+      keepPosition: true,
+    });
+    const seek = h.seeks.find(([, units]) => units === "seconds");
+    expect(seek?.[0]).toBeGreaterThan(2.4);
+    expect(seek?.[0]).toBeLessThan(2.7);
+    expect(h.ctrl.isStarted).toBe(true);
+    // The seek came before the start: setTune's own rewind is the only earlier one.
+    expect(h.seeks.indexOf(seek!)).toBeGreaterThan(0);
+    expect(h.starts.length).toBe(1);
+  });
+
+  it("without it, a re-prime still starts from the top", async () => {
+    const h = seekable();
+    await h.ctrl.setTune(TUNE, false);
+    await h.ctrl.play();
+    Object.assign(h.ctrl.timer, { isRunning: true, startTime: performance.now() - 2500 });
+    h.seeks.length = 0;
+    await reprime(h.ctrl, { prime: () => h.ctrl.setTune(TUNE, true), stillWanted: () => true });
+    expect(h.seeks.some(([, units]) => units === "seconds")).toBe(false);
+  });
+
+  it("seekTransport does nothing on a controller that never primed", () => {
+    const h = harness();
+    expect(() => seekTransport(h.ctrl, 2)).not.toThrow();
   });
 });
