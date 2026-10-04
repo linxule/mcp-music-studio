@@ -36,7 +36,7 @@ export interface StudioSnapshot {
   error: string | null;
   settings?: Record<string, unknown>;
   selection?: { from: number; to: number; text: string };
-  /** Live widgets: Play was pressed on the page (the Play button or the editor's evaluate keys) and that evaluation succeeded. */
+  /** Play was pressed in the widget (Strudel: the Play button or the editor's evaluate keys, and that evaluation succeeded; score: ▶ or ⌘/Ctrl+Enter, and playback started). */
   playPressed?: boolean;
 }
 

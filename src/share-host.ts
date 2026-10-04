@@ -8,13 +8,14 @@
 // frame but work on a top-level page.
 //
 // So this page hosts the SAME widget the MCP app renders (dist/strudel-app.html,
-// served by the Worker at /widget/strudel) through the SDK's own host side —
+// served by the Worker at /widget/strudel; for a score, dist/mcp-app.html at
+// /widget/sheet) through the SDK's own host side —
 // AppBridge + PostMessageTransport, as dev/host.ts does — and grants its frame
 // what a chat host can't: autoplay, microphone, motion sensors, MIDI,
 // fullscreen, and real file downloads.
 //
-// The pattern arrives with autoplay OFF: a shared page plays on a deliberate
-// press (CLAUDE.md, "Shared Strudel pages require deliberate evaluation").
+// The pattern or score arrives with autoplay OFF: a shared page plays on a
+// deliberate press (CLAUDE.md, "Shared Strudel pages require deliberate evaluation").
 // A /s/<id> page also passes _meta.session, so the widget joins a live session
 // as a second screen.
 //
@@ -29,7 +30,12 @@ import { shareRelayAnnotations, shareRelayExclude } from "./share-relay-policy";
 import { enterStageFullscreen, leaveStageFullscreen, stageIsFullscreen, VIEWPORT_FILL_CLASS } from "./share-fullscreen";
 
 interface ShareInit {
-  code: string;
+  /** What the page plays: a Strudel pattern (the default) or an ABC score. */
+  kind?: "play" | "score";
+  /** kind "play": the pattern. */
+  code?: string;
+  /** kind "score": play-sheet-music's arguments (src/shared/share-url.ts ScoreShareArgs). */
+  score?: { abcNotation: string } & Record<string, unknown>;
   title?: string;
   bpm?: number;
   /** A live session for the widget to join (a /s/<id> page). */
@@ -48,12 +54,16 @@ const stage = document.getElementById("stage") as HTMLDivElement;
 const note = document.getElementById("note") as HTMLDivElement;
 const titleEl = document.getElementById("title") as HTMLHeadingElement;
 const classic = document.getElementById("classic") as HTMLAnchorElement;
+const isScore = init.kind === "score";
 
 if (init.title) {
   titleEl.textContent = init.title;
   document.title = `${init.title} — Music Studio`;
 } else if (init.session) {
   titleEl.textContent = "Live session";
+} else if (isScore) {
+  titleEl.textContent = "Shared score";
+  document.title = "Music Studio — shared score";
 }
 if (init.classic) {
   classic.href = init.classic;
@@ -103,16 +113,16 @@ function saveResource(resource: { uri?: string; mimeType?: string; blob?: string
 /**
  * The widget takes a moment after ui/initialize to apply the pattern it was
  * sent; an agent reading its state before then sees an empty draft and loses
- * its first edit to a revision conflict. Wait (bounded) for the pattern to land.
+ * its first edit to a revision conflict. Wait (bounded) for the source to land.
  */
-async function patternApplied(bridge: AppBridge, expected: string): Promise<void> {
+async function sourceApplied(bridge: AppBridge, expected: string, field: "code" | "abcNotation"): Promise<void> {
   if (!expected) return;
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     try {
       const result = await bridge.callTool({ name: "get-studio-state", arguments: {} }, { timeout: 5_000 });
-      const code = (result.structuredContent as { args?: { code?: unknown } } | undefined)?.args?.code;
-      if (typeof code === "string" && code.length > 0) return;
+      const source = (result.structuredContent as { args?: Record<string, unknown> } | undefined)?.args?.[field];
+      if (typeof source === "string" && source.length > 0) return;
     } catch {
       return; // no such tool, or no answer: nothing to wait for
     }
@@ -122,7 +132,8 @@ async function patternApplied(bridge: AppBridge, expected: string): Promise<void
 
 async function mount(): Promise<void> {
   const frame = document.createElement("iframe");
-  frame.title = init.title ? `${init.title} — Strudel player` : "Strudel player";
+  const player = isScore ? "Sheet music player" : "Strudel player";
+  frame.title = init.title ? `${init.title} — ${player}` : player;
   frame.setAttribute("allow", FRAME_ALLOW);
   frame.setAttribute("allowfullscreen", "");
   stage.appendChild(frame);
@@ -147,8 +158,9 @@ async function mount(): Promise<void> {
   const relay = createWidgetToolRelay({
     bridge,
     exclude: shareRelayExclude(() => playPressed),
-    descriptionSuffix:
-      "This controls the music player on this page. Playing and swapping are offered once Play has been pressed on this page.",
+    descriptionSuffix: isScore
+      ? "This controls the sheet-music player on this page. Playing is offered once Play has been pressed on this page."
+      : "This controls the music player on this page. Playing and swapping are offered once Play has been pressed on this page.",
     annotate: shareRelayAnnotations,
     onError: (error, what) => console.warn(`WebMCP relay: ${what}:`, error),
   });
@@ -162,12 +174,22 @@ async function mount(): Promise<void> {
     note.remove();
     if (sent) return;
     sent = true;
-    const args: Record<string, unknown> = { code: init.code, autoplay: false };
+    let args: Record<string, unknown>;
+    if (isScore) {
+      // play-sheet-music's own arguments: the widget normalises them as it
+      // does a tool call's (prepareToolInput), tempo, style and transpose included.
+      args = { ...init.score, autoplay: false };
+    } else {
+      args = { code: init.code, autoplay: false };
+      if (typeof init.bpm === "number") args.bpm = init.bpm;
+    }
     if (init.title) args.title = init.title;
-    if (typeof init.bpm === "number") args.bpm = init.bpm;
     await bridge.sendToolInput({ arguments: args });
     await bridge.sendToolResult({
-      content: [{ type: "text", text: init.session ? `Live session: ${init.session.id}.` : "Shared Strudel pattern." }],
+      content: [{
+        type: "text",
+        text: init.session ? `Live session: ${init.session.id}.` : isScore ? "Shared score." : "Shared Strudel pattern.",
+      }],
       _meta: {
         viewUUID: crypto.randomUUID(),
         // The page's own origin: the Worker served it, and behind a proxy (or
@@ -175,11 +197,18 @@ async function mount(): Promise<void> {
         ...(init.session ? { session: { id: init.session.id, origin: location.origin, rev: init.session.rev ?? 0 } } : {}),
       },
     });
-    // Tools appear once the pattern is in, so an agent's first read sees it.
-    if (relay) void patternApplied(bridge, init.code).then(syncRelay);
+    // Tools appear once the source is in, so an agent's first read sees it.
+    if (relay) {
+      void (isScore
+        ? sourceApplied(bridge, init.score?.abcNotation ?? "", "abcNotation")
+        : sourceApplied(bridge, init.code ?? "", "code")
+      ).then(syncRelay);
+    }
   };
-  // The widget reports after every evaluation; after the first one a press of
-  // Play started, its state says playPressed — then the play tools appear.
+  // The Strudel widget reports after every evaluation; after the first one a
+  // press of Play started, its state says playPressed — then the play tools
+  // appear. The sheet widget logs "play-pressed" instead (a report would
+  // replace its edit report in a chat host); either way the state decides.
   let checking = false;
   let recheck = false;
   const checkPlayPressed = async () => {
@@ -205,6 +234,9 @@ async function mount(): Promise<void> {
   bridge.onupdatemodelcontext = async () => {
     void checkPlayPressed();
     return {};
+  };
+  bridge.onloggingmessage = ({ data }) => {
+    if ((data as { event?: unknown } | null)?.event === "play-pressed") void checkPlayPressed();
   };
   bridge.onsizechange = () => {};
   bridge.ondownloadfile = async ({ contents }) => {

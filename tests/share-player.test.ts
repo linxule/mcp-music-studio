@@ -1,5 +1,5 @@
 // The full player on share links (src/share-host.ts + worker routes /play,
-// /p/<id>, /widget/strudel, /s/<id>): the real widget hosted by a page of our
+// /score, /p/<id>, /widget/strudel, /widget/sheet, /s/<id>): the real widget hosted by a page of our
 // own, and a live session's second screen.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -49,6 +49,18 @@ describe("the share host", () => {
 
   it("hands the widget the pattern with autoplay OFF — a share plays on a press", () => {
     expect(source).toMatch(/code: init\.code, autoplay: false/);
+  });
+
+  it("hands the sheet widget the score with autoplay OFF, which the widget honours", () => {
+    expect(source).toMatch(/\{ \.\.\.init\.score, autoplay: false \}/);
+    const widget = readFileSync(new URL("../src/mcp-app.ts", import.meta.url), "utf8");
+    expect(widget).toMatch(/autoplay: args\.autoplay !== false/);
+  });
+
+  it("re-checks playPressed when the sheet widget logs a press (its reports would replace the edit report)", () => {
+    expect(source).toMatch(/onloggingmessage[\s\S]{0,120}"play-pressed"[\s\S]{0,40}checkPlayPressed/);
+    const widget = readFileSync(new URL("../src/mcp-app.ts", import.meta.url), "utf8");
+    expect(widget).toMatch(/sendLog\(\{[^}]*event: "play-pressed"/);
   });
 
   it("grants the frame what a chat host can't: mic, motion sensors, MIDI, fullscreen", () => {

@@ -218,7 +218,7 @@ describe("widget wiring", () => {
 
   it("the sheet widget's tool-call render waits on the permit before play()", () => {
     const src = read("mcp-app.ts");
-    expect(src).toContain("applyScoreInput(args, { autoplay: true, permit })");
+    expect(src).toContain("applyScoreInput(args, { autoplay: args.autoplay !== false, permit })");
     expect(src).toContain("renderAbc(abc, preparedInput.synthOptions, transport)");
     const render = src.slice(src.indexOf("async function renderAbc("));
     const permit = render.indexOf("await transport.permit");

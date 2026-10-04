@@ -724,12 +724,35 @@ listenForAudioGestures(document, {
  */
 let playPresses = 0;
 
+/**
+ * Play was pressed in this widget (▶, or ⌘/Ctrl+Enter in the editor) and the
+ * playback it asked for started. The share page offers play-current-music to
+ * the browser's agent only after that (src/share-relay-policy.ts): on a link
+ * anyone can craft, nothing plays until Play is pressed there. Armed only by
+ * those two gestures; the next transport event consumes it, and only a start
+ * sets `playPressed` (a ▶ that paused, or a load that failed, does not).
+ */
+let playPressIntent = false;
+let playPressed = false;
+
+function notePlayPressed(): void {
+  if (playPressed) return;
+  playPressed = true;
+  // A log, not a model-context report: each report replaces the last, so this
+  // would erase an edit report in a chat host. The share page answers the
+  // nudge by reading get-studio-state, so the log itself is trusted for nothing.
+  void appInstance
+    ?.sendLog({ level: "info", logger: "music-studio", data: { event: "play-pressed" } })
+    .catch(() => {});
+}
+
 audioControlsEl.addEventListener(
   "click",
   (event) => {
     const target = event.target as Element | null;
     if (!target?.closest(".abcjs-midi-start") || disposed || !state.synthControl) return;
     playPresses++;
+    playPressIntent = true;
     if (isStale(synthControlOwner)) ownSynthControl(state.synthControl, renderGeneration);
   },
   { capture: true },
@@ -1280,6 +1303,7 @@ editorEl.addEventListener("input", scheduleEditRender);
 editorEl.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
     event.preventDefault();
+    playPressIntent = true;
     cancelEditRender();
     void applyEditorAbc(true);
   }
@@ -1664,6 +1688,8 @@ function onTransportEvent(
   // abcjs caches the failed samples' rejections: the retry must ask again.
   if (event.type === "load-failed") void forgetFailedSounds();
   if (disposed || state.synthControl !== control) return;
+  const pressed = playPressIntent;
+  playPressIntent = false;
   switch (event.type) {
     case "load-failed":
       console.error("Couldn't load sounds:", event.error);
@@ -1676,6 +1702,7 @@ function onTransportEvent(
       // released, a tempo change): it is stopped at once, and the canceller's
       // status stays up. The user's own ▶ takes ownership first, so it reads.
       if (ownerCancelled(control)) return;
+      if (pressed) notePlayPressed();
       return showTransportStatus("Playing...");
     case "paused":
       return showTransportStatus("Paused");
@@ -1915,7 +1942,9 @@ app.ontoolinput = (params) => {
     toolCallKey(app.getHostContext()?.toolInfo?.id, args),
     viewIds.take(),
   );
-  void applyScoreInput(args, { autoplay: true, permit }).catch(console.error);
+  // Not in the tool's schema: a host that plays only on a press (the share
+  // page, src/share-host.ts) sends autoplay: false, as it does to the Strudel widget.
+  void applyScoreInput(args, { autoplay: args.autoplay !== false, permit }).catch(console.error);
 };
 
 async function applyScoreInput(args: Record<string, unknown>, transport: RenderTransport, instrumentOverride = false, onCommit?: () => void) {
@@ -2171,6 +2200,7 @@ const studioSession = createStudioSession({
       playback: started ? (audioContext()?.state === "running" ? "playing" : "audio-blocked") : "stopped",
       status,
       error: statusEl.classList.contains("error") ? status : null,
+      playPressed,
       settings: {
         soundFont: state.currentSoundFont,
         room: liveRoom.isEnabled,
