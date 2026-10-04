@@ -359,6 +359,11 @@ stack(
   of its voiced middle repeats until the note ends (hold: true, the default).
   A long note is a long vowel, which is what singing is. hold: false plays
   each word once, as spoken, so long notes end early — talk-singing.
+- A held vowel feeds a reverb for the whole note, where a spoken word fed it
+  for a fifth of a second: give a sung line a small room (.room(0.3)
+  .roomsize(2); .room(0.6).roomsize(6) turns it into a wash) and a gain near
+  0.9. A word with no steady vowel (a very short one, or one that falls
+  straight into a consonant) is not held: it plays once, as spoken.
 - Silent until the line has loaded (about 2 s the first time; cached after).
 - Costs about 2% more of the voice budget than say() for the same line (the
   server also transcribes it). Same voices, same 240-character limit, English.

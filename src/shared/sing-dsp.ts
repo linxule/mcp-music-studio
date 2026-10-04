@@ -233,9 +233,13 @@ const OFFSET_GROW_SECONDS = 0.2;
  *   2. else, words run together: the deepest dip within ±150 ms of `at`;
  *   3. else `at`.
  */
-export function snapOnset(samples: Float32Array, sampleRate: number, at: number, wordEnd = at + 0.3): number {
+export function snapOnset(samples: Float32Array, sampleRate: number, at: number, wordEnd = at + 0.3, notBefore = 0): number {
   const duration = samples.length / sampleRate;
-  const from = Math.max(0, at - ONSET_SEARCH_SECONDS);
+  // Never back into the previous word: the search opens no earlier than
+  // `notBefore` (its loudest frame). Without it, "night" after "the" with no
+  // gap between them took the silence BEFORE "the" as its onset and every
+  // note began with the previous word's tail ("he he-llo-llo", field report).
+  const from = Math.max(0, at - ONSET_SEARCH_SECONDS, notBefore);
   const to = Math.min(duration, Math.max(wordEnd, at + ONSET_SEARCH_SECONDS));
   const frames = rmsFrames(samples, sampleRate, from, to);
   if (frames.length < 2) return at;
@@ -314,10 +318,19 @@ export interface AnalysedWord extends TimedWord {
 
 /** How long a loop window is, about: a whole number of pitch periods near this. */
 export const LOOP_SECONDS = 0.08;
+/**
+ * Shorter windows tried when no flat 80 ms exists (a short vowel: "is" falls
+ * 15 dB into its z within 80 ms); below the last, the word plays once.
+ */
+const LOOP_LADDER_SECONDS = [LOOP_SECONDS, 0.05, 0.035];
 /** A loop window's local pitch must sit this close to the word's anchor pitch. */
 const LOOP_MAX_CENTS = 50;
 /** Preferred: the pitch moves no more than this across the loop span. */
 const LOOP_STEADY_CENTS = 30;
+/** Preferred: the loudness moves no more than this across the loop span (× in energy = 3 dB). */
+const LOOP_STEADY_ENERGY = 2;
+/** A loop span is voiced throughout when at least this many 10 ms-hop pitch windows start inside it. */
+const LOOP_MIN_WINDOWS = 5;
 
 export interface LoopWindow {
   start: number;
@@ -342,6 +355,23 @@ export function findLoop(
   to: number,
   anchorHz: number,
   windows: PitchWindow[] = pitchWindows(samples, sampleRate, from, to),
+): LoopWindow | null {
+  // The first length with a flat window wins; a word with none plays once.
+  for (const seconds of LOOP_LADDER_SECONDS) {
+    const loop = findLoopOfLength(samples, sampleRate, from, to, anchorHz, windows, seconds);
+    if (loop) return loop;
+  }
+  return null;
+}
+
+function findLoopOfLength(
+  samples: Float32Array,
+  sampleRate: number,
+  from: number,
+  to: number,
+  anchorHz: number,
+  windows: PitchWindow[],
+  loopSeconds: number,
 ): LoopWindow | null {
   if (!(anchorHz > 0) || !windows.length) return null;
   const a = Math.max(0, Math.floor(from * sampleRate));
@@ -373,13 +403,43 @@ export function findLoop(
   const loud = near.filter((w) => w.energy >= peak * 0.5);
   const quieter = loud.length ? loud : near.filter((w) => w.energy >= peak * 0.2);
   const glide = (w: PitchWindow) =>
-    Math.max(0, ...windows.filter((x) => x.at >= w.at && x.at <= w.at + LOOP_SECONDS).map((x) => cents(x.hz, w.hz)));
+    Math.max(0, ...windows.filter((x) => x.at >= w.at && x.at <= w.at + loopSeconds).map((x) => cents(x.hz, w.hz)));
   const steady = quieter.filter((w) => glide(w) <= LOOP_STEADY_CENTS);
-  let best: { start: number; end: number; d: number } | null = null;
-  for (const w of steady.length ? steady : quieter) {
+  // And steady in loudness: a window on a swell or a decay repeats that ramp
+  // at the loop rate (12.5 Hz) and the held vowel stutters — "kind" wobbled
+  // ±6 dB every 80 ms and sounded like "ki-ki-ki" (field report, 0.12.3).
+  // The span must be voiced all the way: pitch windows exist only where YIN
+  // found a pitch, so a window at the end of the vowel ("kind": the n and the
+  // d closure follow) has a span that looks flat over its two windows and a
+  // loop that runs into near-silence — 22 dB of flutter (measured).
+  const spanWindows = (w: PitchWindow) => windows.filter((x) => x.at >= w.at && x.at <= w.at + loopSeconds);
+  const covered = (w: PitchWindow) => {
+    const span = spanWindows(w);
+    return span.length >= Math.min(LOOP_MIN_WINDOWS, Math.round(loopSeconds / 0.01) - 3) && span[span.length - 1].at >= w.at + loopSeconds - 0.045;
+  };
+  const whole = (steady.length ? steady : quieter).filter(covered);
+  const pool = whole.length ? whole : steady.length ? steady : quieter;
+  // Loudness across the exact segment, in 10 ms frames: a segment that dips
+  // (the vowel of "is" falling 16 dB into its z) repeats that dip at the loop
+  // rate and stutters. Preferred: within LOOP_STEADY_ENERGY; else the flattest.
+  const frame = Math.max(1, Math.round(sampleRate * 0.01));
+  const ripple = (start: number, end: number) => {
+    let lo = Infinity;
+    let hi = 0;
+    for (let i = start; i + frame <= end; i += frame) {
+      let e = 0;
+      for (let j = i; j < i + frame; j++) e += samples[j] * samples[j];
+      lo = Math.min(lo, e);
+      hi = Math.max(hi, e);
+    }
+    return lo > 0 ? hi / lo : Infinity;
+  };
+  type Candidate = { start: number; end: number; d: number; r: number; whz: number };
+  const candidates: Candidate[] = [];
+  for (const w of pool) {
     const period = sampleRate / w.hz;
     const span = Math.round(period);
-    const periods = Math.max(2, Math.round((LOOP_SECONDS * sampleRate) / period));
+    const periods = Math.max(2, Math.round((loopSeconds * sampleRate) / period));
     const length = Math.round(periods * period);
     const windowStart = a + Math.round(w.at * sampleRate);
     // Rising crossings within this window's first period.
@@ -389,27 +449,41 @@ export function findLoop(
       // Every rising crossing within half a period of the target: the seam decides.
       for (let end = Math.max(start + 1, Math.floor(target - period / 2)); end <= target + period / 2; end++) {
         if (end + span > b || !rising(end)) continue;
-        const d = seam(start, end, span);
-        if (!best || d < best.d) best = { start, end, d };
+        const r = ripple(start, end);
+        if (r <= LOOP_STEADY_ENERGY) candidates.push({ start, end, d: seam(start, end, span), r, whz: w.hz });
       }
     }
   }
-  if (!best) return null;
-  // The pitch of what the loop plays: the segment repeated, measured as one sound.
-  const segment = samples.subarray(best.start, best.end);
-  const repeats = Math.max(2, Math.ceil((0.25 * sampleRate) / segment.length));
-  const looped = new Float32Array(segment.length * repeats);
-  for (let i = 0; i < repeats; i++) looped.set(segment, i * segment.length);
-  const hz = detectPitch(looped, sampleRate) ?? anchorHz;
-  return { start: best.start / sampleRate, end: best.end / sampleRate, hz };
+  candidates.sort((x, y) => x.d - y.d);
+  // The pitch of what the loop plays: the segment repeated, measured as one
+  // sound. It must agree with the window's own pitch — a seam that is not a
+  // whole number of periods repeats at a pitch of its own (WebKit's decode of
+  // "night": 247 Hz claimed, 219 Hz heard, −192 ¢). Such a candidate is skipped.
+  for (const c of candidates.slice(0, 12)) {
+    const segment = samples.subarray(c.start, c.end);
+    const repeats = Math.max(2, Math.ceil((0.25 * sampleRate) / segment.length));
+    const looped = new Float32Array(segment.length * repeats);
+    for (let i = 0; i < repeats; i++) looped.set(segment, i * segment.length);
+    const hz = detectPitch(looped, sampleRate);
+    if (hz !== null && cents(hz, c.whz) <= LOOP_MAX_CENTS) return { start: c.start / sampleRate, end: c.end / sampleRate, hz };
+  }
+  return null;
 }
 
 /** Each word's start and end snapped to its sound, and its spoken pitch. */
 export function analyseWords(samples: Float32Array, sampleRate: number, words: TimedWord[]): AnalysedWord[] {
   const duration = samples.length / sampleRate;
-  const starts = words.map((w) => {
+  const starts: number[] = [];
+  let notBefore = 0;
+  words.forEach((w, i) => {
     const end = Math.min(duration, Math.max(w.end, w.start + 0.03));
-    return Math.max(0, Math.min(snapOnset(samples, sampleRate, w.start, end), end - 0.03));
+    const start = Math.max(0, notBefore, Math.min(snapOnset(samples, sampleRate, w.start, end, notBefore), end - 0.03));
+    starts.push(start);
+    // The next word starts after this one's loudest frame, and after its start.
+    const frames = rmsFrames(samples, sampleRate, start, Math.max(start + 0.03, Math.min(end, i + 1 < words.length ? words[i + 1].end : duration)));
+    let peak = 0;
+    for (let k = 1; k < frames.length; k++) if (frames[k] > frames[peak]) peak = k;
+    notBefore = Math.max(start + 0.03, start + peak * 0.01);
   });
   return words.map((w, i) => {
     const start = starts[i];

@@ -251,19 +251,36 @@ for (let c = 0; c <= CYCLES; c++) {
       if (Math.sqrt(sum / hop) > peak * 0.1) { if (first < 0) first = i; last = i + hop; }
     }
     const m = first >= 0 ? measure(step.subarray(first, last), rate) : { median: null, weighted: null, windows: 0 };
+    // Flutter: the deepest level swing inside any 100 ms of the LAST 40 % of
+    // the voiced part (the loop by then; a word's own attack — "still"'s s at
+    // half speed — is earlier), before the final 60 ms (the release), in dB.
+    let flutter = 0;
+    if (first >= 0) {
+      const env = [];
+      for (let i = first + Math.round((last - first) * 0.6); i + hop <= last - Math.round(rate * 0.06); i += hop) {
+        let sum = 0;
+        for (let j = i; j < i + hop; j++) sum += step[j] * step[j];
+        env.push(Math.sqrt(sum / hop));
+      }
+      for (let i = 0; i + 10 <= env.length; i++) {
+        const w = env.slice(i, i + 10);
+        const lo = Math.min(...w), hi = Math.max(...w);
+        if (lo > 0) flutter = Math.max(flutter, 20 * Math.log10(hi / lo));
+      }
+    }
     const hz = m.median;
     const acf = first >= 0 ? autocorrelationHz(step.subarray(first, last), rate) : null;
     const target = midiToHz(TARGETS[k] + 12 * (Number.isFinite(chosen) ? chosen : 0));
     const cents = hz ? 1200 * Math.log2(hz / target) : null;
     const weighted = m.weighted ? 1200 * Math.log2(m.weighted / target) : null;
-    rows.push({ cycle: c, step: k, note: NOTES[k], peak, hz, acf, target, cents, weighted, sounded: first >= 0 ? ((last - first) / rate) : 0 });
+    rows.push({ cycle: c, step: k, note: NOTES[k], peak, hz, acf, target, cents, weighted, sounded: first >= 0 ? ((last - first) / rate) : 0, flutter });
   }
 }
 for (const r of rows) {
   console.log(
     `  cycle ${r.cycle} step ${r.step} ${r.note.padEnd(3)} target ${r.target.toFixed(1).padStart(6)} Hz → ` +
       `${r.hz ? r.hz.toFixed(1).padStart(6) : "  none"} Hz ` +
-      `(${r.cents === null ? "—" : `${r.cents >= 0 ? "+" : ""}${r.cents.toFixed(0)} cents`}; energy-weighted ${r.weighted === null ? "—" : `${r.weighted >= 0 ? "+" : ""}${r.weighted.toFixed(0)}`}; autocorrelation ${r.acf ? r.acf.toFixed(1) : "none"} Hz), peak ${r.peak.toFixed(3)}, voiced ${r.sounded.toFixed(2)} s`,
+      `(${r.cents === null ? "—" : `${r.cents >= 0 ? "+" : ""}${r.cents.toFixed(0)} cents`}; energy-weighted ${r.weighted === null ? "—" : `${r.weighted >= 0 ? "+" : ""}${r.weighted.toFixed(0)}`}; autocorrelation ${r.acf ? r.acf.toFixed(1) : "none"} Hz), peak ${r.peak.toFixed(3)}, voiced ${r.sounded.toFixed(2)} s, flutter ${r.flutter.toFixed(1)} dB`,
   );
 }
 const first = rows.filter((r) => r.cycle === 0);
@@ -300,6 +317,12 @@ if (HOLD) {
   short.length === 0
     ? ok(`every held word fills its note (shortest ${Math.min(...rows.map((r) => r.sounded)).toFixed(2)} of ${stepSeconds.toFixed(2)} s)`)
     : fail(`${short.length} held words end early: ${short.map((r) => `${r.cycle}.${r.step} ${r.sounded.toFixed(2)} s`).join(", ")}`);
+  // A held vowel must not stutter: no 100 ms window of the hold swings more
+  // than 7 dB (the 0.12.3 field stutter measured 15–22 dB; clean holds 1–5).
+  const stutter = rows.filter((r) => r.flutter > 7);
+  stutter.length === 0
+    ? ok(`no held word flutters (worst swing ${Math.max(...rows.map((r) => r.flutter)).toFixed(1)} dB in 100 ms)`)
+    : fail(`${stutter.length} held words flutter: ${stutter.map((r) => `${r.cycle}.${r.step} ${r.flutter.toFixed(1)} dB`).join(", ")}`);
 }
 Number.isFinite(chosen) ? ok(`octave ${chosen}${OCTAVE !== undefined ? " (given)" : " (auto, from the widget's report)"}`) : fail("the widget never reported which octave it chose");
 tts.some((t) => t === "words 200") ? ok("GET /tts?…&words=1 served the timings") : fail(`no words request succeeded (${tts.join(", ")})`);

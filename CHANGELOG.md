@@ -2,6 +2,11 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## 0.12.4 — October 4, 2026
+
+- **Fixed: a sung word began with the end of the word before it** — with 0.12.3's held notes every note then re-articulated that fragment ("he… he-llo-llo-llo", as reported). When two words ran together with no pause, the player's search for where a word starts walked back past the previous word; a word now never starts before the previous word's loudest moment. Also fixed: a held vowel that stuttered because its repeated slice fell in loudness (the vowel of "is" dropping into its z). The slice is now judged for even loudness over its exact length, shorter slices (50 and 35 ms) are tried before giving up, and a word with no steady vowel plays once instead of stuttering. `scripts/verify-sing.mjs` now measures the loudness swing inside each held note and fails above 7 dB (the stutter measured 15–22 dB); on "hush now my darling the night is kind" every held word now swings under 7 dB and "still water runs deep" lands within 14 cents.
+- Guide and the `lullaby` piece: a held vowel feeds a reverb for the whole note, so a sung line wants a small room (`.room(0.3).roomsize(2)`, gain near 0.9) — a large room turns it into a wash.
+
 ## 0.12.3 — October 4, 2026
 
 - **`sing()` holds each word for its whole note.** Until now a sung word lasted as long as it was spoken, so a long note ended early and a line sounded narrated. Now a word's onset plays once and a short slice of its vowel repeats until the note ends (`hold: true`, the default; `hold: false` plays words once, as before). The slice is a whole number of pitch periods from a loud, steady part of the word, joined at zero crossings where the waveform matches, and the word's speed is set from the pitch of that repeating slice rather than of the whole word. Measured in Chromium and WebKit on "still water runs deep" (c4 e4 g4 c5, luna): every word fills its one-second step, and every step lands within 52 cents of its note — closer than the spoken version (energy-weighted median 7–8 cents, from about 24).

@@ -159,6 +159,22 @@ describe("analyseWords", () => {
     expect(words.map((w) => w.word)).toEqual(["one", "two"]);
   });
 
+  it("a word with no gap before it never starts before the previous word's loudest frame (\"the night\")", () => {
+    const rate = 48_000;
+    // 0.1 s silence, "the" 0.12 s at 200 Hz, then "night" 0.3 s at 210 Hz straight after, louder.
+    const the = tone(rate, 0.12, 200, { harmonics: 4 });
+    const night = tone(rate, 0.3, 210, { harmonics: 4 }).map((v) => v * 1.5);
+    const signal = concat(new Float32Array(rate * 0.1), the, night);
+    // Whisper puts "night" a little late, as it does.
+    const words = analyseWords(signal, rate, [
+      { word: "the", start: 0.08, end: 0.22 },
+      { word: "night", start: 0.25, end: 0.52 },
+    ]);
+    expect(words[0].start).toBeCloseTo(0.1, 2);
+    expect(words[1].start).toBeGreaterThan(0.15);
+    expect(words[1].start).toBeLessThan(0.3);
+  });
+
   it("keeps every word at least 30 ms long and inside the clip", () => {
     const words = analyseWords(new Float32Array(24_000), 24_000, [{ word: "x", start: 0.99, end: 2 }]);
     expect(words[0].end).toBe(1);
@@ -200,8 +216,28 @@ describe("findLoop — the window a held word repeats", () => {
     // Nothing near the asked pitch at all: no loop.
     expect(findLoop(signal, rate, 0, 0.4, 120)).toBeNull();
   });
+  it("loops the flat part of a word, not its decay (a decaying loop stutters at the loop rate)", () => {
+    // 0.25 s flat at 220 Hz, then 0.25 s decaying to a tenth: same pitch throughout.
+    const flat = tone(rate, 0.25, 220, { harmonics: 3 });
+    const decay = tone(rate, 0.25, 220, { harmonics: 3 }).map((v, i, arr) => v * (1 - 0.9 * (i / arr.length)));
+    const signal = concat(flat, decay);
+    const loop = findLoop(signal, rate, 0, 0.5, 220)!;
+    expect(loop.end).toBeLessThanOrEqual(0.25 + 0.05);
+    // A word that only decays (9 dB over 0.25 s): a shorter window where it is flat enough, never a stutter.
+    const short = findLoop(decay, rate, 0, 0.25, 220)!;
+    expect(short).not.toBeNull();
+    expect(short.end - short.start).toBeLessThan(LOOP_SECONDS);
+    // Falling 20 dB in 60 ms: nothing is flat — the word plays once.
+    const cliff = tone(rate, 0.06, 220, { harmonics: 3 }).map((v, i, arr) => v * (1 - 0.9 * (i / arr.length)));
+    expect(findLoop(concat(cliff, new Float32Array(rate * 0.1)), rate, 0, 0.16, 220)).toBeNull();
+  });
+  it("never loops into the silence after a vowel (\"kind\": the n and d closure)", () => {
+    const signal = concat(tone(rate, 0.3, 220, { harmonics: 3 }), new Float32Array(rate * 0.2));
+    const loop = findLoop(signal, rate, 0, 0.5, 220)!;
+    expect(loop.end).toBeLessThanOrEqual(0.3 + 1e-3);
+  });
   it("is null for a span too short to loop, for silence, and without a pitch", () => {
-    expect(findLoop(tone(rate, 0.05, 200), rate, 0, 0.05, 200)).toBeNull();
+    expect(findLoop(tone(rate, 0.03, 200), rate, 0, 0.03, 200)).toBeNull();
     expect(findLoop(new Float32Array(rate), rate, 0, 1, 200)).toBeNull();
     expect(findLoop(tone(rate, 0.4, 200), rate, 0, 0.4, 0)).toBeNull();
   });

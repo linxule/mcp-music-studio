@@ -1269,8 +1269,9 @@ const piano = note(ASK).s('gm_epiano1').gain(0.42).room(0.4).release(0.9)
 // about an octave — a wide leap pulls a word far from the voice.
 const moon = sing('the moon is low', "a3 c4 a3 f3", { voice: 'luna' })
 const sea  = sing('the sea is slow', "g3 b3 d4 g3", { voice: 'luna' })
+// Held vowels feed a reverb all note long: keep the voice's room small.
 const voice = cat(silence, silence, moon, sea)
-  .gain(1.1).room(0.55).roomsize(5)
+  .gain(0.9).room(0.3).roomsize(2)
 
 // ── around them ──
 const keys = note(CHORDS).s('gm_epiano1').attack(0.05).release(1.6).gain(0.22).room(0.5)
