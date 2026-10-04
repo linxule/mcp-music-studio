@@ -12,7 +12,7 @@ import {
   reserve,
   usd,
 } from "../src/shared/voice-budget";
-import { INFLIGHT_TTL_MS, VoiceBudget } from "../worker/src/voice-budget-do";
+import { HELD_BYTES_CAP, INFLIGHT_TTL_MS, MAX_WAITERS_PER_KEY, VoiceBudget } from "../worker/src/voice-budget-do";
 
 const at = (iso: string) => new Date(iso);
 
@@ -107,6 +107,9 @@ function fakeState() {
 }
 const post = (path: string, body: unknown) =>
   new Request(`https://voice-budget${path}`, { method: "POST", body: JSON.stringify(body) });
+/** The renderer's /done: the key in a header, the clip (or nothing) as the body. */
+const done = (key: string, clip = new Uint8Array(0)) =>
+  new Request("https://voice-budget/done", { method: "POST", headers: { "x-line-key": key }, body: clip });
 
 describe("the VoiceBudget Durable Object", () => {
   it("reserves, refuses past the budget, refunds, and persists", async () => {
@@ -161,7 +164,7 @@ describe("the VoiceBudget Durable Object", () => {
     expect(await reserveKey("tts:v1:b")).toMatchObject({ ok: true }); // other lines are unaffected
     expect(await spent()).toBe(2 * 270);
     // /done frees the key; the next reserve is a normal charge.
-    expect((await budget.fetch(post("/done", { key: "tts:v1:a" }))).status).toBe(200);
+    expect((await budget.fetch(done("tts:v1:a"))).status).toBe(200); // empty: the render failed
     expect(await reserveKey("tts:v1:a")).toMatchObject({ ok: true });
     expect(await spent()).toBe(3 * 270);
     // A refund carrying the key frees it too.
@@ -186,6 +189,80 @@ describe("the VoiceBudget Durable Object", () => {
     expect(results.filter((r) => r.reason === "inflight")).toHaveLength(4);
   });
 
+  describe("handing a finished clip to callers that wait for it (any colo)", () => {
+    const CLIP = new Uint8Array([0xff, 0xfb, 0x90, 0x44]);
+    const month = budgetMicro("10");
+    const reserveKey = (budget: VoiceBudget, key: string) =>
+      budget.fetch(post("/reserve", { chars: 9, budgetMicro: month, key })).then((r) => r.json());
+    const wait = (budget: VoiceBudget, key: string) => budget.fetch(post("/wait", { key }));
+
+    it("a waiter is answered by the later /done, with the bytes; the clip stays for late callers until the TTL", async () => {
+      let t = at("2026-10-04T12:00:00Z").getTime();
+      const budget = new VoiceBudget(fakeState(), undefined, () => new Date(t));
+      expect(await reserveKey(budget, "k")).toMatchObject({ ok: true });
+      const held = wait(budget, "k");
+      await new Promise((r) => setTimeout(r, 10));
+      await budget.fetch(done("k", CLIP));
+      const res = await held;
+      expect(res.status).toBe(200);
+      expect(new Uint8Array(await res.arrayBuffer())).toEqual(CLIP);
+      // A late caller (its colo still reads a KV miss): told "inflight", no charge, the bytes at once.
+      expect(await reserveKey(budget, "k")).toMatchObject({ ok: false, reason: "inflight" });
+      expect(new Uint8Array(await (await wait(budget, "k")).arrayBuffer())).toEqual(CLIP);
+      t += INFLIGHT_TTL_MS;
+      expect((await wait(budget, "k")).status).toBe(204);
+      expect(await reserveKey(budget, "k")).toMatchObject({ ok: true });
+    });
+
+    it("204 when the render fails: a refund or an empty /done", async () => {
+      const budget = new VoiceBudget(fakeState());
+      await reserveKey(budget, "a");
+      const onRefund = wait(budget, "a");
+      await new Promise((r) => setTimeout(r, 10));
+      await budget.fetch(post("/refund", { chars: 9, month: "2026-10", day: "2026-10-04", key: "a" }));
+      expect((await onRefund).status).toBe(204);
+      await reserveKey(budget, "b");
+      const onEmpty = wait(budget, "b");
+      await new Promise((r) => setTimeout(r, 10));
+      await budget.fetch(done("b"));
+      expect((await onEmpty).status).toBe(204);
+      expect((await wait(budget, "nobody-renders-this")).status).toBe(204);
+    });
+
+    it("204 when the render outlasts the wait; at most 4 callers held per line", async () => {
+      const budget = new VoiceBudget(fakeState(), undefined, () => new Date(), 30);
+      await reserveKey(budget, "slow");
+      const held = Array.from({ length: MAX_WAITERS_PER_KEY + 1 }, () => wait(budget, "slow"));
+      const first = await Promise.race(held.map((p, i) => p.then(() => i)));
+      expect(first).toBe(MAX_WAITERS_PER_KEY); // the fifth is turned away at once
+      expect((await Promise.all(held)).map((r) => r.status)).toEqual(Array(MAX_WAITERS_PER_KEY + 1).fill(204));
+      // Timed-out waiters are gone: a later /done resolves nothing stale.
+      await budget.fetch(done("slow", CLIP));
+      expect((await wait(budget, "slow")).status).toBe(200);
+    });
+
+    it("holds at most HELD_BYTES_CAP of finished clips, dropping the oldest", async () => {
+      const budget = new VoiceBudget(fakeState());
+      const big = new Uint8Array(Math.floor(HELD_BYTES_CAP / 2.5));
+      for (const k of ["one", "two", "three"]) {
+        await reserveKey(budget, k);
+        await budget.fetch(done(k, big));
+      }
+      expect((await wait(budget, "one")).status).toBe(204); // dropped: 3 × 0.4 cap > cap
+      expect((await wait(budget, "two")).status).toBe(200);
+      expect((await wait(budget, "three")).status).toBe(200);
+      expect(await reserveKey(budget, "one")).toMatchObject({ ok: true }); // forgotten → a normal charge
+    });
+
+    it("refuses an oversized clip and frees the line", async () => {
+      const budget = new VoiceBudget(fakeState());
+      await reserveKey(budget, "huge");
+      const res = await budget.fetch(done("huge", new Uint8Array(4 * 1024 * 1024 + 1)));
+      expect(res.status).toBe(413);
+      expect((await wait(budget, "huge")).status).toBe(204);
+    });
+  });
+
   it("rejects malformed requests", async () => {
     const budget = new VoiceBudget(fakeState());
     expect((await budget.fetch(post("/reserve", { chars: -1, budgetMicro: 1 }))).status).toBe(400);
@@ -195,7 +272,8 @@ describe("the VoiceBudget Durable Object", () => {
     expect((await budget.fetch(new Request("https://voice-budget/reserve", { method: "POST", body: "null" }))).status).toBe(400);
     expect((await budget.fetch(post("/reserve", { chars: 1, budgetMicro: 1, key: 5 }))).status).toBe(400);
     expect((await budget.fetch(post("/reserve", { chars: 1, budgetMicro: 1, key: "k".repeat(129) }))).status).toBe(400);
-    expect((await budget.fetch(post("/done", {}))).status).toBe(400);
+    expect((await budget.fetch(post("/done", { key: "tts:v1:a" }))).status).toBe(400); // key goes in the header
+    expect((await budget.fetch(post("/wait", {}))).status).toBe(400);
   });
 });
 

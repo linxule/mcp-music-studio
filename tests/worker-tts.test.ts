@@ -35,12 +35,13 @@ function fakeAi(bytes = new Uint8Array([0xff, 0xfb, 0x90, 0x44])) {
   };
 }
 
-function budgetNs(now = () => new Date("2026-10-04T12:00:00Z")) {
+function budgetNs(now = () => new Date("2026-10-04T12:00:00Z"), waitMs?: number) {
   const store = new Map<string, unknown>();
   const instance = new VoiceBudget(
     { storage: { get: async <T>(k: string) => store.get(k) as T | undefined, put: async (k: string, v: unknown) => void store.set(k, structuredClone(v)) } },
     undefined,
     now,
+    waitMs,
   );
   const calls: string[] = [];
   return {
@@ -322,9 +323,14 @@ describe("say() prerender — tool calls warm /tts (0.12)", () => {
   // Codex review: the prerender held the model call open, the player's GET
   // missed the cache and rendered the same line again — 540 µ$ for a 270 µ$
   // line. The two come from different machines (claude.ai's servers, the
-  // user's browser), so the VoiceBudget DO is where they meet.
-  it("a line the player asks for mid-render waits for that render: one model call, one charge", async () => {
-    const kv = fakeKv();
+  // user's browser) and usually different colos, so the player's KV never sees
+  // the clip in time: the VoiceBudget DO hands it over.
+  it("a line the player asks for mid-render waits for that render: one model call, one charge, bytes from the DO", async () => {
+    const serverKv = fakeKv(); // the colo the tool call runs in
+    const playerKv = fakeKv(); // the player's colo: never sees the clip
+    const playerReads: string[] = [];
+    const playerGet = playerKv.get;
+    playerKv.get = async (key: string, type?: string) => { playerReads.push(key); return playerGet(key, type); };
     const b = budgetNs();
     let release!: () => void;
     const held = new Promise<void>((r) => (release = r));
@@ -336,25 +342,27 @@ describe("say() prerender — tool calls warm /tts (0.12)", () => {
         return new Uint8Array([0xff, 0xfb, 0x90, 0x44]);
       },
     };
-    const env = { DOCS_CACHE: kv, AI: ai, VOICE_BUDGET: b.ns, VOICE_BUDGET_USD_PER_MONTH: "10" };
+    const shared = { AI: ai, VOICE_BUDGET: b.ns, VOICE_BUDGET_USD_PER_MONTH: "10" };
     const until = async (cond: () => boolean) => { while (!cond()) await new Promise((r) => setTimeout(r, 5)); };
-    const tool = callTool(env, "play-live-pattern", { code: `say('hi there!', { voice: 'orion' })` }); // 9 characters
+    const tool = callTool({ ...shared, DOCS_CACHE: serverKv }, "play-live-pattern", { code: `say('hi there!', { voice: 'orion' })` }); // 9 characters
     await until(() => ai.calls.length === 1);
-    const player = get(line("hi there!", "orion"), env);
-    await until(() => b.calls.filter((c) => c === "/reserve").length === 2); // answered "inflight"
+    const player = get(line("hi there!", "orion"), { ...shared, DOCS_CACHE: playerKv });
+    await until(() => b.calls.includes("/wait")); // told "inflight", now held by the DO
     release();
     const [result, res] = await Promise.all([tool, player]);
     expect(result.isError).toBeFalsy();
     expect(res.status).toBe(200);
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([0xff, 0xfb, 0x90, 0x44]));
     expect(ai.calls).toEqual(["hi there!"]);
+    expect(playerKv.store.size).toBe(0);
+    expect(playerReads).toHaveLength(2); // the cache check, and the one read before /wait — no polling
     const ledger = (await (await b.instance.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger;
     expect(ledger.monthMicro).toBe(270);
   });
 
   it("a render that outlasts the wait is rendered again (paid twice, never broken)", async () => {
     const kv = fakeKv();
-    const b = budgetNs();
+    const b = budgetNs(undefined, 50);
     let release!: () => void;
     const held = new Promise<void>((r) => (release = r));
     let n = 0;
@@ -367,14 +375,14 @@ describe("say() prerender — tool calls warm /tts (0.12)", () => {
     const env = { DOCS_CACHE: kv, AI: ai, VOICE_BUDGET: b.ns, VOICE_BUDGET_USD_PER_MONTH: "10" };
     const first = get(line("slow line"), env);
     await new Promise((r) => setTimeout(r, 20));
-    const second = await get(line("slow line"), env); // waits INFLIGHT_WAIT_MS, then renders
+    const second = await get(line("slow line"), env); // the DO's wait runs out, then it renders
     expect(second.status).toBe(200);
     release();
     expect((await first).status).toBe(200);
     expect(n).toBe(2);
     const ledger = (await (await b.instance.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger;
     expect(ledger.monthMicro).toBe(2 * 9 * 30);
-  }, 10_000);
+  });
 
   it("skips lines already cached, and warms through update-session too", async () => {
     const kv = fakeKv();
