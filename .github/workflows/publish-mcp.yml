@@ -83,7 +83,7 @@ jobs:
       - name: Wait for npm package propagation
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
-          curl --fail --silent --show-error --retry 60 --retry-delay 5 --retry-all-errors --retry-max-time 300 --max-time 15 "https://registry.npmjs.org/mcp-music-studio/$VERSION" > /dev/null
+          curl --fail --silent --show-error --retry 120 --retry-delay 10 --retry-all-errors --retry-max-time 1200 --max-time 15 "https://registry.npmjs.org/mcp-music-studio/$VERSION" > /dev/null
 
       - name: Update server.json version
         run: |
