@@ -15,7 +15,7 @@
 //   bunx vite --config dev/vite.config.ts --port 5177
 //   node scripts/verify-remember.mjs
 import { readFileSync } from "node:fs";
-import { chromium } from "playwright";
+import { engine } from "./lib/engine.mjs";
 
 const HARNESS = process.env.HARNESS ?? "http://localhost:5177/";
 const ORIGIN = process.env.SESSION_ORIGIN ?? "http://127.0.0.1:8799";
@@ -61,7 +61,7 @@ const waitFor = async (id, re, ms = 8000) => {
 const [, { id }] = await post("/session/new");
 ok(`session ${id} opened`);
 
-const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required", "--use-gl=swiftshader", "--enable-unsafe-swiftshader"] });
+const browser = await engine.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required", "--use-gl=swiftshader", "--enable-unsafe-swiftshader"] });
 const context = await browser.newContext({ viewport: { width: 1200, height: 900 } });
 const page = await context.newPage();
 const consoleErrors = [];

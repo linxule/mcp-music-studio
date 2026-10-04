@@ -6,7 +6,7 @@
 //
 //   bun run build && bunx vite --config dev/vite.config.ts --host 127.0.0.1 --port 5188
 //   BASE=http://127.0.0.1:5188 bun scripts/verify-studio.mjs
-import { chromium } from "playwright";
+import { engine } from "./lib/engine.mjs";
 const BASE = process.env.BASE ?? "http://127.0.0.1:5188";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LEVEL_TAP = `(() => {
@@ -23,7 +23,7 @@ const LEVEL_TAP = `(() => {
       t = g; taps.set(this, t); }
     return t; } });
 })();`;
-const browser = await chromium.launch({ headless: true });
+const browser = await engine.launch({ headless: true });
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
 await ctx.addInitScript(LEVEL_TAP);
 const page = await ctx.newPage();
@@ -105,13 +105,13 @@ await browser.close();
 
 // ---- WebMCP: real flag probe, then a document.modelContext shim ----
 for (const args of [["--enable-experimental-web-platform-features"], ["--enable-features=WebMCP,WebMCPTesting"]]) {
-  const b = await chromium.launch({ headless: true, args });
+  const b = await engine.launch({ headless: true, args });
   const pg = await b.newPage();
   await pg.goto(`${BASE}/studio.html`);
   console.log("native modelContext with", args.join(" "), "→", await pg.evaluate(() => ({ doc: !!document.modelContext, nav: !!navigator.modelContext })));
   await b.close();
 }
-const b3 = await chromium.launch({ headless: true });
+const b3 = await engine.launch({ headless: true });
 const c3 = await b3.newContext({ viewport: { width: 1400, height: 1000 } });
 await c3.addInitScript(LEVEL_TAP);
 await c3.addInitScript(() => {

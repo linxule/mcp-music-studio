@@ -66,9 +66,15 @@ jobs:
   # Cloudflare account) and the ext-apps dev harness: the plain path, live
   # sessions, controls, sensors, remember(), swaps, the studio tools, share
   # pages and WebMCP. verify-stage is left out: say() needs Workers AI.
+  # Both engines: most field bugs so far came from iPhone Safari (WebKit).
   browser:
+    name: browser (${{ matrix.browser }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, webkit]
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -81,15 +87,16 @@ jobs:
       - run: bun install --frozen-lockfile
         working-directory: worker
       - run: bun run build
-      - run: bunx playwright install --with-deps chromium
+      - run: bunx playwright install --with-deps ${{ matrix.browser }}
       - name: Browser acceptance checks
         run: scripts/ci-browser.sh
         env:
+          BROWSER: ${{ matrix.browser }}
           LOGS: ${{ runner.temp }}/ci-browser
       - name: Keep logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-acceptance-logs
+          name: browser-acceptance-logs-${{ matrix.browser }}
           path: ${{ runner.temp }}/ci-browser/
           retention-days: 7

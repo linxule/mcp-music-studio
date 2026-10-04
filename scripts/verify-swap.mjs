@@ -11,7 +11,7 @@
 //
 //   bun run build && bunx vite --config dev/vite.config.ts --host 127.0.0.1 --port 5188
 //   BASE=http://127.0.0.1:5188 bun scripts/verify-swap.mjs
-import { chromium } from "playwright";
+import { engine } from "./lib/engine.mjs";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:5188";
 const QUANTIZE = 4;
@@ -45,7 +45,7 @@ const LEVEL_TAP = `(() => {
 const SILENT = `setcps(0.5)\ns("bd*4").gain(0)`;
 const LOUD = `setcps(0.5)\ns("bd*4").gain(0.9)`;
 
-const browser = await chromium.launch({ headless: true });
+const browser = await engine.launch({ headless: true });
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
 await ctx.addInitScript(LEVEL_TAP);
 const page = await ctx.newPage();

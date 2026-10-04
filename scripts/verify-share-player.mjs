@@ -9,7 +9,7 @@
 //   bun run build
 //   (cd worker && bunx wrangler dev --port 8798)
 //   bun scripts/verify-share-player.mjs
-import { chromium } from "playwright";
+import { engine } from "./lib/engine.mjs";
 
 const ORIGIN = process.env.ORIGIN ?? "http://127.0.0.1:8798";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -42,7 +42,7 @@ const LEVEL_TAP = `(() => {
 const b64 = (s) => Buffer.from(s, "utf8").toString("base64url");
 const CODE = `const vol = fader('vol', { init: 0.9 })\ns("bd*4, hh*8").gain(vol).pianoroll()`;
 
-const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
+const browser = await engine.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
 const context = await browser.newContext({ viewport: { width: 1000, height: 800 } });
 await context.addInitScript(LEVEL_TAP);
 const page = await context.newPage();

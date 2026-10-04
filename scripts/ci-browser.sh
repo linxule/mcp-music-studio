@@ -7,7 +7,11 @@
 #   scripts/ci-browser.sh                 # all checks
 #   scripts/ci-browser.sh session swap    # just these (names = verify-<name>.mjs)
 #
+#   BROWSER=webkit scripts/ci-browser.sh  # Safari's engine
+#
 # Not here: verify-stage (say() needs Workers AI, which --local cannot reach).
+# WebKit skips verify-sensors (Playwright's WebKit has no fake motion sensors or
+# microphone) and verify-share-webmcp (WebMCP is a Chromium flag).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,7 +21,13 @@ LOGS="${LOGS:-${TMPDIR:-/tmp}/ci-browser}"
 mkdir -p "$LOGS"
 
 CHECKS=("$@")
-[ ${#CHECKS[@]} -eq 0 ] && CHECKS=(plain session controls sensors remember swap studio share-player share-webmcp)
+if [ ${#CHECKS[@]} -eq 0 ]; then
+  if [ "${BROWSER:-chromium}" = "webkit" ]; then
+    CHECKS=(plain session controls remember swap studio share-player)
+  else
+    CHECKS=(plain session controls sensors remember swap studio share-player share-webmcp)
+  fi
+fi
 
 pids=()
 cleanup() {
@@ -59,7 +69,7 @@ done
 
 echo
 if [ ${#failed[@]} -eq 0 ]; then
-  echo "all ${#CHECKS[@]} browser checks passed"
+  echo "all ${#CHECKS[@]} browser checks passed (${BROWSER:-chromium})"
 else
   echo "FAILED: ${failed[*]} (logs in $LOGS)"
   exit 1

@@ -5,7 +5,7 @@
 //   bun run build
 //   bunx vite --config dev/vite.config.ts --port 5177
 //   SESSION_ORIGIN=https://music-studio.linxule.com bun scripts/verify-controls.mjs   (or a local wrangler dev)
-import { chromium } from "playwright";
+import { engine } from "./lib/engine.mjs";
 
 const HARNESS = process.env.HARNESS ?? "http://localhost:5177/";
 const ORIGIN = process.env.SESSION_ORIGIN ?? "http://127.0.0.1:8799";
@@ -46,7 +46,7 @@ const hold = pad('hold')
 const space = xy('space')
 s("hh*8").gain(vol).pan(space.x)`;
 
-const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
+const browser = await engine.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
 const context = await browser.newContext({ viewport: { width: 900, height: 900 } });
 await context.addInitScript(LEVEL_TAP);
 const page = await context.newPage();
@@ -103,7 +103,8 @@ after[0] > 0.9 && after[1] === 1 && after[2][0] < 0.2 && after[2][1] > 0.8
 
 await sleep(2500);
 const text = await state();
-/Controls on the player now: vol \(fader 0–1\) 1; drop \(pad\) on; hold \(pad\) off; space \(xy\) x 0\.1/.test(text)
+// x lands near 0.1 (WebKit's drag rounds to 0.09).
+/Controls on the player now: vol \(fader 0–1\) 1; drop \(pad\) on; hold \(pad\) off; space \(xy\) x 0\.(0[5-9]|1\d)/.test(text)
   ? ok("get-session shows the strip as it stands")
   : fail(`strip missing:\n${text}`);
 /moved fader 'vol'/.test(text) && /pressed pad 'drop' 1 time/.test(text) && /pressed pad 'hold' 1 time/.test(text) && /moved xy 'space'/.test(text)

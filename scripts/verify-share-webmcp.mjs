@@ -19,7 +19,7 @@
 // Chromium exposes document.modelContext behind --enable-experimental-web-platform-features
 // (measured on 153: registerTool/getTools/executeTool; executeTool takes the input as a
 // JSON STRING there, the spec says object - both are tried).
-import { chromium } from "playwright";
+import { engine } from "./lib/engine.mjs";
 
 const ORIGIN = process.env.ORIGIN ?? "http://127.0.0.1:8798";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -54,7 +54,7 @@ const b64 = (s) => Buffer.from(s, "utf8").toString("base64url");
 const SEED = `s("bd*2").gain(0.3)`;
 const NEXT = `s("bd*4, hh*8").gain(0.8)`;
 
-const browser = await chromium.launch({
+const browser = await engine.launch({
   headless: true,
   args: ["--enable-experimental-web-platform-features", "--autoplay-policy=no-user-gesture-required"],
 });
