@@ -201,7 +201,7 @@ describe("GET /tts — the voice budget (one dollar number, exact, fails closed)
     expect((await get(line("hello there"), env)).status).toBe(200); // 11 characters
     await Promise.all(waits);
     expect((await get(line("hello there"), env)).status).toBe(200); // cached
-    expect(b.calls).toEqual(["/reserve"]);
+    expect(b.calls).toEqual(["/reserve", "/done"]); // done: no longer in flight
     const status = await (await get("/tts/budget", env)).json();
     expect(status).toMatchObject({ month: "2026-10", budgetUsd: 10, todayCapUsd: 1 });
     const ledger = (await (await b.instance.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger;
@@ -261,7 +261,7 @@ describe("GET /tts — the voice budget (one dollar number, exact, fails closed)
     const env = { DOCS_CACHE: fakeKv(), VOICE_BUDGET: b.ns, AI: fakeAi(huge) };
     expect((await get(line("too big"), env)).status).toBe(502);
     await Promise.all(waits);
-    expect(b.calls).toEqual(["/reserve"]);
+    expect(b.calls).toEqual(["/reserve", "/done"]);
   });
 
   it("rate limits run first: a throttled client never touches the budget", async () => {
@@ -306,7 +306,7 @@ describe("say() prerender — tool calls warm /tts (0.12)", () => {
     expect(result.isError).toBeFalsy();
     // The per-address limiter (here: always refusing) does not gate a tool call.
     expect(ai.calls.map(([, input]) => input.text).sort()).toEqual(["hi. it is me.", "now. at the same time."]);
-    expect(b.calls).toEqual(["/reserve", "/reserve"]);
+    expect(b.calls.filter((c) => c === "/reserve")).toHaveLength(2);
     const ledger = (await (await b.instance.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger;
     expect(ledger.monthMicro).toBe(("hi. it is me.".length + "now. at the same time.".length) * 30);
     for (const text of ["hi. it is me.", "now. at the same time."]) {
@@ -316,8 +316,65 @@ describe("say() prerender — tool calls warm /tts (0.12)", () => {
     const res = await get(line("hi. it is me.", "orion"), env);
     expect(res.status).toBe(200);
     expect(ai.calls).toHaveLength(2);
-    expect(b.calls).toHaveLength(2);
+    expect(b.calls.filter((c) => c === "/reserve")).toHaveLength(2);
   });
+
+  // Codex review: the prerender held the model call open, the player's GET
+  // missed the cache and rendered the same line again — 540 µ$ for a 270 µ$
+  // line. The two come from different machines (claude.ai's servers, the
+  // user's browser), so the VoiceBudget DO is where they meet.
+  it("a line the player asks for mid-render waits for that render: one model call, one charge", async () => {
+    const kv = fakeKv();
+    const b = budgetNs();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const ai = {
+      calls: [] as string[],
+      run: async (_model: string, input: Record<string, unknown>) => {
+        ai.calls.push(String(input.text));
+        await held;
+        return new Uint8Array([0xff, 0xfb, 0x90, 0x44]);
+      },
+    };
+    const env = { DOCS_CACHE: kv, AI: ai, VOICE_BUDGET: b.ns, VOICE_BUDGET_USD_PER_MONTH: "10" };
+    const until = async (cond: () => boolean) => { while (!cond()) await new Promise((r) => setTimeout(r, 5)); };
+    const tool = callTool(env, "play-live-pattern", { code: `say('hi there!', { voice: 'orion' })` }); // 9 characters
+    await until(() => ai.calls.length === 1);
+    const player = get(line("hi there!", "orion"), env);
+    await until(() => b.calls.filter((c) => c === "/reserve").length === 2); // answered "inflight"
+    release();
+    const [result, res] = await Promise.all([tool, player]);
+    expect(result.isError).toBeFalsy();
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([0xff, 0xfb, 0x90, 0x44]));
+    expect(ai.calls).toEqual(["hi there!"]);
+    const ledger = (await (await b.instance.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger;
+    expect(ledger.monthMicro).toBe(270);
+  });
+
+  it("a render that outlasts the wait is rendered again (paid twice, never broken)", async () => {
+    const kv = fakeKv();
+    const b = budgetNs();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let n = 0;
+    const ai = {
+      run: async () => {
+        if (n++ === 0) await held;
+        return new Uint8Array([1, 2, 3]);
+      },
+    };
+    const env = { DOCS_CACHE: kv, AI: ai, VOICE_BUDGET: b.ns, VOICE_BUDGET_USD_PER_MONTH: "10" };
+    const first = get(line("slow line"), env);
+    await new Promise((r) => setTimeout(r, 20));
+    const second = await get(line("slow line"), env); // waits INFLIGHT_WAIT_MS, then renders
+    expect(second.status).toBe(200);
+    release();
+    expect((await first).status).toBe(200);
+    expect(n).toBe(2);
+    const ledger = (await (await b.instance.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger;
+    expect(ledger.monthMicro).toBe(2 * 9 * 30);
+  }, 10_000);
 
   it("skips lines already cached, and warms through update-session too", async () => {
     const kv = fakeKv();

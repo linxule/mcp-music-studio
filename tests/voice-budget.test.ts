@@ -12,7 +12,7 @@ import {
   reserve,
   usd,
 } from "../src/shared/voice-budget";
-import { VoiceBudget } from "../worker/src/voice-budget-do";
+import { INFLIGHT_TTL_MS, VoiceBudget } from "../worker/src/voice-budget-do";
 
 const at = (iso: string) => new Date(iso);
 
@@ -148,6 +148,44 @@ describe("the VoiceBudget Durable Object", () => {
     expect(results.filter((r) => r.ok)).toHaveLength(4); // 4 × 240 = 960 ≤ 1,000
   });
 
+  it("a line in flight is not charged twice: inflight until /done, a refund, or the TTL", async () => {
+    let t = at("2026-10-04T12:00:00Z").getTime();
+    const budget = new VoiceBudget(fakeState(), undefined, () => new Date(t));
+    const month = budgetMicro("10");
+    const reserveKey = async (key?: string) =>
+      (await budget.fetch(post("/reserve", { chars: 9, budgetMicro: month, ...(key ? { key } : {}) }))).json();
+    const spent = async () => (await (await budget.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger.monthMicro;
+
+    expect(await reserveKey("tts:v1:a")).toMatchObject({ ok: true });
+    expect(await reserveKey("tts:v1:a")).toMatchObject({ ok: false, reason: "inflight" });
+    expect(await reserveKey("tts:v1:b")).toMatchObject({ ok: true }); // other lines are unaffected
+    expect(await spent()).toBe(2 * 270);
+    // /done frees the key; the next reserve is a normal charge.
+    expect((await budget.fetch(post("/done", { key: "tts:v1:a" }))).status).toBe(200);
+    expect(await reserveKey("tts:v1:a")).toMatchObject({ ok: true });
+    expect(await spent()).toBe(3 * 270);
+    // A refund carrying the key frees it too.
+    await budget.fetch(post("/refund", { chars: 9, month: "2026-10", day: "2026-10-04", key: "tts:v1:a" }));
+    expect(await reserveKey("tts:v1:a")).toMatchObject({ ok: true });
+    // Without a /done, the entry expires.
+    expect(await reserveKey("tts:v1:a")).toMatchObject({ ok: false, reason: "inflight" });
+    t += INFLIGHT_TTL_MS - 1;
+    expect(await reserveKey("tts:v1:a")).toMatchObject({ ok: false, reason: "inflight" });
+    t += 1;
+    expect(await reserveKey("tts:v1:a")).toMatchObject({ ok: true });
+    // A reserve without a key never waits on anyone.
+    expect(await reserveKey()).toMatchObject({ ok: true });
+  });
+
+  it("concurrent reserves for one line: exactly one is charged", async () => {
+    const budget = new VoiceBudget(fakeState());
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => budget.fetch(post("/reserve", { chars: 9, budgetMicro: 1_000_000, key: "tts:v1:x" })).then((r) => r.json())),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.filter((r) => r.reason === "inflight")).toHaveLength(4);
+  });
+
   it("rejects malformed requests", async () => {
     const budget = new VoiceBudget(fakeState());
     expect((await budget.fetch(post("/reserve", { chars: -1, budgetMicro: 1 }))).status).toBe(400);
@@ -155,6 +193,9 @@ describe("the VoiceBudget Durable Object", () => {
     expect((await budget.fetch(new Request("https://voice-budget/reserve", { method: "POST", body: "{" }))).status).toBe(400);
     expect((await budget.fetch(post("/nope", { chars: 1 }))).status).toBe(404);
     expect((await budget.fetch(new Request("https://voice-budget/reserve", { method: "POST", body: "null" }))).status).toBe(400);
+    expect((await budget.fetch(post("/reserve", { chars: 1, budgetMicro: 1, key: 5 }))).status).toBe(400);
+    expect((await budget.fetch(post("/reserve", { chars: 1, budgetMicro: 1, key: "k".repeat(129) }))).status).toBe(400);
+    expect((await budget.fetch(post("/done", {}))).status).toBe(400);
   });
 });
 

@@ -14,7 +14,9 @@ import { fileURLToPath } from "node:url";
 import {
   SCRIPT_NAME,
   USAGE_HELP,
+  isTokenShape,
   parseUsageArgs,
+  redact,
   renderUsage,
   reportWindow,
   shapeAi,
@@ -29,13 +31,27 @@ const WRANGLER_CONFIG = path.join(homedir(), "Library/Preferences/.wrangler/conf
 const LOGIN_HINT = process.env.CLOUDFLARE_API_TOKEN
   ? "CLOUDFLARE_API_TOKEN was refused: check it is valid and can read Account Analytics + Workers."
   : "Cloudflare login expired or missing: run `cd worker && bunx wrangler whoami` (refreshes it), then retry.";
+const SHAPE_HINT = process.env.CLOUDFLARE_API_TOKEN
+  ? "CLOUDFLARE_API_TOKEN is malformed (whitespace or non-ASCII characters, e.g. a pasted newline): set it again."
+  : "The wrangler login token is malformed: run `cd worker && bunx wrangler login`, then retry.";
 /** API error codes that mean "this token is no good" (malformed header, invalid or expired token). */
 const AUTH_ERROR_CODES = new Set([6003, 6111, 9106, 9109, 10000]);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 class AuthError extends Error {}
 
+/** Set once read, so every printed error can be scrubbed of it. */
+let secret = null;
+const clean = (message) => redact(message, secret);
+
 function readToken() {
+  const token = readRawToken();
+  secret = token;
+  if (!isTokenShape(token)) throw new AuthError(SHAPE_HINT);
+  return token;
+}
+
+function readRawToken() {
   if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
   let toml;
   try {
@@ -142,7 +158,7 @@ async function attempt(fn) {
     return await fn();
   } catch (err) {
     if (err instanceof AuthError) throw err;
-    return { error: err.message };
+    return { error: clean(err?.message) };
   }
 }
 
@@ -166,7 +182,7 @@ async function main() {
     token = readToken();
     account = await accountId(token);
   } catch (err) {
-    console.error(err.message);
+    console.error(clean(err?.message));
     process.exit(err instanceof AuthError ? 2 : 1);
   }
   const vars = { account, start: win.start, end: win.end };
@@ -189,7 +205,7 @@ async function main() {
           if (err instanceof AuthError) throw err;
           classes = {};
           scope = "whole account (namespace lookup failed)";
-          notes.push(`Durable Object namespaces could not be listed (${err.message}); the DO table is account-wide.`);
+          notes.push(`Durable Object namespaces could not be listed (${clean(err?.message)}); the DO table is account-wide.`);
         }
         const rows = (await graphql(token, DO_QUERY, { ...vars, filter })).durableObjectsPeriodicGroups;
         return { scope, ...shapeDurableObjects(win.dates, rows, classes) };
@@ -203,16 +219,21 @@ async function main() {
     ]);
     report = { window: win, workersAi, worker, durableObjects, voiceBudget, analyticsEngine, notes };
   } catch (err) {
-    console.error(err.message);
+    console.error(clean(err?.message));
     process.exit(err instanceof AuthError ? 2 : 1);
   }
 
   notes.push(
-    "Workers AI rows are account-wide: voice calls can include the lab Worker and local `wrangler dev` runs, and the 10k-neuron daily allowance is shared by every Worker. Production cache misses are the Analytics Engine 'tts miss' column.",
+    "Workers AI rows are account-wide: voice calls can include the lab Worker and local `wrangler dev` runs, and the 10k-neuron daily allowance is shared by every Worker. Production cache misses are the Analytics Engine 'tts miss' column, which includes 'prerender' (lines a tool call rendered ahead of the player).",
     "GB-s is Cloudflare's billed duration; an awake JamSession is 128 MB, so 1 active hour ≈ 461 GB-s.",
     "Analytics Engine counts are sampled estimates (SUM(_sample_interval)); 'miss chars' are new characters sent to the voice model.",
   );
   console.log(opts.json ? JSON.stringify(report, null, 2) : renderUsage(report));
 }
 
-await main();
+try {
+  await main();
+} catch (err) {
+  console.error(clean(err?.message));
+  process.exit(1);
+}

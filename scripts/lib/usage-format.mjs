@@ -128,10 +128,19 @@ export function shapeDurableObjects(dates, groups, classes) {
 /**
  * Analytics Engine rows ({day, blob1, blob2, n, chars}) → per day counters.
  * Layout (worker/src/index.ts `track`): blob1 = event family, blob2 = detail;
- * tts doubles[0] = characters; tool_call blob2 = tool name.
+ * tts doubles[0] = characters; tool_call blob2 = tool name. A tool call warming
+ * its say() lines logs `prerender-miss` (a model call like any miss, so it
+ * counts in ttsMiss too), `prerender-hit` (already cached) and
+ * `prerender-skipped`; `inflight-timeout` is a player that waited for another
+ * render's clip and rendered the line itself.
  */
 export function shapeAnalytics(dates, rows) {
-  const byDay = new Map(dates.map((d) => [d, { date: d, sessionsNew: 0, sessionsLimited: 0, ttsHit: 0, ttsMiss: 0, ttsMissChars: 0, ttsRefused: 0, toolCalls: 0 }]));
+  const byDay = new Map(
+    dates.map((d) => [
+      d,
+      { date: d, sessionsNew: 0, sessionsLimited: 0, ttsHit: 0, ttsMiss: 0, ttsMissChars: 0, ttsPrerender: 0, ttsPrerenderChars: 0, ttsInflightTimeout: 0, ttsRefused: 0, toolCalls: 0 },
+    ]),
+  );
   const tools = new Map();
   for (const r of rows) {
     const day = byDay.get(r.day);
@@ -140,10 +149,15 @@ export function shapeAnalytics(dates, rows) {
     if (r.blob1 === "session" && r.blob2 === "new") day.sessionsNew += n;
     else if (r.blob1 === "session" && r.blob2 === "limited") day.sessionsLimited += n;
     else if (r.blob1 === "tts" && r.blob2 === "hit") day.ttsHit += n;
-    else if (r.blob1 === "tts" && r.blob2 === "miss") {
+    else if (r.blob1 === "tts" && (r.blob2 === "miss" || r.blob2 === "prerender-miss")) {
       day.ttsMiss += n;
       day.ttsMissChars += num(r.chars);
-    } else if (r.blob1 === "tts" && r.blob2 === "budget") day.ttsRefused += n;
+      if (r.blob2 === "prerender-miss") {
+        day.ttsPrerender += n;
+        day.ttsPrerenderChars += num(r.chars);
+      }
+    } else if (r.blob1 === "tts" && r.blob2 === "inflight-timeout") day.ttsInflightTimeout += n;
+    else if (r.blob1 === "tts" && r.blob2 === "budget") day.ttsRefused += n;
     else if (r.blob1 === "tool_call") {
       day.toolCalls += n;
       // Scanners call made-up names like __verifymcp_auth_probe_<hex>__; one row for all of them.
@@ -155,6 +169,24 @@ export function shapeAnalytics(dates, rows) {
     days: [...byDay.values()],
     tools: [...tools].map(([tool, calls]) => ({ tool, calls })).sort((a, b) => b.calls - a.calls),
   };
+}
+
+// ---------------------------------------------------------------------------
+// The credential
+// ---------------------------------------------------------------------------
+
+/**
+ * A bearer token is printable ASCII without spaces. Anything else (a pasted
+ * newline, say) makes fetch throw an error that quotes the whole header — so it
+ * is refused before use.
+ */
+export const isTokenShape = (token) => typeof token === "string" && /^[\x21-\x7e]+$/.test(token);
+
+/** An error message safe to print: the token and anything after "Bearer" are removed. */
+export function redact(message, token) {
+  let text = String(message);
+  if (token) text = text.split(token).join("[redacted]");
+  return text.replace(/Bearer[\s\S]*/gi, "Bearer [redacted]");
 }
 
 // ---------------------------------------------------------------------------
@@ -247,10 +279,10 @@ export function renderUsage(report) {
     failed(ae) ??
       [
         table(
-          ["date", "sessions", "limited", "tts hit", "tts miss", "miss chars", "refused", "tool calls"],
+          ["date", "sessions", "limited", "tts hit", "tts miss", "miss chars", "prerender", "refused", "tool calls"],
           [
-            ...ae.days.map((d) => [d.date, fmtInt(d.sessionsNew), fmtInt(d.sessionsLimited), fmtInt(d.ttsHit), fmtInt(d.ttsMiss), fmtInt(d.ttsMissChars), fmtInt(d.ttsRefused), fmtInt(d.toolCalls)]),
-            totalsRow("total", ae.days, ["sessionsNew", "sessionsLimited", "ttsHit", "ttsMiss", "ttsMissChars", "ttsRefused", "toolCalls"].map((k) => [k, fmtInt])),
+            ...ae.days.map((d) => [d.date, fmtInt(d.sessionsNew), fmtInt(d.sessionsLimited), fmtInt(d.ttsHit), fmtInt(d.ttsMiss), fmtInt(d.ttsMissChars), fmtInt(d.ttsPrerender), fmtInt(d.ttsRefused), fmtInt(d.toolCalls)]),
+            totalsRow("total", ae.days, ["sessionsNew", "sessionsLimited", "ttsHit", "ttsMiss", "ttsMissChars", "ttsPrerender", "ttsRefused", "toolCalls"].map((k) => [k, fmtInt])),
           ],
         ),
         "",
