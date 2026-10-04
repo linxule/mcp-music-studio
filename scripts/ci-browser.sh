@@ -17,15 +17,16 @@ cd "$(dirname "$0")/.."
 
 WORKER_PORT="${WORKER_PORT:-8799}"
 HARNESS_PORT="${HARNESS_PORT:-5177}"
+INSPECTOR_PORT="${INSPECTOR_PORT:-9239}"
 LOGS="${LOGS:-${TMPDIR:-/tmp}/ci-browser}"
 mkdir -p "$LOGS"
 
 CHECKS=("$@")
 if [ ${#CHECKS[@]} -eq 0 ]; then
   if [ "${BROWSER:-chromium}" = "webkit" ]; then
-    CHECKS=(plain session controls remember swap studio share-player share-score score-click)
+    CHECKS=(plain session controls remember swap studio share-player share-score score-click record)
   else
-    CHECKS=(plain session controls sensors remember swap studio share-player share-score share-webmcp score-click)
+    CHECKS=(plain session controls sensors remember swap studio share-player share-score share-webmcp score-click record)
   fi
 fi
 
@@ -39,7 +40,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-(cd worker && exec bunx wrangler dev --local --port "$WORKER_PORT" --inspector-port 9239 --ip 127.0.0.1) > "$LOGS/wrangler.log" 2>&1 &
+(cd worker && exec bunx wrangler dev --local --port "$WORKER_PORT" --inspector-port "$INSPECTOR_PORT" --ip 127.0.0.1) > "$LOGS/wrangler.log" 2>&1 &
 pids+=($!)
 bunx vite --config dev/vite.config.ts --host 127.0.0.1 --port "$HARNESS_PORT" --strictPort > "$LOGS/vite.log" 2>&1 &
 pids+=($!)
