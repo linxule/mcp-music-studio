@@ -11,7 +11,7 @@ import { SOURCE_URL } from "../../src/source-info.js";
 // they never drift from the local stdio/HTTP server (server.ts).
 // =============================================================================
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createLegacyMcpHandler } from "agents/mcp";
 import { z } from "zod";
 // abcjs runs parse-only here (no DOM touched at import time — its one browser
@@ -32,6 +32,9 @@ import {
   LEGACY_SHEET_RESOURCE_URI,
   STRUDEL_RESOURCE_URI,
   LEGACY_STRUDEL_RESOURCE_URI,
+  SHEET_RESOURCE_TEMPLATE,
+  STRUDEL_RESOURCE_TEMPLATE,
+  isReleaseVersion,
   SERVER_INSTRUCTIONS,
   advertiseUiExtension,
   PLAY_TOOL_ANNOTATIONS,
@@ -720,6 +723,31 @@ export function createMusicServer(
   // ===========================================================================
   // Ext-Apps UI Resources
   // ===========================================================================
+
+  // Any earlier release's URI resolves too — see SHEET_RESOURCE_TEMPLATE.
+  server.resource(
+    "sheet-music-any-version",
+    new ResourceTemplate(SHEET_RESOURCE_TEMPLATE, { list: undefined }),
+    { mimeType: EXT_APPS_MIME, description: "Sheet Music Viewer UI (any release's URI)" },
+    async (uri, { version }) => {
+      if (!isReleaseVersion(version)) throw new Error(`Resource ${uri.href} not found`);
+      return { contents: [{ uri: uri.href, mimeType: EXT_APPS_MIME, text: sheetMusicHtml, _meta: { ui: { csp: { ...SHEET_CSP } } } }] };
+    },
+  );
+  server.resource(
+    "strudel-any-version",
+    new ResourceTemplate(STRUDEL_RESOURCE_TEMPLATE, { list: undefined }),
+    { mimeType: EXT_APPS_MIME, description: "Strudel Live Pattern REPL (any release's URI)" },
+    async (uri, { version }) => {
+      if (!isReleaseVersion(version)) throw new Error(`Resource ${uri.href} not found`);
+      return {
+        contents: [{
+          uri: uri.href, mimeType: EXT_APPS_MIME, text: strudelHtml,
+          _meta: { ui: { csp: { ...STRUDEL_CSP, connectDomains: withOrigin(STRUDEL_CSP.connectDomains, origin) } } },
+        }],
+      };
+    },
+  );
 
   for (const uri of [SHEET_RESOURCE_URI, LEGACY_SHEET_RESOURCE_URI]) {
     server.resource(

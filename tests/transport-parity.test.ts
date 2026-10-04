@@ -363,3 +363,30 @@ describe("serverInfo — documented, deliberate differences", () => {
     expect(norm(l)).toEqual(norm(w));
   });
 });
+
+describe("UI resources: any earlier release's URI still resolves", () => {
+  // claude.ai keeps a connector's tool listing for a while; right after a
+  // deploy it asks for the PREVIOUS version's ui:// URI. Before 0.11.1 that was
+  // "not found" → "Unable to reach music studio" where the player should be.
+  it.each([
+    ["ui://strudel/0.11.0/strudel-app.html", "Strudel"],
+    ["ui://strudel/0.9.2/strudel-app.html", "Strudel"],
+    ["ui://sheet-music/0.11.0/mcp-app.html", "Sheet"],
+  ])("%s", async (uri) => {
+    for (const client of [local, worker]) {
+      const current = uri.startsWith("ui://strudel/") ? STRUDEL_RESOURCE_URI : SHEET_RESOURCE_URI;
+      const old = (await client.readResource({ uri })).contents[0]!;
+      const now = (await client.readResource({ uri: current })).contents[0]!;
+      expect(old.uri).toBe(uri);
+      expect(old.mimeType).toBe(now.mimeType);
+      expect(old.text).toBe(now.text);
+      expect(old._meta).toEqual(now._meta);
+    }
+  });
+
+  it("rejects a path segment that is not a release version", async () => {
+    for (const client of [local, worker]) {
+      await expect(client.readResource({ uri: "ui://strudel/latest/strudel-app.html" })).rejects.toThrow(/not found/);
+    }
+  });
+});

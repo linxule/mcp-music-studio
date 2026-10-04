@@ -53,6 +53,18 @@ export const STRUDEL_RESOURCE_URI = `ui://strudel/${VERSION}/strudel-app.html`;
 export const LEGACY_SHEET_RESOURCE_URI = "ui://sheet-music/mcp-app.html";
 export const LEGACY_STRUDEL_RESOURCE_URI = "ui://strudel/strudel-app.html";
 
+/**
+ * EVERY earlier release's URI too (0.11.1): claude.ai keeps a connector's tool
+ * listing for a while, so right after a deploy it asks for the PREVIOUS
+ * version's URI, got "not found", and showed "Unable to reach music studio"
+ * where the player should be (field test, 2026-10-04). Templates resolve any
+ * `x.y.z` to the current HTML; the new URI still busts the widget cache.
+ */
+export const SHEET_RESOURCE_TEMPLATE = "ui://sheet-music/{version}/mcp-app.html";
+export const STRUDEL_RESOURCE_TEMPLATE = "ui://strudel/{version}/strudel-app.html";
+export const isReleaseVersion = (v: unknown): v is string =>
+  typeof v === "string" && /^\d{1,4}\.\d{1,5}\.\d{1,6}$/.test(v);
+
 // -----------------------------------------------------------------------------
 // Server-level guidance (flow hint for the model)
 // -----------------------------------------------------------------------------

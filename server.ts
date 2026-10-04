@@ -1,5 +1,5 @@
 import type { GALLERY_IDS } from "./src/strudel-gallery.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   CallToolResult,
   ReadResourceResult,
@@ -35,6 +35,9 @@ import {
   LEGACY_SHEET_RESOURCE_URI,
   STRUDEL_RESOURCE_URI,
   LEGACY_STRUDEL_RESOURCE_URI,
+  SHEET_RESOURCE_TEMPLATE,
+  STRUDEL_RESOURCE_TEMPLATE,
+  isReleaseVersion,
   SERVER_INSTRUCTIONS,
   advertiseUiExtension,
   playToolAnnotations,
@@ -373,6 +376,21 @@ export function createServer(options?: ServerOptions): McpServer {
   // ---------------------------------------------------------------------------
   // Resource: UI (bundled HTML/JS/CSS) — Sheet Music
   // ---------------------------------------------------------------------------
+  const readSheet = async (uri: string): Promise<ReadResourceResult> => {
+    const html = await fs.readFile(path.join(DIST_DIR, "mcp-app.html"), "utf-8");
+    return {
+      contents: [{ uri, mimeType: RESOURCE_MIME_TYPE, text: html, _meta: { ui: { csp: { ...SHEET_CSP } } } }],
+    };
+  };
+  server.registerResource(
+    "sheet-music-any-version",
+    new ResourceTemplate(SHEET_RESOURCE_TEMPLATE, { list: undefined }),
+    { mimeType: RESOURCE_MIME_TYPE, description: "Sheet Music Viewer UI (any release's URI)" },
+    async (uri, { version }) => {
+      if (!isReleaseVersion(version)) throw new Error(`Resource ${uri.href} not found`);
+      return readSheet(uri.href);
+    },
+  );
   for (const uri of [SHEET_RESOURCE_URI, LEGACY_SHEET_RESOURCE_URI]) {
     server.registerResource(
       uri,
@@ -573,6 +591,18 @@ export function createServer(options?: ServerOptions): McpServer {
   // ---------------------------------------------------------------------------
   // Resource: UI (bundled HTML/JS/CSS) — Strudel REPL
   // ---------------------------------------------------------------------------
+  server.registerResource(
+    "strudel-any-version",
+    new ResourceTemplate(STRUDEL_RESOURCE_TEMPLATE, { list: undefined }),
+    { mimeType: RESOURCE_MIME_TYPE, description: "Strudel Live Pattern REPL (any release's URI)" },
+    async (uri, { version }): Promise<ReadResourceResult> => {
+      if (!isReleaseVersion(version)) throw new Error(`Resource ${uri.href} not found`);
+      const html = await fs.readFile(path.join(DIST_DIR, "strudel-app.html"), "utf-8");
+      return {
+        contents: [{ uri: uri.href, mimeType: RESOURCE_MIME_TYPE, text: html, _meta: { ui: { csp: { ...STRUDEL_CSP } } } }],
+      };
+    },
+  );
   for (const uri of [STRUDEL_RESOURCE_URI, LEGACY_STRUDEL_RESOURCE_URI]) {
     server.registerResource(
       uri,

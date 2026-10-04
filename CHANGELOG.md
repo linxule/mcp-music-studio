@@ -2,6 +2,10 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## 0.11.2 — October 4, 2026
+
+- **Fixed — "Unable to reach music studio" right after a release.** claude.ai keeps a connector's tool list for a while, so after a new version went live it asked for the previous version's player address, which no longer existed, and showed an error where the player should be. The tool still ran (a live session even opened), but no player appeared. Every earlier version's address now serves the current player. This has affected each release since 0.10.1, when player addresses started carrying the version.
+
 ## 0.11.1 — October 4, 2026
 
 The simple path is simple again. Asking for a song or a beat works exactly as before. The optional extras (shader visuals, music videos, controls, sensors, drawn controls, live sessions and share links) are still there for an AI to find, but each now costs one line instead of a paragraph.
