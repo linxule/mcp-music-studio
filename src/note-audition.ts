@@ -46,6 +46,7 @@ interface Startable {
   stop(): unknown;
 }
 
+/** Generation of the newest audition; {@link stopAudition} bumps it too. */
 let latest = 0;
 let sounding: Startable | null = null;
 
@@ -77,21 +78,40 @@ export async function auditionNote(request: AuditionRequest): Promise<boolean> {
     millisecondsPerMeasure: request.msPerWholeNote,
     options: request.synthOptions,
   });
+  if (id !== latest) return discard(buffer);
   await buffer.prime();
-  if (id !== latest) return false;
+  if (id !== latest) return discard(buffer);
   request.route?.(buffer);
-  stopAudition();
+  silenceSounding();
   buffer.start();
   sounding = buffer;
   return true;
 }
 
-/** Silence the last clicked note, if it is still ringing. */
-export function stopAudition(): void {
+/** Release a buffer an audition abandoned before it started. */
+function discard(buffer: Startable): false {
+  try {
+    buffer.stop();
+  } catch {
+    // Never started.
+  }
+  return false;
+}
+
+function silenceSounding(): void {
   try {
     sounding?.stop();
   } catch {
     // Already ended.
   }
   sounding = null;
+}
+
+/**
+ * Silence the last clicked note, if it is still ringing, and cancel one still
+ * loading: it discards itself after its `init`/`prime` instead of starting.
+ */
+export function stopAudition(): void {
+  latest++;
+  silenceSounding();
 }
