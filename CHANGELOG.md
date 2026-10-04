@@ -2,6 +2,10 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## Unreleased
+
+- `bun run usage` (`scripts/usage.mjs`) prints a read-only report of the hosted service for the last week: voice-model calls and characters, Worker requests and errors, live-session time, the voice budget, sessions opened and tool calls. Maintainers run it at each release. See [docs/development.md](docs/development.md#usage-report).
+
 ## 0.11.3 — October 4, 2026
 
 - **Spoken lines have a monthly budget instead of a daily cap.** New lines from `say()` are the one thing this service pays for per request. Each new line is now charged its exact price against one monthly budget ($10 at launch, about ten times the busiest day so far), and no single day may use more than a tenth of it. Lines already heard are cached and stay free. When the budget is used up, a piece plays without its new lines and says so. This replaces a cap of 500 new lines a day and an hourly limit per address, which could both be slipped past by requests arriving together. The per-address limit of 12 new lines a minute stays, so one person can't use up everyone's share. `GET /tts/budget` shows how much of the month is spent.
