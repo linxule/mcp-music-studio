@@ -2,6 +2,12 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## 0.11.3 — October 4, 2026
+
+- **Spoken lines have a monthly budget instead of a daily cap.** New lines from `say()` are the one thing this service pays for per request. Each new line is now charged its exact price against one monthly budget ($10 at launch, about ten times the busiest day so far), and no single day may use more than a tenth of it. Lines already heard are cached and stay free. When the budget is used up, a piece plays without its new lines and says so. This replaces a cap of 500 new lines a day and an hourly limit per address, which could both be slipped past by requests arriving together. The per-address limit of 12 new lines a minute stays, so one person can't use up everyone's share. `GET /tts/budget` shows how much of the month is spent.
+- The local studio page offers `swap-pattern` to browser agents too. The real-browser checks now run in CI, in Chromium and in WebKit (Safari's engine).
+- The privacy policy describes the voice budget.
+
 ## 0.11.2 — October 4, 2026
 
 - **Fixed — "Unable to reach music studio" right after a release.** claude.ai keeps a connector's tool list for a while, so after a new version went live it asked for the previous version's player address, which no longer existed, and showed an error where the player should be. The tool still ran (a live session even opened), but no player appeared. Every earlier version's address now serves the current player. This has affected each release since 0.10.1, when player addresses started carrying the version.

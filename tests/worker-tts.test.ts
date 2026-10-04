@@ -1,7 +1,8 @@
 // GET /tts — the server half of say(): render once, cache by content, cap what
 // a public route can cost.
 import { describe, expect, it } from "vitest";
-import worker, { TTS_RATE_LIMIT_MAX, ttsCacheKey } from "../worker/src/index";
+import worker, { ttsCacheKey } from "../worker/src/index";
+import { VoiceBudget } from "../worker/src/voice-budget-do";
 import { TTS_MAX_CHARS, TTS_MODEL, ttsUrl } from "../src/shared/tts";
 
 const ORIGIN = "https://music-studio.linxule.com";
@@ -32,8 +33,30 @@ function fakeAi(bytes = new Uint8Array([0xff, 0xfb, 0x90, 0x44])) {
   };
 }
 
-const get = (path: string, env: unknown, ip = "203.0.113.20") =>
-  worker.fetch(new Request(`${ORIGIN}${path}`, { headers: { "CF-Connecting-IP": ip } }), env as never, CTX);
+function budgetNs(now = () => new Date("2026-10-04T12:00:00Z")) {
+  const store = new Map<string, unknown>();
+  const instance = new VoiceBudget(
+    { storage: { get: async <T>(k: string) => store.get(k) as T | undefined, put: async (k: string, v: unknown) => void store.set(k, structuredClone(v)) } },
+    undefined,
+    now,
+  );
+  const calls: string[] = [];
+  return {
+    calls,
+    instance,
+    ns: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: (input: string, init?: RequestInit) => { calls.push(new URL(input).pathname); return instance.fetch(new Request(input, init)); } }),
+    },
+  };
+}
+
+// Without a VOICE_BUDGET binding /tts renders nothing (fails closed), so every
+// env gets a generous one unless the test sets the key itself.
+const get = (path: string, env: unknown, ip = "203.0.113.20") => {
+  const withBudget = env && typeof env === "object" && !("VOICE_BUDGET" in env) ? { ...env, VOICE_BUDGET: budgetNs().ns } : env;
+  return worker.fetch(new Request(`${ORIGIN}${path}`, { headers: { "CF-Connecting-IP": ip } }), withBudget as never, CTX);
+};
 
 const line = (text: string, voice = "luna") => ttsUrl(ORIGIN, { text, voice: voice as never }).slice(ORIGIN.length);
 
@@ -77,23 +100,6 @@ describe("GET /tts", () => {
     expect(ai.calls).toHaveLength(0);
   });
 
-  it("budgets new renders per address; cache hits are free", async () => {
-    const kv = fakeKv();
-    const ai = fakeAi();
-    const env = { DOCS_CACHE: kv, AI: ai };
-    for (let i = 0; i < TTS_RATE_LIMIT_MAX; i++) {
-      expect((await get(line(`line ${i}`), env, "203.0.113.99")).status).toBe(200);
-    }
-    await Promise.all(waits);
-    const over = await get(line("one more"), env, "203.0.113.99");
-    expect(over.status).toBe(429);
-    expect(over.headers.get("retry-after")).toBeTruthy();
-    // Already rendered: still served.
-    expect((await get(line("line 0"), env, "203.0.113.99")).status).toBe(200);
-    // Someone else: their own budget.
-    expect((await get(line("one more"), env, "203.0.113.100")).status).toBe(200);
-  });
-
   it("says so when Workers AI is not bound or fails", async () => {
     expect((await get(line("hi"), { DOCS_CACHE: fakeKv() })).status).toBe(503);
     const failing = { DOCS_CACHE: fakeKv(), AI: { run: async () => { throw new Error("capacity"); } } };
@@ -128,7 +134,7 @@ describe("GET /tts — the rate-limit bindings gate misses (0.7.0 gauntlet)", ()
     expect(ai.calls).toHaveLength(12);
   });
 
-  it("still limits when KV is down (the KV budget fails open; the binding doesn't)", async () => {
+  it("still limits when KV is down", async () => {
     const ai = fakeAi();
     const brokenKv = {
       get: async () => { throw new Error("kv down"); },
@@ -182,13 +188,84 @@ describe("GET /tts — Opus gauntlet fixes", () => {
     expect((await head(line("probe"))).status).toBe(200);
     expect(ai.calls).toHaveLength(1);
   });
+});
 
-  it("a daily tripwire stops new renders across everyone", async () => {
-    const { TTS_DAILY_MAX } = await import("../worker/src/index");
+describe("GET /tts — the voice budget (one dollar number, exact, fails closed)", () => {
+
+  it("charges each new line its exact price; cached lines are free", async () => {
+    const b = budgetNs();
     const kv = fakeKv();
-    kv.store.set(`tts:day:${new Date().toISOString().slice(0, 10)}`, String(TTS_DAILY_MAX));
-    const res = await get(line("over budget"), { DOCS_CACHE: kv, AI: fakeAi() });
+    const env = { DOCS_CACHE: kv, AI: fakeAi(), VOICE_BUDGET: b.ns, VOICE_BUDGET_USD_PER_MONTH: "10" };
+    expect((await get(line("hello there"), env)).status).toBe(200); // 11 characters
+    await Promise.all(waits);
+    expect((await get(line("hello there"), env)).status).toBe(200); // cached
+    expect(b.calls).toEqual(["/reserve"]);
+    const status = await (await get("/tts/budget", env)).json();
+    expect(status).toMatchObject({ month: "2026-10", budgetUsd: 10, todayCapUsd: 1 });
+    const ledger = (await (await b.instance.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger;
+    expect(ledger.monthMicro).toBe(11 * 30);
+  });
+
+  it("refuses new lines once the day's share is spent, and says so; heard lines still play", async () => {
+    const b = budgetNs();
+    const kv = fakeKv();
+    const ai = fakeAi();
+    // $0.10/month → $0.01/day → 333 characters a day.
+    const env = { DOCS_CACHE: kv, AI: ai, VOICE_BUDGET: b.ns, VOICE_BUDGET_USD_PER_MONTH: "0.1" };
+    expect((await get(line("a".repeat(200)), env)).status).toBe(200);
+    await Promise.all(waits);
+    const over = await get(line("b".repeat(200)), env);
+    expect(over.status).toBe(429);
+    expect(await over.text()).toMatch(/Today's share of the voice budget/);
+    expect(ai.calls).toHaveLength(1);
+    expect((await get(line("a".repeat(200)), env)).status).toBe(200);
+  });
+
+  it("budget 0 turns new lines off", async () => {
+    const env = { DOCS_CACHE: fakeKv(), AI: fakeAi(), VOICE_BUDGET: budgetNs().ns, VOICE_BUDGET_USD_PER_MONTH: "0" };
+    const res = await get(line("anything"), env);
     expect(res.status).toBe(429);
-    expect(await res.text()).toMatch(/today/);
+    expect(await res.text()).toMatch(/This month's voice budget/);
+  });
+
+  it("gives the reservation back when the render fails", async () => {
+    const b = budgetNs();
+    const env = { DOCS_CACHE: fakeKv(), VOICE_BUDGET: b.ns, AI: { run: async () => { throw new Error("capacity"); } } };
+    expect((await get(line("will fail"), env)).status).toBe(502);
+    await Promise.all(waits);
+    expect(b.calls).toEqual(["/reserve", "/refund"]);
+    const ledger = (await (await b.instance.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger;
+    expect(ledger.monthMicro).toBe(0);
+  });
+
+  it("fails closed: if the budget can't be checked, nothing is rendered", async () => {
+    const ai = fakeAi();
+    const broken = { idFromName: () => "x", get: () => ({ fetch: async () => { throw new Error("DO down"); } }) };
+    const res = await get(line("no budget"), { DOCS_CACHE: fakeKv(), AI: ai, VOICE_BUDGET: broken });
+    expect(res.status).toBe(429);
+    expect(ai.calls).toHaveLength(0);
+  });
+
+  it("no budget bound: nothing is rendered (fails closed, Codex)", async () => {
+    const ai = fakeAi();
+    const res = await get(line("unbudgeted"), { DOCS_CACHE: fakeKv(), AI: ai, VOICE_BUDGET: undefined });
+    expect(res.status).toBe(429);
+    expect(ai.calls).toHaveLength(0);
+  });
+
+  it("keeps the charge when the model answered but the clip is unusable (it may be billed — Codex)", async () => {
+    const b = budgetNs();
+    const huge = new Uint8Array(5 * 1024 * 1024);
+    const env = { DOCS_CACHE: fakeKv(), VOICE_BUDGET: b.ns, AI: fakeAi(huge) };
+    expect((await get(line("too big"), env)).status).toBe(502);
+    await Promise.all(waits);
+    expect(b.calls).toEqual(["/reserve"]);
+  });
+
+  it("rate limits run first: a throttled client never touches the budget", async () => {
+    const b = budgetNs();
+    const env = { DOCS_CACHE: fakeKv(), AI: fakeAi(), VOICE_BUDGET: b.ns, TTS_IP_LIMITER: { limit: async () => ({ success: false }) } };
+    expect((await get(line("throttled"), env)).status).toBe(429);
+    expect(b.calls).toEqual([]);
   });
 });

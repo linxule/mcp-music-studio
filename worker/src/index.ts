@@ -24,6 +24,7 @@ import { STRUDEL_GUIDE_TOPICS, STRUDEL_GUIDES } from "../../src/strudel-guide.js
 import { VERSION } from "../../src/version.js";
 import { staticCheckStrudel } from "../../src/shared/strudel-static-check.js";
 import { TTS_MODEL, normalizeTts, type TtsRequest } from "../../src/shared/tts.js";
+import { budgetMicro, dayCapMicro, lineChars, usd, type VoiceLedger } from "../../src/shared/voice-budget.js";
 import { parseClient } from "../../src/shared/parse-client.js";
 import { mintSessionId, SESSION_ID_RE } from "../../src/shared/session.js";
 import { attachSession, httpSessionBackend, registerSessionTools, type SessionBackend } from "../../src/shared/session-tools.js";
@@ -127,6 +128,10 @@ type Env = {
   /** Cloudflare rate-limit bindings for /tts misses (see wrangler.jsonc). */
   TTS_IP_LIMITER?: RateLimiterBinding;
   TTS_GLOBAL_LIMITER?: RateLimiterBinding;
+  /** The month's voice spend — one VoiceBudget Durable Object (worker/src/voice-budget-do.ts). */
+  VOICE_BUDGET?: DurableObjectNamespace;
+  /** Dollars per month new spoken lines may cost (src/shared/voice-budget.ts). */
+  VOICE_BUDGET_USD_PER_MONTH?: string;
   /** Live sessions — one JamSession Durable Object per id (worker/src/session-do.ts). */
   JAM?: DurableObjectNamespace;
   SESSION_NEW_LIMITER?: RateLimiterBinding;
@@ -987,18 +992,12 @@ export function createMusicServer(
 // is unauthenticated and each MISS costs a Workers AI call, so: lines are
 // capped (TTS_MAX_CHARS), voices are an allowlist of the model's synthetic
 // voices, clips are cached in KV by a digest of voice + text (a repeat is a KV
-// read), and only misses count against a per-address hourly budget.
-
-/** New renders (cache misses) per IP per hour. A DUET's lines are ~10. */
-export const TTS_RATE_LIMIT_MAX = 120;
+// read), and only misses cost anything: each is charged against the month's
+// voice budget (VoiceBudget DO) after the per-address rate limits.
 /** How long a rendered clip stays cached. */
 export const TTS_TTL_SECONDS = 30 * 24 * 60 * 60;
 /** A line of speech is well under this; anything bigger is not what we asked for. */
 const TTS_MAX_BYTES = 4 * 1024 * 1024;
-
-export function ttsRateLimitKey(ip: string): string {
-  return `ratelimit:tts:${clientBucket(ip)}`;
-}
 
 /**
  * The address a budget belongs to. IPv6 is bucketed by /64 — one subscriber
@@ -1014,14 +1013,6 @@ export function clientBucket(ip: string): string {
   const groups = [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
   return `${groups.slice(0, 4).map((g) => g.toLowerCase().replace(/^0+(?=.)/, "")).join(":")}::/64`;
 }
-
-/**
- * New renders across everyone per UTC day — a tripwire, not accounting (KV is
- * approximate). Aura-2 costs $0.030 per 1k characters past Workers AI's free
- * 10k neurons/day (~3.7k chars): 500 lines of ≤240 chars bound a bad day at
- * ~$3.60. Cached lines are free and don't count.
- */
-export const TTS_DAILY_MAX = 500;
 
 export async function ttsCacheKey(request: TtsRequest): Promise<string> {
   const bytes = new TextEncoder().encode(`${request.voice}\u0000${request.text}`);
@@ -1050,6 +1041,28 @@ const TTS_HEADERS = {
   "x-robots-tag": "noindex",
 };
 
+const budgetStub = (ns: DurableObjectNamespace) => ns.get(ns.idFromName("global"));
+
+/** GET /tts/budget — how much of the month's voice budget is spent (public, numbers only). */
+async function handleVoiceBudgetStatus(env: Env): Promise<Response> {
+  const headers = { "content-type": "application/json", "access-control-allow-origin": "*", "cache-control": "no-store" };
+  const monthBudget = budgetMicro(env.VOICE_BUDGET_USD_PER_MONTH);
+  if (!env.VOICE_BUDGET) return new Response(JSON.stringify({ error: "no voice budget bound" }), { status: 503, headers });
+  const res = await budgetStub(env.VOICE_BUDGET).fetch(`https://voice-budget/status?budgetMicro=${monthBudget}`);
+  const { ledger } = (await res.json()) as { ledger: VoiceLedger };
+  return new Response(
+    JSON.stringify({
+      month: ledger.month,
+      spentUsd: usd(ledger.monthMicro),
+      budgetUsd: usd(monthBudget),
+      today: ledger.day,
+      spentTodayUsd: usd(ledger.dayMicro),
+      todayCapUsd: usd(dayCapMicro(monthBudget)),
+    }),
+    { headers },
+  );
+}
+
 async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
@@ -1077,15 +1090,15 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
     return new Response(null, { status: 404, headers: { "access-control-allow-origin": "*" } });
   }
   // A miss costs a model call. First gate: Cloudflare's rate-limit bindings
-  // (per address, then everyone) — they hold when KV is down or racing, which
-  // the KV hourly budget below does not (non-atomic read/write; fails open).
+  // (per address, then everyone). They are about FAIRNESS — one client can't
+  // take the whole budget in a minute. Cost is the voice budget below.
   const ip = clientBucket(request.headers.get("CF-Connecting-IP") ?? "unknown");
-  const tooMany = (why: string) =>
+  const tooMany = (why: string, retryAfter = "60") =>
     new Response(why, {
       status: 429,
       headers: {
         "content-type": "text/plain; charset=utf-8",
-        "retry-after": "60",
+        "retry-after": retryAfter,
         "access-control-allow-origin": "*",
       },
     });
@@ -1099,40 +1112,57 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
   } catch {
     return tooMany("Speech rendering is busy. Try again in a minute.");
   }
-  const limited = await enforceRateLimit(env, request, {
-    key: ttsRateLimitKey,
-    max: TTS_RATE_LIMIT_MAX,
-    message: "Too many new spoken lines from this address. Try again later.",
-  });
-  if (limited) {
-    limited.headers.set("access-control-allow-origin", "*");
-    return limited;
-  }
-  // Daily tripwire across everyone. Approximate (KV is not atomic), and it
-  // fails open on a KV error: the bindings above still hold then.
-  const dayKey = `tts:day:${new Date().toISOString().slice(0, 10)}`;
+  // Cost: reserve this line's exact price against the month (and the day's
+  // share of it). Fails CLOSED — no budget bound, or a budget that can't be
+  // checked, renders nothing; the piece plays without the line and says so.
+  const chars = lineChars(parsed.text);
+  if (!env.VOICE_BUDGET) return tooMany("Speech rendering is not available here (no voice budget).", "3600");
+  const budget = budgetStub(env.VOICE_BUDGET);
+  let chargedIn: { month: string; day: string };
   try {
-    const today = Number((await env.DOCS_CACHE?.get(dayKey)) ?? 0);
-    if (today >= TTS_DAILY_MAX) return tooMany("Speech rendering has reached today's limit. Try again tomorrow.");
-    ctx.waitUntil(
-      Promise.resolve(env.DOCS_CACHE?.put(dayKey, String(today + 1), { expirationTtl: 2 * 24 * 60 * 60 })).catch(
-        () => undefined,
-      ),
-    );
+    const res = await budget.fetch("https://voice-budget/reserve", {
+      method: "POST",
+      body: JSON.stringify({ chars, budgetMicro: budgetMicro(env.VOICE_BUDGET_USD_PER_MONTH) }),
+    });
+    const verdict = (await res.json()) as { ok?: boolean; reason?: "month" | "day"; ledger?: VoiceLedger };
+    if (!verdict.ok || !verdict.ledger) {
+      track(env, { blobs: ["tts", "budget", verdict.reason ?? "unknown"], doubles: [chars], indexes: ["tts"] });
+      return verdict.reason === "day"
+        ? tooMany("Today's share of the voice budget is used up. New spoken lines return tomorrow; lines already heard still play.", "3600")
+        : tooMany("This month's voice budget is used up. New spoken lines return next month; lines already heard still play.", "86400");
+    }
+    chargedIn = { month: verdict.ledger.month, day: verdict.ledger.day };
   } catch {
-    /* KV unwell: the bindings are the gate */
+    return tooMany("Speech rendering is busy. Try again in a minute.");
   }
+  // Refund ONLY when the model refused the call. Once it has returned output
+  // the render may be billed, so a failure on our side keeps the charge.
+  const giveBack = () =>
+    ctx.waitUntil(
+      budget
+        .fetch("https://voice-budget/refund", { method: "POST", body: JSON.stringify({ chars, ...chargedIn }) })
+        .then(() => undefined, () => undefined),
+    );
   if (!env.AI) {
+    giveBack(); // nothing was called
     return new Response("Speech rendering is unavailable.", {
       status: 503,
       headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
     });
   }
+  let output: unknown;
+  try {
+    output = await env.AI.run(TTS_MODEL, { text: parsed.text, speaker: parsed.voice, encoding: "mp3" });
+  } catch (err) {
+    giveBack();
+    return new Response(`Speech rendering failed: ${(err as Error)?.message ?? "unknown error"}`, {
+      status: 502,
+      headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
+    });
+  }
   let bytes: Uint8Array;
   try {
-    bytes = await audioBytes(
-      await env.AI.run(TTS_MODEL, { text: parsed.text, speaker: parsed.voice, encoding: "mp3" }),
-    );
+    bytes = await audioBytes(output);
   } catch (err) {
     return new Response(`Speech rendering failed: ${(err as Error)?.message ?? "unknown error"}`, {
       status: 502,
@@ -1401,6 +1431,9 @@ export default {
 
     if (url.pathname === "/tts") {
       return handleTts(request, env, ctx);
+    }
+    if (url.pathname === "/tts/budget") {
+      return handleVoiceBudgetStatus(env);
     }
 
     if (url.pathname.startsWith("/session/")) {

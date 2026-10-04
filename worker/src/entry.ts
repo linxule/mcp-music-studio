@@ -2,3 +2,4 @@
 // exports helpers/constants for unit tests that workerd cannot treat as RPC handlers.
 export { default } from "./index";
 export { JamSession } from "./session-do";
+export { VoiceBudget } from "./voice-budget-do";

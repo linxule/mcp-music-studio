@@ -19,17 +19,33 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["JamSession"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["VoiceBudget"]
     }
   ],
   // Live sessions: one object per session id (worker/src/session-do.ts).
+  // The month's voice spend: one VoiceBudget object (worker/src/voice-budget-do.ts).
   "durable_objects": {
-    "bindings": [{ "name": "JAM", "class_name": "JamSession" }]
+    "bindings": [
+      { "name": "JAM", "class_name": "JamSession" },
+      { "name": "VOICE_BUDGET", "class_name": "VoiceBudget" }
+    ]
+  },
+  // THE generosity knob: dollars per month that NEW spoken lines (say(), GET
+  // /tts cache misses) may cost — exact, Aura-2 is $0.030 per 1k characters.
+  // No single UTC day may spend more than a tenth of it. Cached lines are free.
+  // Set 2026-10-04 at ~10x the measured peak (2,804 neurons ≈ $0.03 on the
+  // busiest day). Status: GET /tts/budget. Change it here and redeploy.
+  "vars": {
+    "VOICE_BUDGET_USD_PER_MONTH": "10"
   },
   // Workers AI renders say() lines (GET /tts, src/shared/tts.ts).
   "ai": { "binding": "AI", "remote": true },
-  // GET /tts spends money on every cache MISS. These gate misses before the
-  // KV hourly budget, which is best-effort (non-atomic, fails open if KV is
-  // down): per address, and across everyone, per Cloudflare location.
+  // GET /tts spends money on every cache MISS. These are about FAIRNESS — per
+  // address, and across everyone per Cloudflare location — so one client can't
+  // take the month's voice budget in a minute. The budget itself is the cost cap.
   "ratelimits": [
     { "name": "TTS_IP_LIMITER", "namespace_id": "7101", "simple": { "limit": 12, "period": 60 } },
     { "name": "TTS_GLOBAL_LIMITER", "namespace_id": "7102", "simple": { "limit": 240, "period": 60 } },
@@ -76,8 +92,12 @@
       "routes": [],
       "ai": { "binding": "AI", "remote": true },
       "durable_objects": {
-        "bindings": [{ "name": "JAM", "class_name": "JamSession" }]
+        "bindings": [
+          { "name": "JAM", "class_name": "JamSession" },
+          { "name": "VOICE_BUDGET", "class_name": "VoiceBudget" }
+        ]
       },
+      "vars": { "VOICE_BUDGET_USD_PER_MONTH": "2" },
       "ratelimits": [
         { "name": "TTS_IP_LIMITER", "namespace_id": "7101", "simple": { "limit": 12, "period": 60 } },
         { "name": "TTS_GLOBAL_LIMITER", "namespace_id": "7102", "simple": { "limit": 240, "period": 60 } },
