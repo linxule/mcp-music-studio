@@ -461,7 +461,7 @@ const SANDBOX_STAGE = (
     },
     // The real word timings come from the Worker; here each whitespace word
     // gets an even slice of the clip, so the phrase has the widget's structure.
-    sing(line: unknown, notes: unknown, options?: { voice?: unknown; octave?: unknown }) {
+    sing(line: unknown, notes: unknown, options?: { voice?: unknown; octave?: unknown; hold?: unknown }) {
       const request = normalizeTts(line, options?.voice);
       if ("error" in request) throw new TypeError(request.error.replace(/^say\(\)/, "sing()"));
       // 'auto' (the default) depends on the voice, measured in the player.

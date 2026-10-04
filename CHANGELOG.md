@@ -2,6 +2,10 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## 0.12.3 — October 4, 2026
+
+- **`sing()` holds each word for its whole note.** Until now a sung word lasted as long as it was spoken, so a long note ended early and a line sounded narrated. Now a word's onset plays once and a short slice of its vowel repeats until the note ends (`hold: true`, the default; `hold: false` plays words once, as before). The slice is a whole number of pitch periods from a loud, steady part of the word, joined at zero crossings where the waveform matches, and the word's speed is set from the pitch of that repeating slice rather than of the whole word. Measured in Chromium and WebKit on "still water runs deep" (c4 e4 g4 c5, luna): every word fills its one-second step, and every step lands within 52 cents of its note — closer than the spoken version (energy-weighted median 7–8 cents, from about 24).
+
 ## 0.12.2 — October 4, 2026
 
 - **A sung line's octave reaches the model even when the line was still loading.** When a piece with a new `sing()` line is swapped into a running live session, the player reports at once, before the line is measured, so its report said "still loading" and the octave never arrived — get-session had nothing to show (field test). The player now reports such a line again once it is measured (octave chosen, how high the voice speaks, words at the speed limit), and in a session that follow-up is in the log. Measured in Chromium and WebKit: the follow-up reaches get-session within a few seconds of the swap.

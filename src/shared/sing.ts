@@ -205,7 +205,13 @@ export interface SungSlice {
   end: number;
   /** Playback rate: target pitch ÷ spoken pitch. */
   speed: number;
+  /** Fractions of the clip to loop so the word fills its note (hold); absent = play once, as spoken. */
+  loopBegin?: number;
+  loopEnd?: number;
 }
+
+/** The envelope's release when a held word is cut at its note's end. */
+export const HOLD_RELEASE_SECONDS = 0.05;
 
 /** The Strudel functions a phrase is built with (the page's, or the validator's). */
 export interface PhraseKit {
@@ -233,7 +239,14 @@ export function buildPhrase(
     if (b >= total) break;
     if (b > at) pairs.push([b - at, kit.silence]);
     const s = slice(word);
-    pairs.push([e - b, kit.sound(name).begin(s.begin).end(s.end).speed(s.speed)]);
+    let step = kit.sound(name).begin(s.begin).end(s.end).speed(s.speed);
+    // superdough loops the buffer between loopBegin/loopEnd (fractions of
+    // the clip) and, with clip set, cuts the sound at the hap's end with the
+    // release: the word's onset plays once, its voiced middle repeats.
+    if (s.loopBegin !== undefined && s.loopEnd !== undefined) {
+      step = step.loop(1).loopBegin(s.loopBegin).loopEnd(s.loopEnd).clip(1).release(HOLD_RELEASE_SECONDS);
+    }
+    pairs.push([e - b, step]);
     at = e;
   }
   if (at < total) pairs.push([total - at, kit.silence]);

@@ -1410,7 +1410,7 @@ export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
     id: "lullaby",
     title: "Lullaby — the piano asks, a voice answers",
     summary:
-      "A 16-bar lullaby in C: two bars of electric piano ask, two bars of a sung line answer, on the chord tones of the bar it lands in. The second eight bars fill in a bass and the softest drums under the same call and answer. The shortest way to hear what sing() is, and is not — talk-singing, not a singer.",
+      "A 16-bar lullaby in C: two bars of electric piano ask, two bars of a sung line answer, on the chord tones of the bar it lands in. The second eight bars fill in a bass and the softest drums under the same call and answer. The shortest way to hear what sing() is: each word held on its note, a robot singing rather than a singer.",
     teaches: [
       "sing(line, notes): one word per note, in order, pitched onto it; the pattern takes .gain() and .room() like any sound",
       "call and response by placement: cat(silence, silence, moon, sea) puts the answers in bars 3–4 of every four",

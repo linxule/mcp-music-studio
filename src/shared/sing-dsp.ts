@@ -102,6 +102,8 @@ const median = (values: number[]): number => {
 export interface PitchWindow {
   hz: number;
   energy: number;
+  /** Where the window starts, seconds into the span it was measured on. */
+  at: number;
 }
 
 /**
@@ -171,7 +173,7 @@ export function pitchWindows(
     if (hz === null) continue;
     let energy = 0;
     for (let i = at; i < at + windowSize; i++) energy += region[i] * region[i];
-    out.push({ hz, energy });
+    out.push({ hz, energy, at: at / rate });
   }
   return out;
 }
@@ -306,6 +308,100 @@ export interface TimedWord {
 export interface AnalysedWord extends TimedWord {
   /** The spoken pitch; null when the word had no voiced window. */
   hz: number | null;
+  /** A loop window in the voiced middle (seconds) that sustains the word; null when none fits. */
+  loop: LoopWindow | null;
+}
+
+/** How long a loop window is, about: a whole number of pitch periods near this. */
+export const LOOP_SECONDS = 0.08;
+/** A loop window's local pitch must sit this close to the word's anchor pitch. */
+const LOOP_MAX_CENTS = 50;
+/** Preferred: the pitch moves no more than this across the loop span. */
+const LOOP_STEADY_CENTS = 30;
+
+export interface LoopWindow {
+  start: number;
+  end: number;
+  /** The pitch inside the window — what a held word is heard at, so its speed comes from this. */
+  hz: number;
+}
+
+/**
+ * A window inside `[from, to)` seconds that can repeat without a click: a
+ * whole number of periods (≈ LOOP_SECONDS long) starting and ending at a
+ * rising zero crossing, taken from a loud part of the word whose local pitch
+ * is within LOOP_MAX_CENTS of `anchorHz` (a word glides — "deep" rose 208 →
+ * 278 Hz — and the loop must repeat the part the anchor describes), chosen
+ * for the best match of the waveform across the seam. Null when nothing
+ * fits — the word then plays once, as spoken.
+ */
+export function findLoop(
+  samples: Float32Array,
+  sampleRate: number,
+  from: number,
+  to: number,
+  anchorHz: number,
+  windows: PitchWindow[] = pitchWindows(samples, sampleRate, from, to),
+): LoopWindow | null {
+  if (!(anchorHz > 0) || !windows.length) return null;
+  const a = Math.max(0, Math.floor(from * sampleRate));
+  const b = Math.min(samples.length, Math.ceil(to * sampleRate));
+  const peak = Math.max(...windows.map((w) => w.energy));
+  if (!(peak > 0)) return null;
+  const rising = (i: number) => samples[i - 1] <= 0 && samples[i] > 0;
+  // A voice has several rising crossings per period, so the seam is judged
+  // over a WHOLE period after each end (relative to the signal's own power):
+  // an end one crossing early repeats a truncated period and plays sharp
+  // (measured: +75 ¢ on "water", +132 ¢ on "deep" with a 64-sample seam).
+  const seam = (start: number, end: number, span: number) => {
+    let d = 0;
+    let p = 0;
+    for (let i = 0; i < span; i++) {
+      const x = samples[start + i] - samples[end + i];
+      d += x * x;
+      p += samples[start + i] * samples[start + i];
+    }
+    return p > 0 ? d / p : Infinity;
+  };
+  // Candidates: loud, near the anchor — and, when any are, stable in pitch
+  // across the loop span (a window on a glide repeats an average pitch; "deep"
+  // rose 202 → 250 Hz in 0.12 s and its loop played 10% sharp of its tag).
+  const cents = (x: number, y: number) => Math.abs(1200 * Math.log2(x / y));
+  const near = windows.filter((w) => cents(w.hz, anchorHz) <= LOOP_MAX_CENTS);
+  // Loud first; a word whose loudest part is a glide away from the anchor
+  // (asteria's "orbit" played once, 0.29 s) still gets its quieter steady part.
+  const loud = near.filter((w) => w.energy >= peak * 0.5);
+  const quieter = loud.length ? loud : near.filter((w) => w.energy >= peak * 0.2);
+  const glide = (w: PitchWindow) =>
+    Math.max(0, ...windows.filter((x) => x.at >= w.at && x.at <= w.at + LOOP_SECONDS).map((x) => cents(x.hz, w.hz)));
+  const steady = quieter.filter((w) => glide(w) <= LOOP_STEADY_CENTS);
+  let best: { start: number; end: number; d: number } | null = null;
+  for (const w of steady.length ? steady : quieter) {
+    const period = sampleRate / w.hz;
+    const span = Math.round(period);
+    const periods = Math.max(2, Math.round((LOOP_SECONDS * sampleRate) / period));
+    const length = Math.round(periods * period);
+    const windowStart = a + Math.round(w.at * sampleRate);
+    // Rising crossings within this window's first period.
+    for (let start = Math.max(a + 1, windowStart); start < windowStart + period; start++) {
+      if (!rising(start)) continue;
+      const target = start + length;
+      // Every rising crossing within half a period of the target: the seam decides.
+      for (let end = Math.max(start + 1, Math.floor(target - period / 2)); end <= target + period / 2; end++) {
+        if (end + span > b || !rising(end)) continue;
+        const d = seam(start, end, span);
+        if (!best || d < best.d) best = { start, end, d };
+      }
+    }
+  }
+  if (!best) return null;
+  // The pitch of what the loop plays: the segment repeated, measured as one sound.
+  const segment = samples.subarray(best.start, best.end);
+  const repeats = Math.max(2, Math.ceil((0.25 * sampleRate) / segment.length));
+  const looped = new Float32Array(segment.length * repeats);
+  for (let i = 0; i < repeats; i++) looped.set(segment, i * segment.length);
+  const hz = detectPitch(looped, sampleRate) ?? anchorHz;
+  return { start: best.start / sampleRate, end: best.end / sampleRate, hz };
 }
 
 /** Each word's start and end snapped to its sound, and its spoken pitch. */
@@ -319,6 +415,8 @@ export function analyseWords(samples: Float32Array, sampleRate: number, words: T
     const start = starts[i];
     const limit = i + 1 < words.length ? Math.max(starts[i + 1], w.end) : duration;
     const end = Math.max(start + 0.03, Math.min(duration, snapOffset(samples, sampleRate, start, Math.min(duration, w.end), limit)));
-    return { word: w.word, start, end, hz: detectPitch(samples, sampleRate, start, end) };
+    const windows = pitchWindows(samples, sampleRate, start, end);
+    const hz = anchorPitch(windows);
+    return { word: w.word, start, end, hz, loop: hz ? findLoop(samples, sampleRate, start, end, hz, windows) : null };
   });
 }

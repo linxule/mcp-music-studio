@@ -255,9 +255,12 @@ export interface SingOptions extends SayOptions {
    * A number (−2…2): exactly that many octaves; 0 = the notes as written.
    */
   octave?: number | "auto";
-  // `hold` (loop a word's voiced middle to fill a long note) is not built:
-  // superdough has no per-event loop points for a slice, so it would take
-  // re-rendering the word into its own buffer. Long notes end early instead.
+  /**
+   * true (the default): each word is held for its whole note — its onset plays
+   * once, then a whole number of pitch periods from its voiced middle repeats
+   * until the note ends. false: words last as long as they were spoken.
+   */
+  hold?: boolean;
 }
 
 /** A sung line's clip, decoded: what sing() measures pitch on. */
@@ -756,6 +759,7 @@ export function createStage(env: StageEnv): Stage {
         throw new Error("sing() is not available on this page");
       }
       const auto = options.octave === undefined || options.octave === "auto";
+      const hold = options.hold !== false;
       const fixed = auto ? 0 : finite(options.octave);
       if (fixed === undefined || !Number.isInteger(fixed) || Math.abs(fixed) > 2) {
         throw new RangeError("sing(): octave is 'auto' or a whole number from -2 to 2");
@@ -771,16 +775,22 @@ export function createStage(env: StageEnv): Stage {
         const spokenHz = words.map((w) => w.hz);
         const voice = spokenMedianHz(spokenHz);
         const octave = auto ? autoOctave(layout.placed.map((p) => p.midi), voice) : fixed;
+        // A held word is heard at its loop window's pitch, so that sets its speed.
         const { speeds, clamped } = wordSpeeds(
-          spokenHz,
+          hold ? words.map((w) => w.loop?.hz ?? w.hz) : spokenHz,
           layout.placed.map((p) => p.midi + 12 * octave),
         );
         Object.assign(report, { ready: true, octave, auto, spokenHz: voice, words: layout.placed.length, clamped });
-        phrase = buildPhrase({ sound, timecat, silence: lazyPattern(() => null) } as any, name, layout, (p) => ({
-          begin: words[p.index].start / duration,
-          end: words[p.index].end / duration,
-          speed: speeds[p.index],
-        }));
+        phrase = buildPhrase({ sound, timecat, silence: lazyPattern(() => null) } as any, name, layout, (p) => {
+          const word = words[p.index];
+          const loop = hold ? word.loop : null;
+          return {
+            begin: word.start / duration,
+            end: word.end / duration,
+            speed: speeds[p.index],
+            ...(loop ? { loopBegin: loop.start / duration, loopEnd: loop.end / duration } : {}),
+          };
+        });
       };
       if (sung.result) build(sung.result.words, sung.result.duration);
       else

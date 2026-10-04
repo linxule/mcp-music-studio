@@ -36,13 +36,15 @@ const TARGETS = NOTES.map((n) => {
 const VOICE = process.env.VOICE ?? "luna";
 /** OCTAVE=n plays the notes exactly n octaves away; unset = the default, 'auto' (read back from the widget's report). */
 const OCTAVE = process.env.OCTAVE;
+/** HOLD=0 plays words as spoken (sing's hold: false); unset = held notes, asserted to fill their step. */
+const HOLD = process.env.HOLD !== "0";
 /** Optional: append one JSON line per run (line, voice, engine, cents) — for a matrix. */
 const SUMMARY = process.env.SUMMARY;
 // One step per second: a spoken word (~0.4 s ÷ its speed) ends well inside it.
 const CPS = 0.25;
 const CYCLES = 4;
 const CODE = `setcps(${CPS})
-sing('${LINE}', "${NOTES.join(" ")}", { voice: '${VOICE}'${OCTAVE !== undefined ? `, octave: ${Number(OCTAVE)}` : ""} })`;
+sing('${LINE}', "${NOTES.join(" ")}", { voice: '${VOICE}'${OCTAVE !== undefined ? `, octave: ${Number(OCTAVE)}` : ""}${HOLD ? "" : ", hold: false"} })`;
 
 /**
  * A second opinion that shares no code with the widget: the strongest
@@ -196,6 +198,7 @@ const reports = await page.evaluate(() => globalThis.__reports ?? []);
 const sungNote = reports.map((t) => /sing: .*/.exec(t)?.[0]).filter(Boolean).at(-1) ?? null;
 const chosen = OCTAVE !== undefined ? Number(OCTAVE) : Number(/: octave ([+-]?\d+)/.exec(sungNote ?? "")?.[1] ?? NaN);
 console.log(`  widget: ${sungNote ?? "(no sing note in its reports)"}`);
+if (!sungNote) for (const t of reports) console.log(`    report: ${t.slice(0, 300)}`);
 const rec = await frame().evaluate(() => {
   const { rate, chunks, clock } = globalThis.__rec;
   const total = chunks.reduce((n, [, c]) => n + c.length, 0);
@@ -290,6 +293,14 @@ silent.length === 0 ? ok("every step is audible") : fail(`${silent.length} silen
 off.length === 0
   ? ok(`every step within ±1 semitone of its note (worst ${Math.max(...rows.map((r) => Math.abs(r.cents ?? 0))).toFixed(0)} cents)`)
   : fail(`${off.length} steps off by more than a semitone: ${off.map((r) => `${r.cycle}.${r.step} ${r.cents === null ? "unvoiced" : `${r.cents.toFixed(0)}¢`}`).join(", ")}`);
+if (HOLD) {
+  // A held word fills its step: voiced for most of the second, not the ~0.3 s it was spoken.
+  const stepSeconds = 1 / CPS / NOTES.length;
+  const short = rows.filter((r) => r.sounded < stepSeconds * 0.7);
+  short.length === 0
+    ? ok(`every held word fills its note (shortest ${Math.min(...rows.map((r) => r.sounded)).toFixed(2)} of ${stepSeconds.toFixed(2)} s)`)
+    : fail(`${short.length} held words end early: ${short.map((r) => `${r.cycle}.${r.step} ${r.sounded.toFixed(2)} s`).join(", ")}`);
+}
 Number.isFinite(chosen) ? ok(`octave ${chosen}${OCTAVE !== undefined ? " (given)" : " (auto, from the widget's report)"}`) : fail("the widget never reported which octave it chose");
 tts.some((t) => t === "words 200") ? ok("GET /tts?…&words=1 served the timings") : fail(`no words request succeeded (${tts.join(", ")})`);
 errors.length === 0 ? ok("no console errors") : fail(`console:\n  ${errors.slice(0, 5).join("\n  ")}`);

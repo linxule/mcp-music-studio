@@ -15,6 +15,7 @@ import {
   wordSpeeds,
   autoOctave,
   describeSung,
+  HOLD_RELEASE_SECONDS,
   spokenMedianHz,
   type SungReport,
 } from "../src/shared/sing";
@@ -183,6 +184,14 @@ describe("buildPhrase", () => {
     expect(haps.map((h: any) => [Number(h.whole.begin), Number(h.whole.end)])).toEqual([[0, 0.25], [0.5, 0.75], [0.75, 1]]);
     expect(haps[2].value).toEqual({ s: "say_x", begin: 2 / 3, end: 1, speed: 3 });
   });
+  it("a held word loops its voiced middle and is cut at the note's end with a release", () => {
+    const layout = layoutWords(2, noteSource("c4 e4", midiOf));
+    const phrase = buildPhrase(kit, "say_x", layout, (p) => ({ begin: 0.1 * p.index, end: 0.5, speed: 1.5, loopBegin: 0.2, loopEnd: 0.28 }));
+    const [first] = phrase.queryArc(0, 1);
+    expect(first.value).toEqual({ s: "say_x", begin: 0, end: 0.5, speed: 1.5, loop: 1, loopBegin: 0.2, loopEnd: 0.28, clip: 1, release: HOLD_RELEASE_SECONDS });
+    const plain = buildPhrase(kit, "say_x", layout, () => ({ begin: 0, end: 0.5, speed: 1 })).queryArc(0, 1)[0].value;
+    expect(plain).toEqual({ s: "say_x", begin: 0, end: 0.5, speed: 1 });
+  });
   it("a two-cycle phrase is slowed to two cycles", () => {
     const layout = layoutWords(5, noteSource("c4 d4 e4 g4", midiOf));
     const phrase = buildPhrase(kit, "say_x", layout, () => ({ begin: 0, end: 1, speed: 1 }));
@@ -316,6 +325,24 @@ describe("sing() in the stage runtime", () => {
     stage.rollback();
     expect(stage.sung()).toHaveLength(1);
     expect(stage.sung()[0].line).toBe("still water runs deep");
+  });
+
+  it("holds each word for its note by default; hold: false plays it once as spoken", async () => {
+    const { stage } = sung();
+    let token = stage.begin();
+    const held = stage.globals.sing("still water runs deep", "c4 e4 g4 c5", { octave: 0 }) as any;
+    stage.commit(token);
+    await new Promise((r) => setTimeout(r, 0));
+    const hap = held.queryArc(0, 1)[0].value;
+    expect(hap).toMatchObject({ loop: 1, clip: 1, release: HOLD_RELEASE_SECONDS });
+    expect(hap.loopBegin).toBeGreaterThanOrEqual(hap.begin);
+    expect(hap.loopEnd).toBeLessThanOrEqual(hap.end);
+    expect(hap.loopEnd).toBeGreaterThan(hap.loopBegin);
+    token = stage.begin();
+    const spoken = stage.globals.sing("still water runs deep", "c4 e4 g4 c5", { octave: 0, hold: false }) as any;
+    stage.commit(token);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(spoken.queryArc(0, 1)[0].value).not.toHaveProperty("loop");
   });
 
   it("counts words at the speed limit", async () => {

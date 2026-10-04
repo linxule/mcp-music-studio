@@ -327,7 +327,7 @@ stack(
 - Don't use speechSynthesis: it never plays in the Claude mobile app.
 
 ## Singing — sing(line, notes)
-sing(line, notes, { voice, octave }) is talk-singing: the server speaks the
+sing(line, notes, { voice, octave, hold }) sings a line: the server speaks the
 line once (as say() would) and finds where each word is; the player puts word
 i on note i, sped up or slowed down so its spoken pitch lands on the note. It
 returns a PATTERN: .slow(), .gain(), .room() and stack() work as usual.
@@ -355,8 +355,10 @@ stack(
   how many words hit that limit — a line still loading when the piece was
   reported (a swap into a running piece) is reported again once measured; in
   a live session get-session shows it.
-- A word lasts as long as it was spoken (÷ its speed): long notes end early.
-  Give a line short notes, or let .room() carry the tail.
+- Each word is held for its whole note: its onset plays once, then a slice
+  of its voiced middle repeats until the note ends (hold: true, the default).
+  A long note is a long vowel, which is what singing is. hold: false plays
+  each word once, as spoken, so long notes end early — talk-singing.
 - Silent until the line has loaded (about 2 s the first time; cached after).
 - Costs about 2% more of the voice budget than say() for the same line (the
   server also transcribes it). Same voices, same 240-character limit, English.

@@ -1,7 +1,7 @@
 // sing() signal processing (src/shared/sing-dsp.ts) on synthetic signals:
 // pitch of a word, and its start snapped to where the sound begins.
 import { describe, expect, it } from "vitest";
-import { analyseWords, anchorPitch, detectPitch, pitchWindows, snapOffset, snapOnset } from "../src/shared/sing-dsp";
+import { analyseWords, anchorPitch, detectPitch, findLoop, LOOP_SECONDS, pitchWindows, snapOffset, snapOnset } from "../src/shared/sing-dsp";
 
 /** Seconds of a tone (fundamental + optional harmonics) after `lead` seconds of silence. */
 function tone(sampleRate: number, seconds: number, hz: number, { lead = 0, harmonics = 1 } = {}): Float32Array {
@@ -164,5 +164,57 @@ describe("analyseWords", () => {
     expect(words[0].end).toBe(1);
     expect(words[0].end - words[0].start).toBeGreaterThanOrEqual(0.03 - 1e-9);
     expect(words[0].hz).toBeNull();
+  });
+});
+
+describe("findLoop — the window a held word repeats", () => {
+  const rate = 48_000;
+  it("is a whole number of periods between rising zero crossings, in the loud part, with a clean seam", () => {
+    const signal = tone(rate, 0.4, 200, { harmonics: 4, lead: 0.1 });
+    const loop = findLoop(signal, rate, 0.1, 0.5, 200)!;
+    expect(loop).not.toBeNull();
+    const periods = (loop.end - loop.start) * 200;
+    expect(Math.abs(periods - Math.round(periods))).toBeLessThan(0.02);
+    expect(Math.abs(loop.end - loop.start - LOOP_SECONDS)).toBeLessThan(1 / 200);
+    const at = (t: number) => signal[Math.round(t * rate)];
+    expect(at(loop.start)).toBeGreaterThan(0);
+    expect(at(loop.start - 1 / rate)).toBeLessThanOrEqual(0);
+    expect(Math.abs(at(loop.start) - at(loop.end))).toBeLessThan(0.02);
+    expect(loop.start).toBeGreaterThanOrEqual(0.1);
+    expect(loop.end).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(loop.hz - 200)).toBeLessThan(1);
+  });
+  it("loops the part of a gliding word that sits at the anchor pitch, and says that part's pitch", () => {
+    // 0.2 s at 200 Hz, then 0.2 s at 300 Hz, twice as loud: the anchor is 300 Hz.
+    const signal = concat(tone(rate, 0.2, 200, { harmonics: 3 }), tone(rate, 0.2, 300, { harmonics: 3 }).map((v) => v * 2));
+    const hz = detectPitch(signal, rate, 0, 0.4)!;
+    expect(Math.abs(hz - 300)).toBeLessThan(3);
+    const loop = findLoop(signal, rate, 0, 0.4, hz)!;
+    expect(loop.start).toBeGreaterThanOrEqual(0.2);
+    expect(Math.abs(loop.hz - 300)).toBeLessThan(2);
+    // Asked for the quiet part's pitch instead: its windows are a quarter as
+    // loud, still above the quieter tier, so that part loops at its own pitch.
+    const quiet = findLoop(signal, rate, 0, 0.4, 200)!;
+    expect(quiet.end).toBeLessThanOrEqual(0.2 + 1e-3);
+    expect(Math.abs(quiet.hz - 200)).toBeLessThan(2);
+    // Nothing near the asked pitch at all: no loop.
+    expect(findLoop(signal, rate, 0, 0.4, 120)).toBeNull();
+  });
+  it("is null for a span too short to loop, for silence, and without a pitch", () => {
+    expect(findLoop(tone(rate, 0.05, 200), rate, 0, 0.05, 200)).toBeNull();
+    expect(findLoop(new Float32Array(rate), rate, 0, 1, 200)).toBeNull();
+    expect(findLoop(tone(rate, 0.4, 200), rate, 0, 0.4, 0)).toBeNull();
+  });
+  it("analyseWords carries each voiced word's loop; an unvoiced word has none", () => {
+    const signal = concat(new Float32Array(rate * 0.1), tone(rate, 0.4, 200, { harmonics: 4 }), new Float32Array(rate * 0.3));
+    const words = analyseWords(signal, rate, [
+      { word: "one", start: 0, end: 0.5 },
+      { word: "two", start: 0.5, end: 0.8 },
+    ]);
+    expect(words[0].loop).not.toBeNull();
+    expect(words[0].loop!.start).toBeGreaterThanOrEqual(words[0].start);
+    expect(words[0].loop!.end).toBeLessThanOrEqual(words[0].end);
+    expect(words[1].hz).toBeNull();
+    expect(words[1].loop).toBeNull();
   });
 });
