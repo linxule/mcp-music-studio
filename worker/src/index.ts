@@ -350,6 +350,8 @@ export interface FullPlayerInit {
   session?: { id: string; origin: string; rev?: number };
   widget: string;
   classic?: string;
+  /** `?watch`: the stage alone — code hidden, one tap to start (Strudel only). */
+  watch?: boolean;
 }
 
 export function fullPlayerHtml(init: FullPlayerInit): string {
@@ -376,6 +378,7 @@ function renderFullPlayer(
     ...(session ? { session } : {}),
     widget: "/widget/strudel",
     ...(session ? {} : { classic: `${classic.pathname}${classic.search}` }),
+    ...(url.searchParams.has("watch") ? { watch: true } : {}),
   });
   const res = playerResponse(html, SHARE_HOST_CSP);
   // A session page shows whatever the session plays now: never cache it.

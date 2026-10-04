@@ -1775,7 +1775,10 @@ async function renderPattern(args: Record<string, unknown>, permit?: Promise<boo
  */
 let playPresses = 0;
 
-playBtn.addEventListener("click", async (event) => {
+playBtn.addEventListener("click", (event) => void pressPlay(event.isTrusted));
+
+/** The Play button's press — also the watch page's tap-to-start. */
+async function pressPlay(trusted: boolean): Promise<void> {
   const editor = getEditor();
   if (!editor) return;
   playPresses++;
@@ -1804,13 +1807,13 @@ playBtn.addEventListener("click", async (event) => {
       // reports the outcome, so there is no optimistic state to set here.
       setStatus("Evaluating...");
       // Armed right before the call that consumes it (synchronously, on entry).
-      playPressIntent = event.isTrusted;
+      playPressIntent = trusted;
       await editor.evaluate(true);
     }
   } catch (err) {
     setStatus(`Playback error: ${(err as Error).message}`, "error");
   }
-});
+}
 
 // The editor's own evaluate keys (Ctrl/Cmd/Alt+Enter), pressed INSIDE the
 // editor: its keymap calls evaluate() synchronously during this same keydown,
@@ -1995,7 +1998,7 @@ stageBtn.addEventListener("click", () => {
 // Escape leaves the stage, the way it leaves any other "took over the frame"
 // mode. Bound on the document so it works with focus inside CodeMirror.
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && widgetState.stageMode) {
+  if (event.key === "Escape" && widgetState.stageMode && !watchMode) {
     pieceStage.left();
     widgetState.setStageMode(false);
     applyStageMode();
@@ -2007,6 +2010,36 @@ document.addEventListener("keydown", (event) => {
 });
 
 syncStageAffordance();
+
+// =============================================================================
+// Watch page — /p/<id>?watch, /s/<id>?watch: the share page frames us with
+// ?watch=1. The stage alone (code hidden; the controls strip shows only when
+// the piece declares controls, as everywhere), and one tap to start: a shared
+// page never runs on its own, so the tap IS the Play press.
+// =============================================================================
+
+const watchMode = new URLSearchParams(location.search).get("watch") === "1";
+if (watchMode) {
+  document.documentElement.dataset.watch = "true";
+  widgetState.setVizManual(true);
+  widgetState.setVizVisible(true);
+  widgetState.setStageMode(true);
+  applyVizVisibility();
+  applyStageMode();
+  const start = document.createElement("button");
+  start.className = "watch-start";
+  start.textContent = "▶ Play";
+  start.setAttribute("aria-label", "Play");
+  start.addEventListener("click", (event) => {
+    if (!getEditor()) {
+      setStatus("Still loading — tap again in a moment", "normal");
+      return;
+    }
+    start.remove();
+    void pressPlay(event.isTrusted);
+  });
+  replSection.appendChild(start);
+}
 
 observeVisualSize(syncEditorToWidth);
 
