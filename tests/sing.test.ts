@@ -16,6 +16,7 @@ import {
   autoOctave,
   describeSung,
   spokenMedianHz,
+  type SungReport,
 } from "../src/shared/sing";
 import { createStage, stageEvent, type StageEnv, type SungClip } from "../src/shared/stage-runtime";
 import { ttsSampleName } from "../src/shared/tts";
@@ -209,7 +210,9 @@ describe("sing() in the stage runtime", () => {
   function sung(load: () => Promise<SungClip> = async () => clip()) {
     const errors: Array<[string, unknown]> = [];
     const loads: string[] = [];
+    const followUps: SungReport[] = [];
     const env: StageEnv = {
+      observeSung: (report) => void followUps.push(report),
       audibleCycle: () => 0,
       isPlaying: () => true,
       requestFrame: () => 1,
@@ -225,8 +228,40 @@ describe("sing() in the stage runtime", () => {
       lazyPattern: (get) => new Pattern((state: any) => ((get() as any)?.query(state) ?? [])),
       timecat: (...pairs) => stepcat(...pairs),
     };
-    return { stage: createStage(env), errors, loads };
+    return { stage: createStage(env), errors, loads, followUps };
   }
+
+  it("reports a line again once measured, when the evaluation's report saw it still loading (2026-10-04 field test)", async () => {
+    const { stage, followUps } = sung();
+    let token = stage.begin();
+    stage.globals.sing("still water runs deep", "c4 e4 g4 c5");
+    stage.commit(token);
+    // The app reports the evaluation before the words arrive (a swap into a running piece).
+    expect(stage.sung({ noted: true })[0].ready).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(followUps).toHaveLength(1);
+    expect(followUps[0]).toMatchObject({ line: "still water runs deep", ready: true, octave: -1, auto: true, words: 4 });
+    // Measured before anyone reported it: the evaluation's own report covers it.
+    token = stage.begin();
+    stage.globals.sing("the sea is slow", "a3 c4 a3 f3");
+    stage.commit(token);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(stage.sung({ noted: true })).toEqual([expect.objectContaining({ line: "the sea is slow", ready: true })]);
+    expect(followUps).toHaveLength(1);
+    // Cached line: ready at the call, nothing to follow up.
+    token = stage.begin();
+    stage.globals.sing("the sea is slow", "a3 c4 a3 f3");
+    stage.commit(token);
+    stage.sung({ noted: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(followUps).toHaveLength(1);
+    // A rolled-back evaluation's line is never followed up.
+    stage.begin();
+    stage.globals.sing("gone", "c4");
+    stage.rollback();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(followUps).toHaveLength(1);
+  });
 
   it("is silent until the words arrive, then plays each word in tune on its note", async () => {
     const { stage, loads } = sung();

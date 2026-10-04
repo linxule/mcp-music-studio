@@ -350,8 +350,11 @@ stack(
   fixed octave.
 - It sounds like a robot singing, not a singer: the voice's character moves
   with the pitch, so keep a melody's range narrow (about an octave). A word
-  more than two octaves from the voice can't reach its note; the report after
-  playing says how many words hit that limit.
+  more than two octaves from the voice can't reach its note. The player's
+  report says, per line, the octave it chose, how high the voice speaks and
+  how many words hit that limit — a line still loading when the piece was
+  reported (a swap into a running piece) is reported again once measured; in
+  a live session get-session shows it.
 - A word lasts as long as it was spoken (÷ its speed): long notes end early.
   Give a line short notes, or let .room() carry the tail.
 - Silent until the line has loaded (about 2 s the first time; cached after).

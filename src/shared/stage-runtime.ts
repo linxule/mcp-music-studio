@@ -143,6 +143,11 @@ export interface StageEnv {
   observeRememberedState?(): void;
   /** The piece called openStage(): it would like Stage mode (the app decides). */
   requestStage?(): void;
+  /**
+   * A sung line finished measuring AFTER its evaluation had been described
+   * (sung({ noted: true }) saw it "still loading"): report its octave now.
+   */
+  observeSung?(report: SungReport): void;
 }
 
 /** tilt() reads device orientation; mic() the input loudness. */
@@ -378,8 +383,12 @@ export interface Stage {
   rollback(token?: number): void;
   /** remember() values as stored now (a live session's snapshot). */
   remembered(): RememberedEntry[];
-  /** What each sing() of the committed evaluation became: octave, voice, words at the speed limit. */
-  sung(): SungReport[];
+  /**
+   * What each sing() of the committed evaluation became: octave, voice, words
+   * at the speed limit. `noted: true` means the caller is reporting them now:
+   * a line still loading then is reported again (observeSung) once measured.
+   */
+  sung(options?: { noted?: boolean }): SungReport[];
   /** Teardown: end everything, for good — later registrations are ignored. */
   stop(): void;
   /** How many registrations are live (tests, diagnostics). */
@@ -702,6 +711,8 @@ export function createStage(env: StageEnv): Stage {
   // What each sing() call of the committed evaluation became (the model's report).
   let activeSung: SungReport[] = [];
   let pendingSung: SungReport[] | null = null;
+  /** Reports the app has already described to the model (while not ready, or ready). */
+  const notedSung = new WeakSet<SungReport>();
 
   const requireFunction = (api: string, fn: unknown): void => {
     if (typeof fn !== "function") throw new TypeError(`${api} needs a function, got ${typeof fn}`);
@@ -779,6 +790,16 @@ export function createStage(env: StageEnv): Stage {
               build(r.words, r.duration);
             } catch (error) {
               env.reportError("sing", error);
+              return;
+            }
+            // Described as "still loading" by a report that already went out
+            // (a swap into a running piece doesn't wait for voices): follow up.
+            if (notedSung.has(report) && activeSung.includes(report)) {
+              try {
+                env.observeSung?.({ ...report });
+              } catch (error) {
+                env.reportError("sing", error);
+              }
             }
           },
           () => undefined, // reported where it failed
@@ -965,7 +986,10 @@ export function createStage(env: StageEnv): Stage {
       sync();
     },
     remembered: () => remembering.entries(),
-    sung: () => activeSung.map((r) => ({ ...r })),
+    sung: (options) => {
+      if (options?.noted) for (const r of activeSung) notedSung.add(r);
+      return activeSung.map((r) => ({ ...r }));
+    },
     size: () => active.size,
     controls: () =>
       [...controlSpecs.values()].map((spec) => ({ spec: sourceOf(spec), value: controlValues.get(spec.name) ?? spec.init })),
@@ -1044,6 +1068,7 @@ export interface BrowserStageOptions {
   observeRemembered?(change: RememberChange): void;
   observeRememberedState?(): void;
   requestStage?(): void;
+  observeSung?(report: SungReport): void;
   /** Where the control strip goes (default: tapArea). */
   controlsHost?: HTMLElement;
   /** The strip was redrawn (a live session snapshots it). */
@@ -1190,6 +1215,7 @@ export function createBrowserStageEnv(options: BrowserStageOptions): BrowserStag
     observeRemembered: options.observeRemembered,
     observeRememberedState: options.observeRememberedState,
     requestStage: options.requestStage,
+    observeSung: options.observeSung,
     signal: (read) => (typeof w.signal === "function" ? w.signal(() => read()) : undefined),
     renderControls: (specs, values, input) =>
       renderControlStrip(options.controlsHost ?? options.tapArea, specs, values, input),

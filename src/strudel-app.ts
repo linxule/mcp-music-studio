@@ -190,7 +190,7 @@ initReports({
   app, getEditor, currentPlaybackState, isSchedulerStarted, audioIsBlockedNow,
   renderPlayButton, updatePlayState, setStatus, showPlayingStatus, sensorNotes,
   // Read at report time (after the stage below exists).
-  singNote: () => describeSung(stage.sung()),
+  singNote: () => describeSung(stage.sung({ noted: true })),
 });
 initMissingSounds({ setStatus, reportToModel });
 
@@ -486,6 +486,11 @@ const {
   },
   observeSurface() {
     logControlSurface();
+  },
+  observeSung(report) {
+    // The evaluation's report said "still loading"; in a session this lands in
+    // the log, so get-session shows the octave (2026-10-04 field test).
+    reportToModel(`Strudel widget: ${describeSung([report])}`);
   },
   observeSensor(sensor, state) {
     reportSensor(sensor, state);

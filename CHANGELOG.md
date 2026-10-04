@@ -2,6 +2,11 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## 0.12.2 — October 4, 2026
+
+- **A sung line's octave reaches the model even when the line was still loading.** When a piece with a new `sing()` line is swapped into a running live session, the player reports at once, before the line is measured, so its report said "still loading" and the octave never arrived — get-session had nothing to show (field test). The player now reports such a line again once it is measured (octave chosen, how high the voice speaks, words at the speed limit), and in a session that follow-up is in the log. Measured in Chromium and WebKit: the follow-up reaches get-session within a few seconds of the swap.
+- The Singing guide and the `lullaby` piece no longer advise writing the melody near f3–d4: with `octave: 'auto'` the player moves the melody to the voice, so write it in any octave and keep its range within about an octave.
+
 ## 0.12.1 — October 4, 2026
 
 - **`sing()` moves the melody to the voice.** By default (`octave: 'auto'`), once a line is measured the whole melody moves up or down by at most one octave, whichever brings its middle closest to how that voice speaks, keeping its shape and never moving a note below 80 Hz. Low voices such as orion used to be asked for more than two octaves of lift and sang their high notes flat. `octave: 0` keeps the notes as written, and `octave: -2` to `2` shifts them exactly. The player's report to the model now says, per sung line, which octave it used, how high the voice speaks, and how many words were too far from the voice to reach their note.

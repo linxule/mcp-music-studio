@@ -1264,8 +1264,9 @@ const ASK = "<[e4 g4 c5 g4] [a4@3 e4] ~ ~>"
 const piano = note(ASK).s('gm_epiano1').gain(0.42).room(0.4).release(0.9)
 
 // ── the answer: one sung line per bar, on that bar's chord tones ──
-// Notes near the speaking voice (f3–d4) keep the words human; an octave
-// higher and they turn into a cartoon.
+// Write the melody in any octave: once the line is measured, the player moves
+// it (by at most an octave) to where the voice speaks. Keep its range within
+// about an octave — a wide leap pulls a word far from the voice.
 const moon = sing('the moon is low', "a3 c4 a3 f3", { voice: 'luna' })
 const sea  = sing('the sea is slow', "g3 b3 d4 g3", { voice: 'luna' })
 const voice = cat(silence, silence, moon, sea)
@@ -1413,7 +1414,7 @@ export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
     teaches: [
       "sing(line, notes): one word per note, in order, pitched onto it; the pattern takes .gain() and .room() like any sound",
       "call and response by placement: cat(silence, silence, moon, sea) puts the answers in bars 3–4 of every four",
-      "notes near the speaking voice (f3–d4) keep words human; far from it they turn cartoonish",
+      "the player moves the melody to the voice (octave 'auto'); its report says which octave it chose",
     ],
     code: LULLABY,
   },
