@@ -61,9 +61,7 @@ stage.appendChild(main);
 // ---- the camera --------------------------------------------------------------
 
 const ASPECT = innerHeight / innerWidth;
-let view = { x: 0, y: 0, w: 100 };
 function setView(v: { x: number; y: number; w: number }): void {
-  view = v;
   const h = v.w * ASPECT;
   const box = `${v.x} ${v.y - h / 2} ${v.w} ${h}`;
   for (const s of [main, ...echoes]) s.setAttribute("viewBox", box);

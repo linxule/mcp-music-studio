@@ -27,6 +27,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run build   # runs `tsc --noEmit` inline (no standalone typecheck script)
       - run: bunx vitest run
+      - name: Typecheck the dev harness (studio, film, perform pages)
+        run: bunx tsc --noEmit -p dev/tsconfig.studio.json
 
       - name: Install Chromium for audio regression
         run: bunx playwright install --with-deps chromium

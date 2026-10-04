@@ -212,7 +212,7 @@ const cues: Cue[] = [
 
 // ---- host plumbing ----------------------------------------------------------
 
-function makeBridge(frame: HTMLIFrameElement, name: string): AppBridge {
+function makeBridge(name: string): AppBridge {
   const b = new AppBridge(
     null,
     { name, version: "0.0.0" },
@@ -244,7 +244,7 @@ function makeBridge(frame: HTMLIFrameElement, name: string): AppBridge {
 async function mount(id: string, src: string, name: string): Promise<AppBridge> {
   const frame = $<HTMLIFrameElement>(id);
   frame.setAttribute("allow", "autoplay; clipboard-write");
-  const b = makeBridge(frame, name);
+  const b = makeBridge(name);
   let ready!: () => void;
   const init = new Promise<void>((r) => (ready = r));
   b.oninitialized = () => ready();

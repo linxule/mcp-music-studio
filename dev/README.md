@@ -40,7 +40,7 @@ local request listener uses the same controller and accepts only its immediate
 loopback parent. The existing harness's no-CSP caveat still
 applies. Rebuild and reload after widget source changes; Vite reloads studio
 shell changes automatically. Typecheck it with
-`bunx tsc --noEmit -p dev/tsconfig.studio.json`.
+`bunx tsc --noEmit -p dev/tsconfig.studio.json` (every `dev/*.ts`; CI runs it).
 
 The original diagnostic harness remains at `/`.
 
