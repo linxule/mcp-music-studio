@@ -96,4 +96,5 @@ export function refund(
   };
 }
 
-export const usd = (micro: number): number => Math.round(micro / 10_000) / 100;
+/** Dollars to a hundredth of a cent: one line costs well under a cent. */
+export const usd = (micro: number): number => Math.round(micro / 100) / 10_000;

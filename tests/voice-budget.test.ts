@@ -88,8 +88,9 @@ describe("the ledger (pure)", () => {
     expect(refund(nov.ledger, 100, { month: "2026-10", day: "2026-10-31" }, at("2026-11-01T00:00:02Z"))).toMatchObject({ monthMicro: 100, dayMicro: 100 });
   });
 
-  it("reports dollars to the cent", () => {
-    expect(usd(1_234_567)).toBe(1.23);
+  it("reports dollars to a hundredth of a cent (one line costs well under a cent)", () => {
+    expect(usd(1_234_567)).toBe(1.2346);
+    expect(usd(690)).toBe(0.0007);
     expect(usd(0)).toBe(0);
   });
 });
