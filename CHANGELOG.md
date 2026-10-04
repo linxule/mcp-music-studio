@@ -5,6 +5,7 @@ Notable changes per release, newest first. Every release, including those not li
 ## Unreleased
 
 - Gallery: **Still Water — just the music** (`still-water`), a ninth piece with no controls, film or drawing: a 48-bar downtempo track (arrange, per-layer sound design, `.velocity()` ducking, development from one four-bar idea). The gallery index says when to reach for it.
+- `bun run usage` (`scripts/usage.mjs`) prints a read-only report of the hosted service for the last week: voice-model calls and characters, Worker requests and errors, live-session time, the voice budget, sessions opened and tool calls. Maintainers run it at each release. See [docs/development.md](docs/development.md#usage-report).
 
 ## 0.11.3 — October 4, 2026
 

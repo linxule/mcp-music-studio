@@ -70,7 +70,8 @@
     "deploy": "bun run build && bun --cwd worker run deploy",
     "preview": "bun run build && bun --cwd worker run dev",
     "test:audio": "playwright test",
-    "test:package": "bun scripts/check-package.mjs"
+    "test:package": "bun scripts/check-package.mjs",
+    "usage": "node scripts/usage.mjs"
   },
   "engines": {
     "node": ">=20.11"

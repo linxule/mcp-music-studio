@@ -58,3 +58,15 @@ New spoken lines (`say()`, a `GET /tts` cache miss) are the only thing the hoste
 - **Fairness, not cost:** the `TTS_IP_LIMITER` (12 new lines a minute per address, IPv6 by /64) and `TTS_GLOBAL_LIMITER` (240 a minute per location) bindings stop one client from using up everyone's month.
 - Workers AI's free allowance (10,000 neurons a day, about 3,600 characters of speech) is shared by every Worker on the Cloudflare account; the budget counts list price whether or not the free allowance covered it.
 
+
+## Usage report
+
+`bun run usage` (or `node scripts/usage.mjs --days 14`, `--json` for machine output) prints a read-only week of the hosted service, per UTC day. Run it at each release.
+
+- **Workers AI:** calls, characters, list price and neurons for the voice model, plus every model on the account. The 10,000-neuron daily allowance is account-wide, so the "of 10k free" column counts every Worker.
+- **Worker invocations** for `mcp-music-studio`: requests, errors, CPU p50/p99, GB-s.
+- **Durable Objects:** active hours and GB-s per class (`JamSession`, `VoiceBudget`), found through the account's namespace list.
+- **Voice budget:** `GET /tts/budget`, this month and today.
+- **Analytics Engine** (`music_studio_usage`, from `track()` in `worker/src/index.ts`): sessions opened and rate-limited, `/tts` hits, misses, new characters and budget refusals, and tool calls by tool. Counts are sampled estimates.
+
+Auth is wrangler's own login, read from its config file and never printed; if it has expired the script says so and exits 2 (`cd worker && bunx wrangler whoami` refreshes it). `CLOUDFLARE_API_TOKEN` (Account Analytics read + Workers read) overrides it, and `CLOUDFLARE_ACCOUNT_ID` picks the account when the login sees more than one. A section whose source fails prints "unavailable" and the rest still print.
