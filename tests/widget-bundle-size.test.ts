@@ -20,7 +20,10 @@ const read = (path: string) => readFileSync(file(path), "utf8");
 const built = existsSync(file("dist/strudel-app.html")) && existsSync(file("dist/mcp-app.html"));
 
 /** Measured after the fix (2026-10-02) + ~10%. Raise deliberately, with a reason. */
-const BUDGET = { "dist/strudel-app.html": 396_000, "dist/mcp-app.html": 915_000 } as const;
+// 0.12: 396k → 420k for two real features in the widget (sing()'s word analysis
+// and YIN in stage-runtime, and video recording) — 400.7k after both. The
+// markers below, not this number, are what catch tool-defs leaking in.
+const BUDGET = { "dist/strudel-app.html": 420_000, "dist/mcp-app.html": 915_000 } as const;
 
 /** Each marker must really be in its source, or its absence from a widget proves nothing. */
 const MARKERS: Array<{ marker: string; source: string; what: string; widgets: Array<keyof typeof BUDGET> }> = [
