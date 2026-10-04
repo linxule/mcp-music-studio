@@ -38,29 +38,24 @@ export const playLiveInputSchema = z.object({
     .enum(VISUAL_PRESETS)
     .optional()
     .describe(
-      "Ready-made visual, for when the code has none of its own. " +
-        "pianoroll/punchcard/scope/spectrum draw onto the 2D canvas behind the code; " +
-        "hydra-kaleid (rotating kaleidoscope), hydra-pulse (shape driven by a rhythm), " +
-        "hydra-wash (slow ambient noise) and hydra-feed (the piano roll mirrored and trailed) " +
-        "are WebGL shader backgrounds. A preset fills the MISSING layer: a hydra preset is skipped only if the code already calls initHydra(), " +
-        "a 2D preset only if the code already has a draw method — so hydra-wash layers happily under your own .pianoroll(). " +
-        "Hydra presets are dropped for viewers who prefer reduced motion. " +
-        "Writing your own visual is still the better result (draw methods: topic 'visuals'; shaders: topic 'hydra').",
+      "A ready-made visual for code that has none of its own: pianoroll, punchcard, scope or spectrum " +
+        "(drawn behind the code), or hydra-kaleid, hydra-pulse, hydra-wash or hydra-feed (shader backgrounds). " +
+        "It only fills a layer the code leaves empty, and shaders are skipped for viewers who prefer reduced motion. " +
+        "Your own visual is the better result (topics 'visuals' and 'hydra').",
     ),
   session: z
     .boolean()
     .optional()
     .describe(
-      "Open a LIVE SESSION: this player stays open as one performance. update-session swaps in new code on the next bar " +
-        "without a new player and says whether it ran; get-session reads the player's runtime reports and what the user did " +
-        "(taps, code edits, handing you the turn). Use it to iterate on a long piece, to check that a piece really played, or " +
-        "to jam back-to-back. Its log (reports, taps, edits, your updates) is kept on the server until 2 hours idle.",
+      "Optional: keep this player open as a live session. update-session then swaps new code in on the bar, and " +
+        "get-session reports what played and what the user did. For a piece you keep changing or a back-and-forth jam. " +
+        "The session log is kept until 2 hours idle.",
     ),
   theme: z
     .enum(EDITOR_THEMES)
     .optional()
     .describe(
-      "Editor colour theme; the visuals stage and its readability scrim are derived from it, so it also decides whether a shader sits on a dark or light ground — " +
-        "prefer a dark one when the visual is the point (e.g. 'nord', 'sonicPink', 'tokyoNight'). Not carried into share links or the browser fallback.",
+      "Editor colour scheme. It also sets the ground the visuals sit on, so pick a dark one when the visual " +
+        "is the point (e.g. 'nord', 'sonicPink', 'tokyoNight').",
     ),
 });

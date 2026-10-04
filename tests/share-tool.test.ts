@@ -1,8 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createShareInputSchema, createShareResult, uploadShare } from "../src/shared/share-tool";
+import { createShareInputSchema, createShareResult, patternShareSchema, scoreShareSchema, uploadShare } from "../src/shared/share-tool";
+import { playLiveInputSchema, playSheetInputSchema } from "../src/shared/tool-defs";
 import { DEFAULT_SHARE_ORIGIN, SHARE_PARAM_MAX_BYTES } from "../src/shared/share-url";
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("the share schema lists what a share carries", () => {
+  // 0.11.1 stopped reusing the play tools' full schemas here (5.3k characters
+  // of every first contact). A field added to a play tool must be added here
+  // too, or deliberately left out with a reason.
+  const NOT_CARRIED = ["theme", "session"];
+  it("score: every play-sheet-music field", () => {
+    expect(Object.keys(scoreShareSchema.shape).sort()).toEqual(Object.keys(playSheetInputSchema.shape).sort());
+  });
+  it("pattern: every play-live-pattern field except theme and session", () => {
+    expect(Object.keys(patternShareSchema.shape).sort()).toEqual(
+      Object.keys(playLiveInputSchema.shape).filter((k) => !NOT_CARRIED.includes(k)).sort(),
+    );
+  });
+  it("still accepts (and drops) theme and session from older callers", () => {
+    const args = createShareInputSchema.parse({ kind: "play", pattern: { code: 's("bd")', theme: "nord", session: true } });
+    expect(args.pattern).toEqual({ code: 's("bd")' });
+  });
+});
 
 describe("explicit sharing", () => {
   it("uploads exactly the selected piece and explains access and expiry", async () => {

@@ -71,27 +71,25 @@ export function advertiseUiExtension(rawServer: {
   });
 }
 
+// Core first; every optional module gets one line and the guide topic that
+// teaches it, so a first contact stays small and nothing is hidden. Budget:
+// tests/first-contact.test.ts.
 export const SERVER_INSTRUCTIONS =
-  "Music Studio renders music in interactive widgets. Two creative modes: " +
-  "play-sheet-music (write ABC notation → sheet music + multi-instrument audio) and " +
-  "play-live-pattern (write Strudel/TidalCycles code → an editable live-coding REPL). " +
-  "Before composing, consult the reference tools: get-music-guide (ABC — start with " +
-  "topic 'genres' for templates, 'styles' for accompaniment presets, 'instruments' for the list) " +
-  "or get-strudel-guide (Strudel — 'genres', 'sounds', 'effects'; 'visuals' and 'hydra' for the animation layers). " +
-  "play-live-pattern can paint as well as play: add .pianoroll() to a pattern, pass visuals (a preset) and theme, or write " +
-  "`await initHydra()` shader code that follows the music via H(pattern) and a.fft — the " +
-  "'hydra' topic has copy-ready recipes. Pattern code is real browser JavaScript, so a piece can also " +
-  "draw its own canvases into Hydra, react to every note (onEvent), take taps (onTap), give the user faders and pads to play (fader, pad, xy) and speak on the beat " +
-  "(say) — music videos, short films and duets: topics 'craft', 'stage', 'film', 'interactive', and finished " +
-  "pieces in 'gallery'. For a piece you will keep changing, or a back-to-back jam with the user, open a live session " +
-  "(play-live-pattern session: true → update-session / get-session) — the player keeps playing and tells you what happened. " +
-  "Use search-music-docs only " +
-  "when the curated guides don't cover something. For ABC accompaniment, include chord symbols " +
-  '("C", "Am7") above the notes and set a style. ' +
+  "Music Studio plays music in interactive widgets. Two modes: " +
+  "play-sheet-music (ABC notation → sheet music with multi-instrument audio; put chord symbols like \"C\" or \"Am7\" " +
+  "above the notes and set a style for drums, bass and chords) and " +
+  "play-live-pattern (Strudel/TidalCycles code → an editable live-coding player). " +
+  "Before composing, read a guide: get-music-guide or get-strudel-guide, topic 'genres'. " +
   "If unsure about chord spelling or the key, call analyze-harmony; " +
-  "convert-abc-to-strudel turns a scored melody into a live pattern. " +
-  "Playback never stores a composition (a live session keeps its log until 2 hours idle). create-share-link uploads a piece for 30 days " +
-  "and is only for an explicit user request to share or store it online.";
+  "convert-abc-to-strudel turns a scored melody into a live pattern; " +
+  "search-music-docs covers what the guides don't. " +
+  "That is the whole core. The rest is optional, for when you and the user want more — each has a " +
+  "get-strudel-guide topic: visuals that follow the music, from .pianoroll() to Hydra shaders ('visuals', 'hydra'); " +
+  "music videos and short films drawn by the code ('stage', 'film'); controls the user plays — faders, pads, " +
+  "grids you draw yourself, and the phone's tilt and mic ('interactive'); complete pieces to learn from ('gallery'); and live " +
+  "sessions for jamming back and forth (play-live-pattern session: true, then update-session / get-session). " +
+  "Playback stores nothing (a live session keeps its log until 2 hours idle). " +
+  "create-share-link uploads a piece for 30 days, only when the user asks to share it.";
 
 // -----------------------------------------------------------------------------
 // Server identity — icon + website (emitted verbatim in serverInfo by both
@@ -384,27 +382,17 @@ export const MAX_HARMONY_ITEMS = 64;
 // -----------------------------------------------------------------------------
 
 export const PLAY_LIVE_BASE_DESCRIPTION =
-  "Live-code music patterns using TidalCycles mini-notation in JavaScript. " +
-  "Layer drums, synths, and bass with stack(). Choose from 71 drum machine banks, " +
-  "128 GM instruments, built-in synths, and a full effects chain. " +
-  "Patterns play in a REPL the user can edit directly. " +
-  "Add .pianoroll() to a pattern to show a live piano-roll animation in the widget " +
-  "(or .punchcard()/.scope()/.spectrum() — one draw method per pattern). " +
-  "For a custom animated background, start the code with `await initHydra()` and write " +
-  "Hydra shader code — H(pattern) locks it to the sequence, and `() => a.fft[0]` makes it " +
-  "react to the audio itself (Strudel's output, not the mic); see get-strudel-guide topic 'hydra'. " +
-  "Rather not hand-write one? `visuals` picks a ready-made animation for code that has none " +
-  "(pianoroll/punchcard/scope/spectrum, or hydra-kaleid/pulse/wash/feed). " +
-  "`theme` sets the code-editor colour scheme, which also tints the visuals — match it to the mood " +
-  "(teletext chiptune, sonicPink synthwave, nord ambient, gruvboxDark lofi). " +
-  "Beyond music: the code is real browser JavaScript — cycle(), onFrame, onEvent(pattern, fn), onTap and " +
-  "say(text) (a spoken line as a sample) build music videos, short films and interactive pieces, and " +
-  "fader('name') / pad('name') / xy('name') put controls on the player that the user performs (each is a pattern, e.g. .gain(fader('rain'))), " +
-  "and tilt() / mic() follow the device's motion and microphone where allowed (played by hand where not); " +
-  "see topics 'stage', 'film', 'interactive' and 'gallery'. " +
-  "Each call creates a NEW player. To keep one player going — iterating on a piece, or playing back-to-back with the user — pass session: true, then change it with update-session (it swaps on the next bar) and read what happened with get-session (runtime errors, the user's taps and edits). " +
-  "Use get-strudel-guide for genre templates, sound references, and advanced features " +
-  "like arrangement and sample loading.";
+  "Live-code music in Strudel (TidalCycles mini-notation in JavaScript) and play it in a player the user can edit. " +
+  "Layer drums, bass and melody with stack(): 71 drum-machine banks, 128 GM instruments, synths and a full effects chain. " +
+  "Add .pianoroll() for a live piano roll (or .punchcard()/.scope()/.spectrum(), one per pattern), " +
+  "pass `visuals` for a ready-made animation and `theme` for the editor colours. " +
+  "Each call creates a NEW player. " +
+  "Optional, when you want more (get-strudel-guide topic in brackets): shader backgrounds that follow the music — " +
+  "start with `await initHydra()`, lock to the beat with H(pattern), react to the sound with () => a.fft[0] ('hydra'); " +
+  "canvases, scenes and spoken lines for music videos and films ('stage', 'film'); " +
+  "faders, pads and controls you draw, played by the user, and tilt and mic, which follow the phone where allowed ('interactive'); " +
+  "complete pieces ('gallery'). For a piece you keep changing or a back-and-forth jam, pass session: true, " +
+  "then use update-session and get-session.";
 
 export const PLAY_LIVE_EXT_APPS_SUFFIX =
   "\n\nThe Strudel REPL renders inline with an editable code editor, " +
@@ -590,22 +578,15 @@ export const GET_MUSIC_GUIDE_TOPIC_DESCRIPTION =
   "Reference topic. Start with 'genres' for complete examples, 'styles' to understand presets, or 'instruments' for the full instrument list.";
 
 export const GET_STRUDEL_GUIDE_DESCRIPTION =
-  "Reference material for Strudel live coding (performance mode). " +
-  "Topics: mini-notation (pattern syntax), " +
-  "sounds (synths, 71 drum banks, 128 GM instruments, 128 vcsl orchestral/percussion samples), " +
-  "effects (filters, reverb, delay, FM synthesis, envelopes), " +
-  "patterns (transformations, probability, euclidean, arrangement), " +
-  "genres (complete templates: techno/house/dnb/ambient/jazz/lofi/synthwave), " +
-  "tips (tempo, common mistakes, ABC↔Strudel crossover), " +
-  "visuals (pianoroll/scope draw methods, the visuals presets and the theme parameter), " +
-  "hydra (WebGL shader backgrounds: initHydra, H(pattern), the audio-reactive a.fft object, recipes, cheat-sheet), " +
-  "advanced (sample loading, wavetables, ZZFX, continuous signals, chord voicings). " +
-  "Beyond music — pattern code is real browser JavaScript: " +
-  "stage (your own canvases into Hydra, an ASCII camera, cycle/onFrame/onEvent/onTap/say), " +
-  "film (music videos and short films: scenes on bars, typewriter text, letterbox, narration), " +
-  "interactive (taps become notes, call and response, a voice that speaks on the beat), " +
-  "craft (what makes a piece land), debugging (what the widget reports back), " +
-  "gallery (complete pieces — a short film, a spoken duet, a Game of Life composer; fetch one with `piece`).";
+  "Reference and recipes for Strudel live coding. " +
+  "Music: genres (complete templates: techno, house, dnb, ambient, jazz, lofi, synthwave), mini-notation, " +
+  "sounds (synths, 71 drum banks, 128 GM instruments, vcsl samples), effects, patterns, tips (tempo, common mistakes), " +
+  "advanced (samples, wavetables, signals, chord voicings). " +
+  "Visuals: visuals (draw methods, presets, themes), hydra (shader backgrounds, H(pattern), the audio-reactive a.fft). " +
+  "Optional modules — the code is real browser JavaScript: stage (your own canvases, onFrame/onEvent/onTap, say), " +
+  "film (scenes on bars, text, narration), interactive (taps into notes, faders/pads/xy, tilt/mic, " +
+  "remember() for controls you draw, live sessions), craft (what makes a piece land), " +
+  "debugging (what the player reports back), gallery (complete pieces; fetch one with `piece`).";
 
 export const GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION =
   "Reference topic. Start with 'genres' for working templates, " +

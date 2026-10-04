@@ -54,23 +54,18 @@ export interface CodeProblem {
 }
 
 export const GET_SESSION_DESCRIPTION =
-  "Read a live session opened by play-live-pattern(session: true): whether the player is up and what " +
-  "it is playing, its runtime reports (errors, silence, missing sounds, a callback that threw), and what " +
-  "the human did since your last read — taps (cycle and position), changes to the piece's remember() state " +
-  "(with its current values), code they edited and ran, and when " +
-  "they passed the turn to you. Read it before assuming a piece played, and when the user says it's your turn. " +
-  "With wait: 'pass' it LISTENS — holds until the listener presses Pass — so you can play a whole back-to-back " +
-  "set in one turn: update-session, get-session(wait: 'pass'), answer, listen again. " +
-  "The listener can also End the session from the player; get-session then says so, and the player stops listening for updates.";
+  "Only for a live session (play-live-pattern session: true). Reads whether the player is up and what it played, " +
+  "its errors and silences, and what the human did since your last read: taps, changes to remember() state, " +
+  "code they ran, a Pass to you, or End. Read it before assuming a piece played. With wait: 'pass' it listens " +
+  "until the human presses Pass, so a whole back-and-forth set fits in one turn: update-session, " +
+  "get-session(wait: 'pass'), answer, listen again.";
 
 export const UPDATE_SESSION_DESCRIPTION =
-  "Swap a new pattern into a live session's player — no new player, the music keeps playing. " +
-  "Send the WHOLE pattern, as you would to play-live-pattern. It takes over at the next bar " +
-  "(quantize 1, the default), at the next multiple of n cycles, or at once (0). Patterns run on the session's clock, so " +
-  "set quantize to your phrase length (an 8-bar phrase → 8) and the swap lands on its first bar. " +
-  "The code is syntax-checked first; the result says whether the player ran it, and its error if not, " +
-  "when the player answers within a few seconds. Edit a piece's remember() state with a merge, not a new start value " +
-  "(get-strudel-guide topic 'interactive').";
+  "Only for a live session. Swaps new code into the session's player while the music keeps playing. " +
+  "Send the WHOLE pattern, as for play-live-pattern. It lands on the next bar (quantize 1, the default), " +
+  "the next multiple of n bars, or at once (0): set quantize to your phrase length (8-bar phrase → 8). " +
+  "If the player answers within a few seconds, the result says whether it ran the code, or its error. To change a piece's remember() state, " +
+  "ship a merge, not a new start value (get-strudel-guide topic 'interactive').";
 
 const sessionField = z
   .string()
@@ -83,9 +78,8 @@ export const getSessionInputSchema = z.object({
     .enum(["pass", "activity"])
     .optional()
     .describe(
-      "Listen instead of just reading: 'pass' holds until the listener presses Pass, 'activity' until they play " +
-        "(a few seconds after their first move). Returns at once if that already happened since your last read, " +
-        "and after ~40 s if not — call again to keep listening. Lets you stay in the booth for a whole set.",
+      "Listen instead of just reading: 'pass' until the listener presses Pass, 'activity' until they play. " +
+        "Returns at once if that already happened since your last read, else after ~40 s — call again to keep listening.",
     ),
 });
 

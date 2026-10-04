@@ -1,8 +1,12 @@
 import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { MAX_SOURCE_CHARS, playLiveInputSchema, playSheetInputSchema } from "./tool-defs.js";
+import { MAX_SOURCE_CHARS } from "./input-bounds.js";
+import { STYLE_NAMES } from "../music-logic.js";
+import { VISUAL_PRESETS } from "./visual-presets.js";
 import {
   DEFAULT_SHARE_ORIGIN,
+  SHARE_NUMBER_BOUNDS,
+  type ShareNumberKey,
   SHARE_PARAM_MAX_BYTES,
   toPlayShareArgs,
   type SharePayload,
@@ -21,12 +25,40 @@ export const CREATE_SHARE_ANNOTATIONS = {
   openWorldHint: true,
 } as const;
 
+// Only what a share actually carries (toPlayShareArgs / ScoreShareArgs), with
+// one-line descriptions: the play tools already explain each field. Reusing
+// their full schemas here cost 5.3k characters of every first contact (0.11.0)
+// and listed theme/session, which a share link drops.
+// Bounds come from SHARE_NUMBER_BOUNDS, which tests/share-bounds.test.ts pins
+// to the tool schemas; tests/share-tool.test.ts pins the field lists.
+const bounded = (key: ShareNumberKey) => {
+  const b: { min: number; max: number; int?: boolean } = SHARE_NUMBER_BOUNDS[key];
+  return (b.int ? z.number().int() : z.number()).min(b.min).max(b.max).optional();
+};
+
+export const scoreShareSchema = z.object({
+  abcNotation: z.string().min(1).max(MAX_SOURCE_CHARS).describe("The ABC notation, as for play-sheet-music."),
+  title: z.string().optional(),
+  instrument: z.string().optional().describe("General MIDI instrument name, as for play-sheet-music."),
+  style: z.enum(STYLE_NAMES).optional(),
+  tempo: bounded("tempo"),
+  swing: bounded("swing"),
+  drumIntro: bounded("drumIntro"),
+  transpose: bounded("transpose"),
+}).describe("The arguments you gave play-sheet-music.");
+
+export const patternShareSchema = z.object({
+  code: z.string().max(MAX_SOURCE_CHARS).describe("The Strudel code, as for play-live-pattern."),
+  title: z.string().optional(),
+  bpm: bounded("bpm"),
+  autoplay: z.boolean().optional(),
+  visuals: z.enum(VISUAL_PRESETS).optional(),
+}).describe("The arguments you gave play-live-pattern (theme and session are not carried).");
+
 export const createShareInputSchema = z.object({
   kind: z.enum(["score", "play"]),
-  score: playSheetInputSchema.extend({
-    abcNotation: z.string().min(1).max(MAX_SOURCE_CHARS),
-  }).optional(),
-  pattern: playLiveInputSchema.optional(),
+  score: scoreShareSchema.optional(),
+  pattern: patternShareSchema.optional(),
 });
 
 export async function createShareResult(

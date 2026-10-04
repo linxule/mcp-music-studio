@@ -2,6 +2,15 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## 0.11.1 — October 4, 2026
+
+The simple path is simple again. Asking for a song or a beat works exactly as before. The optional extras (shader visuals, music videos, controls, sensors, drawn controls, live sessions and share links) are still there for an AI to find, but each now costs one line instead of a paragraph.
+
+- **About 30% less for an AI to read before it plays a note.** Every chat that connects reads the server's instructions, tool descriptions and input definitions. That had grown from 12.6k characters in 0.5.0 to 25.1k in 0.11.0, mostly from the optional modules. It is now 17.9k. The instructions put the core first, then name each optional module once, with the guide topic that teaches it.
+- **`create-share-link` lists only what a share carries.** It used to repeat the full inputs of both player tools, including the editor theme and the session flag, which a share link drops. That alone was 5.3k characters.
+- The guide's `interactive` topic opens with a list of its sections, each marked optional.
+- `tests/first-contact.test.ts` sets a budget for that first read and checks that every optional module is still named in it. `scripts/verify-plain.mjs` checks the plain path in a real browser: it plays, and no control strip, stage, session or permission request appears.
+
 ## 0.11.0 — October 3, 2026
 
 Pieces can now draw their own controls. Instead of new fixed buttons on the player, the AI draws whatever a piece needs inside the visuals, and the listener and the AI share it.

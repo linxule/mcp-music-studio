@@ -13,7 +13,7 @@
 | `search-music-docs` | Semantic search over strudel.cc and ABCJS docs | `query`, `library` (`strudel` \| `abcjs`) |
 | `analyze-harmony` | Name a chord, guess the key, get a progression or chord scale — in ABC and Strudel spellings | `task`, `notes?`, `chords?`, `key?`, `romanNumerals?` |
 | `convert-abc-to-strudel` | Turn a scored ABC melody into a Strudel mini-notation pattern | `abcNotation`, `voice?`, `sound?` |
-| `create-share-link` | Explicitly store a piece and return a 30-day link accessible to anyone holding it | `kind` (`score` or `play`), matching `score` or `pattern` object with the corresponding play tool's arguments |
+| `create-share-link` | Explicitly store a piece and return a 30-day link accessible to anyone holding it | `kind` (`score` or `play`), matching `score` (play-sheet-music's arguments) or `pattern` (`code`, `title?`, `bpm?`, `autoplay?`, `visuals?` — theme and session are not carried) |
 
 **`visuals`** — `none`, `pianoroll`, `punchcard`, `scope`, `spectrum`, `hydra-kaleid`, `hydra-pulse`, `hydra-wash`, `hydra-feed`.
 **`theme`** — any of the 39 schemes the Strudel REPL ships (`strudelTheme`, `nord`, `sonicPink`, `teletext`, `gruvboxDark`, `githubLight`, …).

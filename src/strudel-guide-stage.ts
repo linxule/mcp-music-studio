@@ -240,6 +240,12 @@ TIME. Strudel's scheduler queries ahead of the playhead, so a pattern must
 answer "what plays at cycle 12.375?" the same way every time it is asked.
 Primitives are in topic "stage"; DUET in topic "gallery" is the complete piece.
 
+Each section below is optional; take only what the piece needs. In order:
+taps into notes · call and response · voice (say) · controls the listener
+plays (fader, pad, xy) · sensors (tilt, mic) · controls you draw yourself
+(remember, openStage) · live sessions (update-session, get-session, Pass) ·
+your turn on a drawn grid (merge).
+
 ## State into music: signal(), taps into notes
 signal(fn) turns any JavaScript into a pattern. fn gets the cycle (wrap it in
 Number()); return null for "nothing here" and filter it out. A tap writes into
