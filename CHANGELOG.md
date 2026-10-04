@@ -2,7 +2,7 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
-## Unreleased
+## 0.12.0 — October 4, 2026
 
 - **Record a set as a video.** "Rec video" in the Strudel player records the stage with the sound: Hydra visuals, the piano roll and other drawn layers, and the music after the limiter, up to 5 minutes or 80 MB. It keeps recording when Claude changes the code in a live session, and in a session it also saves a setlist next to the video: when each change came in, on which bar, from whom, and the pattern's first comment. The video downloads as WebM (with its length written in, so players show a timeline) or MP4, depending on the browser. "Record" still records audio only.
 - **Watch page.** Add `?watch` to a share link (`/p/<id>?watch`, `/s/<id>?watch`) to show only the stage: the code and editing buttons are hidden, and one tap starts the piece. Fullscreen and recording stay available. Nothing plays before the tap, as on every shared page.
