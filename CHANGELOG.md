@@ -2,6 +2,12 @@
 
 Notable changes per release, newest first. Every release, including those not listed here, also has notes on [GitHub Releases](https://github.com/linxule/mcp-music-studio/releases).
 
+## Unreleased
+
+- **Shared scores open in the full player.** A score's link (`/score?a=…`, or a stored `/p/<id>`) now opens the same sheet-music player as in a chat, not a simpler page: edit the ABC in place, change style, instrument and sound bank, the Room toggle, note highlighting, and WAV and MIDI downloads that save real files. Nothing plays until ▶ is pressed. The simpler page is still one click away ("Simple player", or `?classic=1`), and a local browser render still writes it.
+- In a browser with WebMCP, a score's page offers the player's tools to the browser's agent, as a pattern's page does: read the score, stage an edit, stop and undo. Playing is offered only after ▶ has been pressed on the page.
+- `scripts/verify-share-score.mjs` checks it in a real browser (notation drawn, silent until ▶, audible after, a MIDI file saved) and runs in CI in Chromium and WebKit. `scripts/check-share-phone.mjs` checks the score page at phone size too.
+
 ## 0.11.3 — October 4, 2026
 
 - **Spoken lines have a monthly budget instead of a daily cap.** New lines from `say()` are the one thing this service pays for per request. Each new line is now charged its exact price against one monthly budget ($10 at launch, about ten times the busiest day so far), and no single day may use more than a tenth of it. Lines already heard are cached and stay free. When the budget is used up, a piece plays without its new lines and says so. This replaces a cap of 500 new lines a day and an hourly limit per address, which could both be slipped past by requests arriving together. The per-address limit of 12 new lines a minute stays, so one person can't use up everyone's share. `GET /tts/budget` shows how much of the month is spent.
