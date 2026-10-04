@@ -24,6 +24,7 @@ import { STRUDEL_GUIDE_TOPICS, STRUDEL_GUIDES } from "../../src/strudel-guide.js
 import { VERSION } from "../../src/version.js";
 import { staticCheckStrudel } from "../../src/shared/strudel-static-check.js";
 import { TTS_MODEL, normalizeTts, type TtsRequest } from "../../src/shared/tts.js";
+import { extractSayLines } from "../../src/shared/say-lines.js";
 import { budgetMicro, dayCapMicro, lineChars, usd, type VoiceLedger } from "../../src/shared/voice-budget.js";
 import { parseClient } from "../../src/shared/parse-client.js";
 import { mintSessionId, SESSION_ID_RE } from "../../src/shared/session.js";
@@ -685,6 +686,8 @@ export function createMusicServer(
   env: Env,
   origin: string = DEFAULT_SHARE_ORIGIN,
   request?: Request,
+  /** Lets play-live-pattern / update-session warm say() lines after replying. */
+  ctx?: ExecutionContext,
 ): McpServer {
   const server = new McpServer(
     {
@@ -851,6 +854,7 @@ export function createMusicServer(
       // error comes back with its line:column in the code the model sent.
       const syntaxError = staticCheckStrudel(args.code);
       if (syntaxError) return withViewId(buildPlayLiveResult(args, { ok: false, error: syntaxError }));
+      warmSayLines(env, ctx, args.code);
       const played = withViewId(
         attachPlayLink(
           buildPlayLiveResult(args, undefined, PLAY_LIVE_UNVALIDATED_REMOTE),
@@ -868,7 +872,12 @@ export function createMusicServer(
   );
 
   // Live sessions: get-session / update-session (src/shared/session-tools.ts).
-  registerSessionTools(server, sessions, async (code) => staticCheckStrudel(code));
+  // Code that parses is about to be sent to the player: warm its say() lines.
+  registerSessionTools(server, sessions, async (code) => {
+    const problem = staticCheckStrudel(code);
+    if (!problem) warmSayLines(env, ctx, code);
+    return problem;
+  });
 
   // ===========================================================================
   // Tool: get-music-guide
@@ -1063,47 +1072,44 @@ async function handleVoiceBudgetStatus(env: Env): Promise<Response> {
   );
 }
 
-async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
-  }
-  const params = new URL(request.url).searchParams;
-  const parsed = normalizeTts(params.get("text"), params.get("voice") ?? undefined);
-  if ("error" in parsed) {
-    return new Response(parsed.error, {
-      status: 400,
-      headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
-    });
-  }
-  const key = await ttsCacheKey(parsed);
+/** What became of one line: the clip, or the status and reason the player is told. */
+type LineOutcome =
+  | { ok: true; bytes: ArrayBuffer | Uint8Array; cached: boolean; stored?: Promise<void> }
+  | { ok: false; status: number; message: string; retryAfter?: string };
+
+/**
+ * Who is asking for a line. `ip` is the player's address (GET /tts); null is a
+ * tool call warming its own lines (say-lines prerender), which skips the
+ * per-address limiter: a tool call's address is the MCP client's — for
+ * claude.ai, servers every user shares — so per-address fairness means nothing
+ * there. The global limiter and the voice budget apply to both.
+ */
+type LineCaller = { ip: string | null; renderOnMiss: boolean; label: "" | "prerender-" };
+
+/**
+ * One line, start to finish: cache → fairness limits → voice budget → model →
+ * cache. GET /tts and the tool-time prerender both come through here, so the
+ * gates cannot drift apart. `stored` settles once a fresh clip is in KV.
+ */
+async function renderLine(env: Env, ctx: ExecutionContext, line: TtsRequest, caller: LineCaller): Promise<LineOutcome> {
+  const key = await ttsCacheKey(line);
   try {
     const cached = await env.DOCS_CACHE?.get(key, "arrayBuffer");
     if (cached) {
-      track(env, { blobs: ["tts", "hit", parsed.voice], doubles: [parsed.text.length], indexes: ["tts"] });
-      return new Response(request.method === "HEAD" ? null : cached, { headers: TTS_HEADERS });
+      track(env, { blobs: ["tts", `${caller.label}hit`, line.voice], doubles: [line.text.length], indexes: ["tts"] });
+      return { ok: true, bytes: cached, cached: true };
     }
   } catch {
     /* KV unwell — render instead */
   }
   // A miss on HEAD renders nothing: HEAD only answers "is it cached?".
-  if (request.method === "HEAD") {
-    return new Response(null, { status: 404, headers: { "access-control-allow-origin": "*" } });
-  }
+  if (!caller.renderOnMiss) return { ok: false, status: 404, message: "" };
   // A miss costs a model call. First gate: Cloudflare's rate-limit bindings
   // (per address, then everyone). They are about FAIRNESS — one client can't
   // take the whole budget in a minute. Cost is the voice budget below.
-  const ip = clientBucket(request.headers.get("CF-Connecting-IP") ?? "unknown");
-  const tooMany = (why: string, retryAfter = "60") =>
-    new Response(why, {
-      status: 429,
-      headers: {
-        "content-type": "text/plain; charset=utf-8",
-        "retry-after": retryAfter,
-        "access-control-allow-origin": "*",
-      },
-    });
+  const tooMany = (message: string, retryAfter = "60"): LineOutcome => ({ ok: false, status: 429, message, retryAfter });
   try {
-    if (env.TTS_IP_LIMITER && !(await env.TTS_IP_LIMITER.limit({ key: ip })).success) {
+    if (caller.ip !== null && env.TTS_IP_LIMITER && !(await env.TTS_IP_LIMITER.limit({ key: caller.ip })).success) {
       return tooMany("Too many new spoken lines from this address. Try again in a minute.");
     }
     if (env.TTS_GLOBAL_LIMITER && !(await env.TTS_GLOBAL_LIMITER.limit({ key: "all" })).success) {
@@ -1115,7 +1121,7 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
   // Cost: reserve this line's exact price against the month (and the day's
   // share of it). Fails CLOSED — no budget bound, or a budget that can't be
   // checked, renders nothing; the piece plays without the line and says so.
-  const chars = lineChars(parsed.text);
+  const chars = lineChars(line.text);
   if (!env.VOICE_BUDGET) return tooMany("Speech rendering is not available here (no voice budget).", "3600");
   const budget = budgetStub(env.VOICE_BUDGET);
   let chargedIn: { month: string; day: string };
@@ -1145,47 +1151,118 @@ async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Pro
     );
   if (!env.AI) {
     giveBack(); // nothing was called
-    return new Response("Speech rendering is unavailable.", {
-      status: 503,
-      headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
-    });
+    return { ok: false, status: 503, message: "Speech rendering is unavailable." };
   }
   let output: unknown;
   try {
-    output = await env.AI.run(TTS_MODEL, { text: parsed.text, speaker: parsed.voice, encoding: "mp3" });
+    output = await env.AI.run(TTS_MODEL, { text: line.text, speaker: line.voice, encoding: "mp3" });
   } catch (err) {
     giveBack();
-    return new Response(`Speech rendering failed: ${(err as Error)?.message ?? "unknown error"}`, {
-      status: 502,
-      headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
-    });
+    return { ok: false, status: 502, message: `Speech rendering failed: ${(err as Error)?.message ?? "unknown error"}` };
   }
   let bytes: Uint8Array;
   try {
     bytes = await audioBytes(output);
   } catch (err) {
-    return new Response(`Speech rendering failed: ${(err as Error)?.message ?? "unknown error"}`, {
-      status: 502,
-      headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
-    });
+    return { ok: false, status: 502, message: `Speech rendering failed: ${(err as Error)?.message ?? "unknown error"}` };
   }
   if (bytes.byteLength === 0 || bytes.byteLength > TTS_MAX_BYTES) {
-    return new Response("Speech rendering returned an unusable clip.", {
-      status: 502,
+    return { ok: false, status: 502, message: "Speech rendering returned an unusable clip." };
+  }
+  const stored = (async () => {
+    try {
+      await env.DOCS_CACHE?.put(key, bytes, { expirationTtl: TTS_TTL_SECONDS });
+    } catch {
+      /* the next request renders again */
+    }
+  })();
+  track(env, { blobs: ["tts", `${caller.label}miss`, line.voice], doubles: [line.text.length], indexes: ["tts"] });
+  return { ok: true, bytes, cached: false, stored };
+}
+
+async function handleTts(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
+  }
+  const params = new URL(request.url).searchParams;
+  const parsed = normalizeTts(params.get("text"), params.get("voice") ?? undefined);
+  if ("error" in parsed) {
+    return new Response(parsed.error, {
+      status: 400,
       headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" },
     });
   }
-  ctx.waitUntil(
-    (async () => {
+  const outcome = await renderLine(env, ctx, parsed, {
+    ip: clientBucket(request.headers.get("CF-Connecting-IP") ?? "unknown"),
+    renderOnMiss: request.method === "GET",
+    label: "",
+  });
+  if (outcome.ok) {
+    if (outcome.stored) ctx.waitUntil(outcome.stored);
+    return new Response(request.method === "HEAD" ? null : outcome.bytes, { headers: TTS_HEADERS });
+  }
+  if (outcome.status === 404) return new Response(null, { status: 404, headers: { "access-control-allow-origin": "*" } });
+  return new Response(outcome.message, {
+    status: outcome.status,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      ...(outcome.retryAfter ? { "retry-after": outcome.retryAfter } : {}),
+      "access-control-allow-origin": "*",
+    },
+  });
+}
+
+// =============================================================================
+// say() prerender — warm /tts at tool time
+// =============================================================================
+//
+// A voiced piece used to start late: the player loads (~1–3 s), evaluates, and
+// only then asks /tts for each line, and a miss is ~1.5 s of model time. The
+// Worker already parses the code at tool time, so it renders the say() lines
+// it can read (src/shared/say-lines.ts) while the reply travels and the widget
+// loads; the player's fetch is then a cache hit.
+//
+// Run under ctx.waitUntil, never awaited: the tool reply is the model's turn,
+// and 8 lines at ~1.5 s each, 3 at a time, is ~4.5 s it would otherwise wait.
+// Starting before the reply is what matters; the first lines finish while the
+// widget is still loading. A line the player asks for mid-render is a second
+// miss — paid twice, never broken. Never fails the tool call.
+
+/** Lines rendered at once per tool call. */
+const PRERENDER_PARALLEL = 3;
+
+export async function prerenderSayLines(env: Env, ctx: ExecutionContext, code: string): Promise<void> {
+  const { lines, overCap } = extractSayLines(code);
+  if (overCap) track(env, { blobs: ["tts", "prerender-skipped", "cap"], doubles: [overCap], indexes: ["tts"] });
+  let next = 0;
+  const worker = async () => {
+    while (next < lines.length) {
+      const line = lines[next++];
       try {
-        await env.DOCS_CACHE?.put(key, bytes, { expirationTtl: TTS_TTL_SECONDS });
+        const outcome = await renderLine(env, ctx, line, { ip: null, renderOnMiss: true, label: "prerender-" });
+        if (!outcome.ok) {
+          track(env, { blobs: ["tts", "prerender-skipped", String(outcome.status)], doubles: [1], indexes: ["tts"] });
+          // Refused by a limit or the budget: the rest would be too.
+          if (outcome.status === 429) next = lines.length;
+        } else if (outcome.stored) {
+          await outcome.stored;
+        }
       } catch {
-        /* the next request renders again */
+        /* warming is best effort */
       }
-    })(),
-  );
-  track(env, { blobs: ["tts", "miss", parsed.voice], doubles: [parsed.text.length], indexes: ["tts"] });
-  return new Response(bytes, { headers: TTS_HEADERS });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PRERENDER_PARALLEL, lines.length) }, worker));
+}
+
+/** Start warming without holding the reply; no-op without a context (tests, local). */
+function warmSayLines(env: Env, ctx: ExecutionContext | undefined, code: string): void {
+  if (!ctx) return;
+  try {
+    ctx.waitUntil(prerenderSayLines(env, ctx, code).catch(() => undefined));
+  } catch {
+    /* never fail the tool call */
+  }
 }
 
 // =============================================================================
@@ -1447,7 +1524,7 @@ export default {
       // enableJsonResponse is required for Claude Desktop Connectors to render
       // ext-apps UI — the default SSE response format isn't parsed correctly
       // by the Connector client for resources/read calls.
-      const server = createMusicServer(env, url.origin, request);
+      const server = createMusicServer(env, url.origin, request, ctx);
       // Keep the SDK v1 server on Agents' explicit legacy adapter. The default
       // createMcpHandler now accepts SDK v2 servers with a different context API.
       const handler = createLegacyMcpHandler(

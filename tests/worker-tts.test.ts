@@ -1,7 +1,9 @@
 // GET /tts — the server half of say(): render once, cache by content, cap what
 // a public route can cost.
 import { describe, expect, it } from "vitest";
-import worker, { ttsCacheKey } from "../worker/src/index";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import worker, { createMusicServer, ttsCacheKey } from "../worker/src/index";
 import { VoiceBudget } from "../worker/src/voice-budget-do";
 import { TTS_MAX_CHARS, TTS_MODEL, ttsUrl } from "../src/shared/tts";
 
@@ -267,5 +269,95 @@ describe("GET /tts — the voice budget (one dollar number, exact, fails closed)
     const env = { DOCS_CACHE: fakeKv(), AI: fakeAi(), VOICE_BUDGET: b.ns, TTS_IP_LIMITER: { limit: async () => ({ success: false }) } };
     expect((await get(line("throttled"), env)).status).toBe(429);
     expect(b.calls).toEqual([]);
+  });
+});
+
+describe("say() prerender — tool calls warm /tts (0.12)", () => {
+  async function callTool(env: unknown, name: string, args: Record<string, unknown>) {
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} } as never;
+    const client = new Client({ name: "prerender-test", version: "0.0.0" });
+    const server = createMusicServer(env as never, ORIGIN, undefined, ctx);
+    const [c, s] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(c), server.connect(s)]);
+    try {
+      const result = await client.callTool({ name, arguments: args });
+      // Drain everything the call scheduled, including what warming schedules.
+      while (pending.length) await Promise.all(pending.splice(0));
+      return result;
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  }
+
+  const CODE = [
+    `const hello = say('hi. it is me.', { voice: 'orion' })`,
+    `const now = say('now. at the same time.', { voice: 'orion' })`,
+    `stack(s('bd*4'), hello, now, say('hi. it is me.', { voice: 'orion' }), say("mini, not words"))`,
+  ].join("\n");
+
+  it("play-live-pattern renders each distinct line once, charges once each, and /tts then hits", async () => {
+    const kv = fakeKv();
+    const ai = fakeAi();
+    const b = budgetNs();
+    const env = { DOCS_CACHE: kv, AI: ai, VOICE_BUDGET: b.ns, VOICE_BUDGET_USD_PER_MONTH: "10", TTS_IP_LIMITER: { limit: async () => ({ success: false }) } };
+    const result = await callTool(env, "play-live-pattern", { code: CODE });
+    expect(result.isError).toBeFalsy();
+    // The per-address limiter (here: always refusing) does not gate a tool call.
+    expect(ai.calls.map(([, input]) => input.text).sort()).toEqual(["hi. it is me.", "now. at the same time."]);
+    expect(b.calls).toEqual(["/reserve", "/reserve"]);
+    const ledger = (await (await b.instance.fetch(new Request("https://voice-budget/status?budgetMicro=0"))).json()).ledger;
+    expect(ledger.monthMicro).toBe(("hi. it is me.".length + "now. at the same time.".length) * 30);
+    for (const text of ["hi. it is me.", "now. at the same time."]) {
+      expect(kv.store.has(await ttsCacheKey({ text, voice: "orion" }))).toBe(true);
+    }
+    // The player's fetch, from the address the limiter refuses: a hit, no model call.
+    const res = await get(line("hi. it is me.", "orion"), env);
+    expect(res.status).toBe(200);
+    expect(ai.calls).toHaveLength(2);
+    expect(b.calls).toHaveLength(2);
+  });
+
+  it("skips lines already cached, and warms through update-session too", async () => {
+    const kv = fakeKv();
+    const ai = fakeAi();
+    const env = { DOCS_CACHE: kv, AI: ai, VOICE_BUDGET: budgetNs().ns };
+    await callTool(env, "play-live-pattern", { code: `say('first')` });
+    expect(ai.calls).toHaveLength(1);
+    // No JAM bound: the update itself fails, but code that parsed was warmed.
+    await callTool(env, "update-session", { session: "abcdefghijklmnop", code: `stack(say('first'), say('second'))` });
+    expect(ai.calls.map(([, input]) => input.text)).toEqual(["first", "second"]);
+  });
+
+  it("never fails the tool call: budget refusals, model errors, code that doesn't parse", async () => {
+    const zero = { DOCS_CACHE: fakeKv(), AI: fakeAi(), VOICE_BUDGET: budgetNs().ns, VOICE_BUDGET_USD_PER_MONTH: "0" };
+    expect((await callTool(zero, "play-live-pattern", { code: `say('over budget')` })).isError).toBeFalsy();
+    expect(zero.AI.calls).toHaveLength(0);
+    const failing = { DOCS_CACHE: fakeKv(), VOICE_BUDGET: budgetNs().ns, AI: { run: async () => { throw new Error("capacity"); } } };
+    expect((await callTool(failing, "play-live-pattern", { code: `say('fails')` })).isError).toBeFalsy();
+    const ai = fakeAi();
+    const broken = await callTool({ DOCS_CACHE: fakeKv(), AI: ai, VOICE_BUDGET: budgetNs().ns }, "play-live-pattern", { code: `say('x'` });
+    expect(broken.isError).toBe(true);
+    expect(ai.calls).toHaveLength(0);
+  });
+
+  it("renders at most 8 lines per call, 3 at a time", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const calls: string[] = [];
+    const ai = {
+      run: async (_model: string, input: Record<string, unknown>) => {
+        calls.push(String(input.text));
+        peak = Math.max(peak, ++inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight--;
+        return new Uint8Array([1, 2, 3]);
+      },
+    };
+    const code = Array.from({ length: 12 }, (_, i) => `say('line ${i}')`).join("\n");
+    await callTool({ DOCS_CACHE: fakeKv(), AI: ai, VOICE_BUDGET: budgetNs().ns }, "play-live-pattern", { code });
+    expect(calls).toHaveLength(8);
+    expect(peak).toBe(3);
   });
 });
