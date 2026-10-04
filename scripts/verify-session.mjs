@@ -11,7 +11,7 @@
 //   (cd worker && bunx wrangler dev --port 8799)
 //   bunx vite --config dev/vite.config.ts --port 5177
 //   bun scripts/verify-session.mjs
-import { chromium } from "playwright";
+import { engine } from "./lib/engine.mjs";
 
 const HARNESS = process.env.HARNESS ?? "http://localhost:5177/";
 const ORIGIN = process.env.SESSION_ORIGIN ?? "http://127.0.0.1:8799";
@@ -76,7 +76,7 @@ ok(`session ${id} opened`);
 const SILENT = `setcps(0.5)\nonTap(() => {})\ns("bd*4").gain(0)`;
 const LOUD = `setcps(0.5)\nonTap(() => {})\ns("bd*4").gain(0.9)`;
 
-const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
+const browser = await engine.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
 const context = await browser.newContext({ viewport: { width: 1200, height: 900 } });
 await context.addInitScript(LEVEL_TAP);
 const page = await context.newPage();

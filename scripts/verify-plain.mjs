@@ -15,7 +15,7 @@
 //   bun run build
 //   bunx vite --config dev/vite.config.ts --port 5177
 //   node scripts/verify-plain.mjs
-import { chromium } from "playwright";
+import { engine } from "./lib/engine.mjs";
 
 const HARNESS = process.env.HARNESS ?? "http://localhost:5177/";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -68,7 +68,7 @@ stack(
 const NEGATIVE = CODE.replace(".lpf(800)", ".lpf(tilt().x.range(300, 2000)).gain(fader('vol'))");
 if (NEGATIVE === CODE) throw new Error("negative control did not change the code");
 
-const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
+const browser = await engine.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
 
 async function play(code) {
   const context = await browser.newContext({ viewport: { width: 900, height: 900 } });

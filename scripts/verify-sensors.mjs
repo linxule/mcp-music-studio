@@ -12,7 +12,7 @@
 // DeviceOrientationEvent.requestPermission() prompt, and a host frame whose
 // permission policy blocks sensors (claude.ai) — the fake-window unit tests in
 // tests/stage-runtime.test.ts cover both paths' logic.
-import { chromium } from "playwright";
+import { engine } from "./lib/engine.mjs";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,7 +81,7 @@ const reports = (page) =>
 
 // ── granted: fake microphone + synthetic orientation ──
 {
-  const browser = await chromium.launch({
+  const browser = await engine.launch({
     headless: true,
     args: [
       "--autoplay-policy=no-user-gesture-required",
@@ -130,7 +130,7 @@ const reports = (page) =>
 
 // ── refused: the microphone is denied ──
 {
-  const browser = await chromium.launch({
+  const browser = await engine.launch({
     headless: true,
     args: ["--autoplay-policy=no-user-gesture-required", "--use-fake-device-for-media-stream", "--deny-permission-prompts"],
   });
