@@ -115,11 +115,9 @@ export const UPDATE_SESSION_ANNOTATIONS = {
 /** Appended to play-live-pattern's result when a session was opened. */
 export function sessionNote(id: string): string {
   return (
-    `Live session: ${id}. This player stays open as one performance. ` +
-    `update-session(session: "${id}", code) swaps in a new pattern on the next bar — no new player — and ` +
-    `says whether it ran; get-session(session: "${id}") reads what happened: runtime errors, what is playing, ` +
-    "and the human's taps, control moves, code edits and when they hand the turn to you — with wait: \"pass\" it " +
-    "listens until they press Pass. The session closes after 2 hours idle, or when the listener presses End session."
+    `Live session: ${id}. This player stays open; update-session(session: "${id}", code) swaps a pattern in ` +
+    `on the next bar and says whether it ran; get-session(session: "${id}", wait: "pass") reads what the human ` +
+    "did and holds until they press Pass. It ends after 2 hours idle, or when the listener presses End session."
   );
 }
 

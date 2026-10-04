@@ -1312,9 +1312,11 @@ export function galleryIndex(): string {
     "# Gallery — complete audiovisual pieces",
     "",
     "Made in claude.ai by a Claude model with a person, played in this widget, and kept as",
-    "worked examples. Read one end to end before writing a music video, film or interactive",
-    "piece: they show how the stage runtime (cycle, onFrame, onEvent, onTap, say), canvases,",
-    "Hydra and arrange() fit together — and what an idea held all the way through looks like.",
+    "worked examples. For a first film, read First Light end to end. For an instrument or a",
+    "jam, start with the shortest piece that matches (line counts below); Trade a Beat is a",
+    "drawn grid two players share. They show how the stage runtime (cycle, onFrame, onEvent,",
+    "onTap, say), canvases, Hydra and arrange() fit together — and what an idea held all the",
+    "way through looks like.",
     "",
   ];
   for (const piece of STRUDEL_GALLERY) {

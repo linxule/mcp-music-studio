@@ -48,8 +48,9 @@ export const playLiveInputSchema = z.object({
     .optional()
     .describe(
       "Optional: keep this player open as a live session. update-session then swaps new code in on the bar, and " +
-        "get-session reports what played and what the user did. For a piece you keep changing or a back-and-forth jam. " +
-        "The session log is kept until 2 hours idle.",
+        "get-session reports what played and what the user did. For a jam, or a piece you change while it plays. " +
+        "Give the user something to play — taps, a fader, a grid (topic 'interactive') — or they answer by editing " +
+        "the code and pressing Pass. The log is kept until 2 hours idle.",
     ),
   theme: z
     .enum(EDITOR_THEMES)

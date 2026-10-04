@@ -85,8 +85,9 @@ export const SERVER_INSTRUCTIONS =
   "search-music-docs covers what the guides don't. " +
   "That is the whole core. The rest is optional, for when you and the user want more — each has a " +
   "get-strudel-guide topic: visuals that follow the music, from .pianoroll() to Hydra shaders ('visuals', 'hydra'); " +
-  "music videos and short films drawn by the code ('stage', 'film'); controls the user plays — faders, pads, " +
-  "grids you draw yourself, and the phone's tilt and mic ('interactive'); complete pieces to learn from ('gallery'); and live " +
+  "music videos and short films drawn by the code ('stage', 'film'); controls the user plays — taps, faders, pads, " +
+  "grids you draw yourself, and the phone's tilt and mic ('interactive'); complete pieces to learn from — a short film, " +
+  "a spoken duet, a drum grid for two ('gallery'); and live " +
   "sessions for jamming back and forth (play-live-pattern session: true, then update-session / get-session). " +
   "Playback stores nothing (a live session keeps its log until 2 hours idle). " +
   "create-share-link uploads a piece for 30 days, only when the user asks to share it.";
@@ -237,12 +238,11 @@ export function uiToolMeta(resourceUri: string): {
 // -----------------------------------------------------------------------------
 
 export const PLAY_SHEET_BASE_DESCRIPTION =
-  "Compose and play sheet music with visual notation, multi-instrument audio, " +
-  "and style presets. Write ABC notation for melodies, arrangements, harmonized " +
-  "pieces, or well-known tunes. Add a style (rock, jazz, bossa, waltz, folk...) " +
-  "for automatic drums, bass, and chord accompaniment. " +
-  "Returns a parse-status confirmation and renders the player; it does not return raw audio. " +
-  "Use get-music-guide for genre templates, instrument lists, and ABC syntax reference.";
+  "Write a score in ABC notation and play it as sheet music: a melody, a harmonized piece, a multi-voice " +
+  "arrangement or a well-known tune, on any of the 128 General MIDI instruments. Put chord symbols above the notes " +
+  "and add a style (rock, jazz, bossa, waltz, folk...) for drums, bass and chords. The user can edit the score in " +
+  "the player, change its style and instrument, and download WAV or MIDI. The result confirms the parse; it returns no audio. " +
+  "Start with get-music-guide topic 'genres'; 'abc-syntax' and 'instruments' for the rest.";
 
 export const PLAY_SHEET_EXT_APPS_SUFFIX =
   "\n\nThe music player renders inline with interactive playback controls.";
@@ -390,9 +390,9 @@ export const PLAY_LIVE_BASE_DESCRIPTION =
   "Optional, when you want more (get-strudel-guide topic in brackets): shader backgrounds that follow the music — " +
   "start with `await initHydra()`, lock to the beat with H(pattern), react to the sound with () => a.fft[0] ('hydra'); " +
   "canvases, scenes and spoken lines for music videos and films ('stage', 'film'); " +
-  "faders, pads and controls you draw, played by the user, and tilt and mic, which follow the phone where allowed ('interactive'); " +
-  "complete pieces ('gallery'). For a piece you keep changing or a back-and-forth jam, pass session: true, " +
-  "then use update-session and get-session.";
+  "taps, faders, pads and controls you draw, played by the user; tilt and mic, which follow the phone on the browser " +
+  "player (a chat's frame usually blocks them) ('interactive'); complete pieces ('gallery'). To jam back and forth, " +
+  "or to change a piece while it plays, pass session: true, then use update-session and get-session.";
 
 export const PLAY_LIVE_EXT_APPS_SUFFIX =
   "\n\nThe Strudel REPL renders inline with an editable code editor, " +
@@ -423,11 +423,9 @@ export const PLAY_LIVE_UNVALIDATED_REMOTE =
 
 /** Where the pattern actually plays — the one sentence every branch ends on. */
 const PLAY_LIVE_PLAYBACK_TAIL =
-  "It plays in an editable REPL widget in MCP-app hosts " +
-  "(e.g. Claude Desktop, claude.ai). After each run the widget reports what actually happened — " +
-  "playing, an error, silence, missing sounds, a callback that threw — into the host's model context; " +
-  "if your host has a tool to read widget context (claude.ai: read_widget_context), read it before " +
-  `assuming the piece played. ${NO_INLINE_PLAYER_TAIL}`;
+  "It plays in the chat's editable player (MCP-app hosts such as Claude Desktop and claude.ai), which reports " +
+  "what happened — playing, an error, silence, a missing sound — into the model context; read it " +
+  `(claude.ai: read_widget_context) before saying the piece played. ${NO_INLINE_PLAYER_TAIL}`;
 
 /** Trim float noise off a cps computed as e.g. 120/60/4. */
 const showCps = (cps: number) => String(Math.round(cps * 1000) / 1000);
@@ -568,11 +566,10 @@ export function buildPlayLiveResult(
 // -----------------------------------------------------------------------------
 
 export const GET_MUSIC_GUIDE_DESCRIPTION =
-  "Returns detailed reference material for music composition. " +
-  "Topics: instruments (GM instrument list + combos), drums (patterns + percussion notes), " +
-  "abc-syntax (notation reference), arrangements (multi-voice patterns), " +
-  "genres (complete ABC templates for jazz/blues/folk/rock/bossa/classical), " +
-  "styles (what each style preset does), midi-directives (%%MIDI reference).";
+  "Reference for ABC sheet music. Topics: genres (complete templates: jazz, blues, folk, rock, bossa, " +
+  "a 3/4 minuet, a lullaby), styles (what each accompaniment preset does), instruments (GM list + combos), " +
+  "drums (patterns + percussion notes), abc-syntax (notation reference), arrangements (multi-voice patterns), " +
+  "midi-directives (%%MIDI reference).";
 
 export const GET_MUSIC_GUIDE_TOPIC_DESCRIPTION =
   "Reference topic. Start with 'genres' for complete examples, 'styles' to understand presets, or 'instruments' for the full instrument list.";
@@ -591,8 +588,9 @@ export const GET_STRUDEL_GUIDE_DESCRIPTION =
 export const GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION =
   "Reference topic. Start with 'genres' for working templates, " +
   "'sounds' for instruments, 'visuals' for draw methods and presets, 'hydra' for shader backgrounds, " +
-  "'advanced' for sample loading. For a music video, film or interactive piece: 'craft', then " +
-  "'stage', 'film' or 'interactive', and a worked example from 'gallery'.";
+  "'advanced' for sample loading. For a music video or film: 'craft', 'stage', 'film', then gallery piece " +
+  "'first-light'. For taps, controls, a drawn grid or a jam: 'interactive' alone (take only the sections you need), " +
+  "then gallery piece 'weather-machine' or 'trade-a-beat'.";
 
 export const getStrudelGuideInputSchema = z.object({
   topic: z.enum(STRUDEL_GUIDE_TOPICS).describe(GET_STRUDEL_GUIDE_TOPIC_DESCRIPTION),

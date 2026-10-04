@@ -244,7 +244,10 @@ Each section below is optional; take only what the piece needs. In order:
 taps into notes · call and response · voice (say) · controls the listener
 plays (fader, pad, xy) · sensors (tilt, mic) · controls you draw yourself
 (remember, openStage) · live sessions (update-session, get-session, Pass) ·
-your turn on a drawn grid (merge).
+your turn on a drawn grid (merge). Taps and controls work everywhere, a chat's
+widget included; tilt and mic usually reach the phone only on the browser
+player (a live session's result gives its link) and sit on the strip, played
+by hand, elsewhere.
 
 ## State into music: signal(), taps into notes
 signal(fn) turns any JavaScript into a pattern. fn gets the cycle (wrap it in

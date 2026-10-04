@@ -15,7 +15,8 @@ import {
 export const CREATE_SHARE_DESCRIPTION =
   "Create a hosted music share link only when the user asks to share or store a piece online. " +
   "Uploads the supplied score or pattern to MCP Music Studio for 30 days; anyone with the link can view and play it without signing in. " +
-  "Creating the same share again refreshes its expiry. Playback does not require this tool. " +
+  "Creating the same share again refreshes its expiry. Playback does not require this tool, and a play result's " +
+  "'▶ Play in browser' link already opens the piece for anyone when it fit in the link; this tool gives a short stored link. " +
   "Provide kind 'score' with score, or kind 'play' with pattern. Never include private information or secrets.";
 
 export const CREATE_SHARE_ANNOTATIONS = {

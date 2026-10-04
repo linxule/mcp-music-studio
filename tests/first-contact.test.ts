@@ -12,15 +12,17 @@ import { createMusicServer } from "../worker/src/index";
 // description and every input schema — whether or not it ever opens a session,
 // draws a control or shares a link. 0.5.0 cost 12.6k characters; by 0.11.0 the
 // optional modules had pushed it to 25.1k. 0.11.1 put the core first and gave
-// each module one line plus the guide topic that teaches it (17.9k; the
-// ceilings below leave ~4% headroom).
+// each module one line plus the guide topic that teaches it (17.9k). An
+// agent-ergonomics review (Fable) then bought back some discoverability on
+// purpose — the gallery's faces, taps, where tilt/mic work, that a play result
+// already carries a link — for 18.6k, still 26% under 0.11.0.
 //
 // The budget is a ceiling, not a target. Raising it is allowed; doing it
 // without noticing is what this test prevents. If a new feature needs words
 // here, consider whether one clause + a guide topic would do.
 const BUDGET = {
-  instructions: 1300,
-  descriptions: 6200,
+  instructions: 1400,
+  descriptions: 6400,
   schemas: 11200,
 };
 
