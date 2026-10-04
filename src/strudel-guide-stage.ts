@@ -342,11 +342,12 @@ stack(
   Double-quoted notes are mini-notation ("c4 [d4 e4] ~ g4"); a ~ rests and
   takes no word. More words than notes: they wrap onto the next cycle; the
   phrase always fills whole cycles, leftover notes rest.
-- octave: 'auto' (the default) moves the whole melody by whole octaves to
-  the voice once the line is measured — its middle note lands within half an
-  octave of how the voice speaks (orion and other low voices go down, the
-  shape stays). A number (-2…2) is exactly that shift; 0 = as written, for
-  when the melody must sit with other parts in a fixed octave.
+- octave: 'auto' (the default) moves the whole melody up or down by at most
+  one octave once the line is measured, whichever brings its middle note
+  closest to how the voice speaks (orion and other low voices go down, the
+  shape stays; nothing is moved below 80 Hz). A number (-2…2) is exactly that
+  shift; 0 = as written, for when the melody must sit with other parts in a
+  fixed octave.
 - It sounds like a robot singing, not a singer: the voice's character moves
   with the pitch, so keep a melody's range narrow (about an octave). A word
   more than two octaves from the voice can't reach its note; the report after

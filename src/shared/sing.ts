@@ -277,15 +277,18 @@ export function spokenMedianHz(spokenHz: Array<number | null>): number | null {
   return voiced.length % 2 ? voiced[mid] : (voiced[mid - 1] + voiced[mid]) / 2;
 }
 
-/** Farthest `octave: 'auto'` moves a melody, either way. */
-export const AUTO_OCTAVE_LIMIT = 4;
+/** Lowest a sung note may land when moving it down: below this, pitch blurs (for ears and for YIN). */
+export const AUTO_OCTAVE_FLOOR_HZ = 80;
 
 /**
- * `octave: 'auto'`: the whole octaves that bring the notes' median within
- * ±6 semitones of the voice's speaking pitch, so each word moves as little as
- * it can (the shape of the melody is kept). 0 when nothing was voiced.
- * Measured why: orion speaks near 100 Hz, and c5 asks 5× of a word — past the
- * 4× limit, so it sang 4–5 semitones flat; asteria, near 250 Hz, needs no move.
+ * `octave: 'auto'`: the shift in {−1, 0, +1} octaves that brings the notes'
+ * median closest to the voice's speaking pitch (ties → 0), so each word moves
+ * as little as it can and the melody keeps its shape. A shift that would put
+ * the lowest note under 80 Hz gives way to the nearest higher one that
+ * doesn't. 0 when nothing was voiced.
+ * Measured why: orion speaks near 100–140 Hz, and c5 asks 4–5× of a word —
+ * past the 4× limit, so it sang 4–5 semitones flat. Two octaves down (an
+ * earlier ±4 rule) put a line at 65–131 Hz, below where pitch is heard well.
  */
 export function autoOctave(noteMidis: number[], spokenHz: number | null): number {
   if (!spokenHz || !noteMidis.length) return 0;
@@ -293,9 +296,17 @@ export function autoOctave(noteMidis: number[], spokenHz: number | null): number
   const mid = sorted.length >> 1;
   const notes = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
   const voice = 69 + 12 * Math.log2(spokenHz / 440);
-  // Round half toward no move: exactly 6 semitones away stays where written.
-  const k = -Math.round((notes - voice) / 12 - 1e-9 * Math.sign(notes - voice));
-  return Math.max(-AUTO_OCTAVE_LIMIT, Math.min(AUTO_OCTAVE_LIMIT, k === 0 ? 0 : k));
+  const floor = 69 + 12 * Math.log2(AUTO_OCTAVE_FLOOR_HZ / 440);
+  const shifts = [0, -1, 1]; // 0 first: it wins ties
+  let best = 0;
+  for (const k of shifts) {
+    if (Math.abs(notes + 12 * k - voice) < Math.abs(notes + 12 * best - voice) - 1e-9) best = k;
+  }
+  if (sorted[0] + 12 * best < floor) {
+    const higher = shifts.filter((k) => k > best && sorted[0] + 12 * k >= floor).sort((x, y) => x - y);
+    if (higher.length) best = higher[0];
+  }
+  return best;
 }
 
 /** What one sing() call became, for the model's report. */

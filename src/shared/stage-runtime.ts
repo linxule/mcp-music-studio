@@ -244,8 +244,9 @@ export interface SayOptions {
 export interface SingOptions extends SayOptions {
   /**
    * 'auto' (default): once the line is measured, move the whole melody by
-   * whole octaves so its median sits within ±6 semitones of the voice's
-   * speaking pitch (src/shared/sing.ts autoOctave) — the shape is kept.
+   * −1, 0 or +1 octave, whichever brings its median closest to the voice's
+   * speaking pitch, never taking the lowest note under 80 Hz when a higher
+   * shift avoids it (src/shared/sing.ts autoOctave) — the shape is kept.
    * A number (−2…2): exactly that many octaves; 0 = the notes as written.
    */
   octave?: number | "auto";

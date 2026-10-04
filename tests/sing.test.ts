@@ -121,28 +121,39 @@ describe("wordSpeeds", () => {
   });
 });
 
-describe("octave: 'auto' — notes moved by whole octaves to the voice", () => {
+describe("octave: 'auto' — notes moved by at most one octave to the voice", () => {
   const hz = (midi: number) => midiToHz(midi);
-  it("moves the notes' median to within ±6 semitones of the speaking pitch, keeping the shape", () => {
+  it("picks the shift in {−1, 0, +1} that brings the notes' median closest to the voice", () => {
     const melody = [60, 64, 67, 72]; // c4 e4 g4 c5, median 65.5
-    expect(autoOctave(melody, 102)).toBe(-2); // orion, ~g#2 (44.0): 65.5 − 24 = 41.5
-    expect(autoOctave(melody, 140)).toBe(-1); // ~c#3 (49.8)
-    expect(autoOctave(melody, 250)).toBe(-1); // ~b3 (59.2): 6.3 away, so down to 53.5 (5.7 away)
+    expect(autoOctave(melody, 121)).toBe(-1); // orion (~46.7): c3–c4, not two octaves down
+    expect(autoOctave(melody, 102)).toBe(-1);
+    expect(autoOctave(melody, 250)).toBe(-1); // ~b3 (59.2): 53.5 is 5.7 away, 65.5 is 6.3
     expect(autoOctave(melody, 262)).toBe(0); // c4 (60): 5.5 away
     expect(autoOctave([48, 52, 55], hz(64))).toBe(1); // c3 e3 g3 for a voice at e4
   });
-  it("is within ±6 semitones for every voice, and exactly 6 away stays where written", () => {
-    for (let voice = 36; voice <= 84; voice += 0.5) {
+  it("never moves more than one octave; ties stay where written", () => {
+    for (let voice = 24; voice <= 96; voice += 0.5) {
       const k = autoOctave([60, 62, 64, 65, 67], hz(voice));
-      expect(Math.abs(64 + 12 * k - voice)).toBeLessThanOrEqual(6 + 1e-9);
+      expect(Math.abs(k)).toBeLessThanOrEqual(1);
+      // The closest of the three, unless the 80 Hz floor stepped in (lowest note 60 never needs it).
+      const d = (s: number) => Math.abs(64 + 12 * s - voice);
+      expect(d(k)).toBeLessThanOrEqual(Math.min(d(-1), d(0), d(1)) + 1e-9);
     }
     expect(autoOctave([60], hz(54))).toBe(0);
     expect(autoOctave([60], hz(66))).toBe(0);
+    expect(autoOctave([127], 60)).toBe(-1);
   });
-  it("leaves the notes alone with nothing to go on, and never moves more than 4 octaves", () => {
+  it("never puts the lowest note under 80 Hz when a higher shift avoids it", () => {
+    // Lowest g#2 (104 Hz): one octave down is 52 Hz, so it stays.
+    expect(autoOctave([44, 60, 62], 70)).toBe(0);
+    // Lowest c2 (65 Hz) is already under: +1 (131 Hz) wins over a closer 0.
+    expect(autoOctave([36, 40, 43], 70)).toBe(1);
+    // Everything far below the floor and nothing better: the floor can't help.
+    expect(autoOctave([12, 14], 40)).toBe(1);
+  });
+  it("leaves the notes alone with nothing to go on", () => {
     expect(autoOctave([60, 64], null)).toBe(0);
     expect(autoOctave([], 200)).toBe(0);
-    expect(autoOctave([127], 60)).toBe(-4);
   });
   it("the speaking pitch is the median of the voiced words", () => {
     expect(spokenMedianHz([200, null, 100, 150])).toBe(150);
