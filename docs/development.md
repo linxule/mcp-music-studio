@@ -48,3 +48,13 @@ The widgets are single HTML files, but the music engines and sounds come from pu
 | Spoken lines (`say()`) | our Worker's `/tts` (Workers AI) | Voiced pieces play without their lines and report it | `worker/src/index.ts` |
 
 To move the REPL or Hydra to jsDelivr in an outage, change the URL in the files above. jsDelivr is already in both CSP lists, so nothing else changes. Then rebuild and deploy the Worker and publish a patch release; versioned `ui://` addresses mean chats pick up the new player on their next tool call.
+
+## The voice budget
+
+New spoken lines (`say()`, a `GET /tts` cache miss) are the only thing the hosted service pays for per request. Each one is charged its exact price (Aura-2: $0.030 per 1,000 characters) against one monthly budget, held by the `VoiceBudget` Durable Object (`worker/src/voice-budget-do.ts`, logic in `src/shared/voice-budget.ts`). No UTC day may spend more than a tenth of the month. A render the model refused is refunded; one it answered is kept, because it may be billed. Without the binding, or when the budget can't be reached, nothing is rendered.
+
+- **The knob:** `VOICE_BUDGET_USD_PER_MONTH` in `worker/wrangler.jsonc` (`"10"` since 0.11.3, about ten times the busiest day measured). `"0"` turns new lines off. Change it and redeploy the Worker.
+- **Status:** `GET /tts/budget` → `{month, spentUsd, budgetUsd, today, spentTodayUsd, todayCapUsd}`.
+- **Fairness, not cost:** the `TTS_IP_LIMITER` (12 new lines a minute per address, IPv6 by /64) and `TTS_GLOBAL_LIMITER` (240 a minute per location) bindings stop one client from using up everyone's month.
+- Workers AI's free allowance (10,000 neurons a day, about 3,600 characters of speech) is shared by every Worker on the Cloudflare account; the budget counts list price whether or not the free allowance covered it.
+
