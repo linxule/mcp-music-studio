@@ -14,6 +14,8 @@
 //   bun scripts/verify-sing.mjs          # BROWSER=webkit for Safari's engine
 //   LINE='one two three four' NOTES='c4 e4 g4 c5' VOICE=orion bun scripts/verify-sing.mjs
 //   SUMMARY=out.jsonl appends one JSON line per run (for a lines × voices matrix)
+//   OCTAVE=0 pins the notes as written; unset, sing() picks the octave ('auto')
+//   and the targets follow what its report says it chose
 //
 // Requests to the hosted /tts are routed to the local Worker (TTS_ORIGIN).
 import { appendFileSync } from "node:fs";
@@ -32,13 +34,15 @@ const TARGETS = NOTES.map((n) => {
   return midi;
 });
 const VOICE = process.env.VOICE ?? "luna";
+/** OCTAVE=n plays the notes exactly n octaves away; unset = the default, 'auto' (read back from the widget's report). */
+const OCTAVE = process.env.OCTAVE;
 /** Optional: append one JSON line per run (line, voice, engine, cents) — for a matrix. */
 const SUMMARY = process.env.SUMMARY;
 // One step per second: a spoken word (~0.4 s ÷ its speed) ends well inside it.
 const CPS = 0.25;
 const CYCLES = 4;
 const CODE = `setcps(${CPS})
-sing('${LINE}', "${NOTES.join(" ")}", { voice: '${VOICE}' })`;
+sing('${LINE}', "${NOTES.join(" ")}", { voice: '${VOICE}'${OCTAVE !== undefined ? `, octave: ${Number(OCTAVE)}` : ""} })`;
 
 /**
  * A second opinion that shares no code with the widget: the strongest
@@ -145,6 +149,18 @@ const RECORDER = `(() => {
 const browser = await engine.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required"] });
 const context = await browser.newContext({ viewport: { width: 1000, height: 900 } });
 await context.addInitScript(RECORDER);
+// The harness page (the host) receives the widget's model reports: keep them,
+// to read which octave 'auto' chose.
+await context.addInitScript(`(() => {
+  if (window !== window.top) return;
+  globalThis.__reports = [];
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (d && d.method === 'ui/update-model-context') {
+      for (const c of d.params?.content ?? []) if (c?.type === 'text') globalThis.__reports.push(String(c.text));
+    }
+  });
+})();`);
 const tts = [];
 await context.route("https://music-studio.linxule.com/tts**", async (route) => {
   const url = new URL(route.request().url());
@@ -176,6 +192,10 @@ for (let i = 0; i < 160; i++) {
 }
 console.log(`  ${BROWSER}; /tts: ${tts.join(", ") || "none"}; played to cycle ${heard.toFixed(2)}`);
 
+const reports = await page.evaluate(() => globalThis.__reports ?? []);
+const sungNote = reports.map((t) => /sing: .*/.exec(t)?.[0]).filter(Boolean).at(-1) ?? null;
+const chosen = OCTAVE !== undefined ? Number(OCTAVE) : Number(/: octave ([+-]?\d+)/.exec(sungNote ?? "")?.[1] ?? NaN);
+console.log(`  widget: ${sungNote ?? "(no sing note in its reports)"}`);
 const rec = await frame().evaluate(() => {
   const { rate, chunks, clock } = globalThis.__rec;
   const total = chunks.reduce((n, [, c]) => n + c.length, 0);
@@ -230,7 +250,7 @@ for (let c = 0; c <= CYCLES; c++) {
     const m = first >= 0 ? measure(step.subarray(first, last), rate) : { median: null, weighted: null, windows: 0 };
     const hz = m.median;
     const acf = first >= 0 ? autocorrelationHz(step.subarray(first, last), rate) : null;
-    const target = midiToHz(TARGETS[k]);
+    const target = midiToHz(TARGETS[k] + 12 * (Number.isFinite(chosen) ? chosen : 0));
     const cents = hz ? 1200 * Math.log2(hz / target) : null;
     const weighted = m.weighted ? 1200 * Math.log2(m.weighted / target) : null;
     rows.push({ cycle: c, step: k, note: NOTES[k], peak, hz, acf, target, cents, weighted, sounded: first >= 0 ? ((last - first) / rate) : 0 });
@@ -258,7 +278,7 @@ console.log(
 );
 if (SUMMARY) {
   appendFileSync(SUMMARY, JSON.stringify({
-    line: LINE, voice: VOICE, notes: NOTES.join(" "), engine: BROWSER,
+    line: LINE, voice: VOICE, notes: NOTES.join(" "), engine: BROWSER, octave: chosen, clamped: Number(/(\d+) of \d+ words at the speed limit/.exec(sungNote ?? "")?.[1] ?? 0),
     median: mid(plain), worst: plain.at(-1) ?? null, weightedMedian: mid(perceived), weightedWorst: perceived.at(-1) ?? null,
     unmeasured: rows.length - plain.length, steps: rows.length,
     perNote: NOTES.map((n, k) => ({ note: n, cents: rows.find((r) => r.step === k)?.cents ?? null })),
@@ -270,5 +290,6 @@ silent.length === 0 ? ok("every step is audible") : fail(`${silent.length} silen
 off.length === 0
   ? ok(`every step within ±1 semitone of its note (worst ${Math.max(...rows.map((r) => Math.abs(r.cents ?? 0))).toFixed(0)} cents)`)
   : fail(`${off.length} steps off by more than a semitone: ${off.map((r) => `${r.cycle}.${r.step} ${r.cents === null ? "unvoiced" : `${r.cents.toFixed(0)}¢`}`).join(", ")}`);
+Number.isFinite(chosen) ? ok(`octave ${chosen}${OCTAVE !== undefined ? " (given)" : " (auto, from the widget's report)"}`) : fail("the widget never reported which octave it chose");
 tts.some((t) => t === "words 200") ? ok("GET /tts?…&words=1 served the timings") : fail(`no words request succeeded (${tts.join(", ")})`);
 errors.length === 0 ? ok("no console errors") : fail(`console:\n  ${errors.slice(0, 5).join("\n  ")}`);

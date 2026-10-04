@@ -13,6 +13,9 @@ import {
   SING_MAX_SPEED,
   ttsWordsUrl,
   wordSpeeds,
+  autoOctave,
+  describeSung,
+  spokenMedianHz,
 } from "../src/shared/sing";
 import { createStage, stageEvent, type StageEnv, type SungClip } from "../src/shared/stage-runtime";
 import { ttsSampleName } from "../src/shared/tts";
@@ -104,15 +107,59 @@ describe("notes → steps", () => {
 
 describe("wordSpeeds", () => {
   it("target ÷ spoken; an unvoiced word borrows the previous pitch (the median if first)", () => {
-    const speeds = wordSpeeds([null, 200, null, 100], [69, 69, 69, 57]);
+    const { speeds, clamped } = wordSpeeds([null, 200, null, 100], [69, 69, 69, 57]);
+    expect(clamped).toBe(0);
     expect(speeds[0]).toBeCloseTo(440 / 200); // median of [100, 200] → upper middle = 200
     expect(speeds[1]).toBeCloseTo(440 / 200);
     expect(speeds[2]).toBeCloseTo(440 / 200);
     expect(speeds[3]).toBeCloseTo(midiToHz(57) / 100);
   });
   it("clamps to two octaves and plays as spoken when nothing is voiced", () => {
-    expect(wordSpeeds([50], [100])[0]).toBe(SING_MAX_SPEED);
-    expect(wordSpeeds([null, null], [60, 62])).toEqual([1, 1]);
+    expect(wordSpeeds([50], [100])).toEqual({ speeds: [SING_MAX_SPEED], clamped: 1 });
+    expect(wordSpeeds([400, 400], [24, 69])).toEqual({ speeds: [0.25, 1.1], clamped: 1 });
+    expect(wordSpeeds([null, null], [60, 62])).toEqual({ speeds: [1, 1], clamped: 0 });
+  });
+});
+
+describe("octave: 'auto' — notes moved by whole octaves to the voice", () => {
+  const hz = (midi: number) => midiToHz(midi);
+  it("moves the notes' median to within ±6 semitones of the speaking pitch, keeping the shape", () => {
+    const melody = [60, 64, 67, 72]; // c4 e4 g4 c5, median 65.5
+    expect(autoOctave(melody, 102)).toBe(-2); // orion, ~g#2 (44.0): 65.5 − 24 = 41.5
+    expect(autoOctave(melody, 140)).toBe(-1); // ~c#3 (49.8)
+    expect(autoOctave(melody, 250)).toBe(-1); // ~b3 (59.2): 6.3 away, so down to 53.5 (5.7 away)
+    expect(autoOctave(melody, 262)).toBe(0); // c4 (60): 5.5 away
+    expect(autoOctave([48, 52, 55], hz(64))).toBe(1); // c3 e3 g3 for a voice at e4
+  });
+  it("is within ±6 semitones for every voice, and exactly 6 away stays where written", () => {
+    for (let voice = 36; voice <= 84; voice += 0.5) {
+      const k = autoOctave([60, 62, 64, 65, 67], hz(voice));
+      expect(Math.abs(64 + 12 * k - voice)).toBeLessThanOrEqual(6 + 1e-9);
+    }
+    expect(autoOctave([60], hz(54))).toBe(0);
+    expect(autoOctave([60], hz(66))).toBe(0);
+  });
+  it("leaves the notes alone with nothing to go on, and never moves more than 4 octaves", () => {
+    expect(autoOctave([60, 64], null)).toBe(0);
+    expect(autoOctave([], 200)).toBe(0);
+    expect(autoOctave([127], 60)).toBe(-4);
+  });
+  it("the speaking pitch is the median of the voiced words", () => {
+    expect(spokenMedianHz([200, null, 100, 150])).toBe(150);
+    expect(spokenMedianHz([null])).toBeNull();
+  });
+  it("tells the model what each line became, and when words are at the speed limit", () => {
+    expect(describeSung([])).toBe("");
+    const note = describeSung([
+      { line: "still water runs deep", voice: "orion", ready: true, octave: -1, auto: true, spokenHz: 131.4, words: 4, clamped: 0 },
+      { line: "low", voice: "luna", ready: true, octave: 0, auto: false, spokenHz: 200, words: 1, clamped: 1 },
+      { line: "later", voice: "luna", ready: false },
+    ]);
+    expect(note).toBe(
+      "sing: 'still water runs deep': octave -1 (auto), orion speaks near 131 Hz; " +
+        "'low': octave 0, luna speaks near 200 Hz; 1 of 1 words at the speed limit (more than two octaves from the voice) — they play off their note: write the notes nearer the voice; " +
+        "'later' still loading",
+    );
   });
 });
 
@@ -172,7 +219,7 @@ describe("sing() in the stage runtime", () => {
 
   it("is silent until the words arrive, then plays each word in tune on its note", async () => {
     const { stage, loads } = sung();
-    const pattern = stage.globals.sing("still water runs deep", "c4 e4 g4 c5") as any;
+    const pattern = stage.globals.sing("still water runs deep", "c4 e4 g4 c5", { octave: 0 }) as any;
     expect(pattern.queryArc(0, 1)).toEqual([]);
     await new Promise((r) => setTimeout(r, 0));
     const haps = pattern.queryArc(0, 1);
@@ -202,6 +249,38 @@ describe("sing() in the stage runtime", () => {
     expect(loads).toHaveLength(1);
   });
 
+  it("octave 'auto' (the default) moves the melody to the voice and reports it per evaluation", async () => {
+    const { stage } = sung();
+    // The fake voice speaks at 150–250 Hz (median 190 Hz ≈ f#3); c4 e4 g4 c5 sits an octave above.
+    const token = stage.begin();
+    const pattern = stage.globals.sing("still water runs deep", "c4 e4 g4 c5") as any;
+    stage.commit(token);
+    expect(stage.sung()).toEqual([{ line: "still water runs deep", voice: "luna", ready: false }]);
+    await new Promise((r) => setTimeout(r, 0));
+    const haps = pattern.queryArc(0, 1);
+    expect(haps[0].value.speed).toBeCloseTo(midiToHz(48) / 200, 1);
+    expect(haps[3].value.speed).toBeCloseTo(midiToHz(60) / 180, 1);
+    expect(stage.sung()).toEqual([
+      { line: "still water runs deep", voice: "luna", ready: true, octave: -1, auto: true, spokenHz: expect.any(Number), words: 4, clamped: 0 },
+    ]);
+    expect(stage.sung()[0].spokenHz).toBeCloseTo(190, -1);
+    // A failed evaluation keeps the committed report; a new one replaces it.
+    stage.begin();
+    stage.globals.sing("other", "c4");
+    stage.rollback();
+    expect(stage.sung()).toHaveLength(1);
+    expect(stage.sung()[0].line).toBe("still water runs deep");
+  });
+
+  it("counts words at the speed limit", async () => {
+    const { stage } = sung();
+    const token = stage.begin();
+    stage.globals.sing("still water runs deep", "c7 c7 c7 c7", { octave: 0 });
+    stage.commit(token);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(stage.sung()[0]).toMatchObject({ octave: 0, auto: false, clamped: 4, words: 4 });
+  });
+
   it("a failed load is forgotten, so the next evaluation retries", async () => {
     let fail = true;
     const { stage, loads } = sung(async () => {
@@ -224,6 +303,7 @@ describe("sing() in the stage runtime", () => {
     expect(() => stage.globals.sing("hi", "c4", { voice: "morgan" })).toThrow(/not one of/);
     expect(() => stage.globals.sing("hi", "q4")).toThrow(/not a note/);
     expect(() => stage.globals.sing("hi", "c4", { octave: 3 })).toThrow(/octave/);
+    expect(() => stage.globals.sing("hi", "c4", { octave: "high" as never })).toThrow(/'auto' or a whole number/);
     const bare = createStage({ ...({} as StageEnv), reportError: () => undefined });
     expect(() => bare.globals.sing("hi", "c4")).toThrow(/not available/);
   });

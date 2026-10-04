@@ -4,6 +4,7 @@ Notable changes per release, newest first. Every release, including those not li
 
 ## Unreleased
 
+- **`sing()` moves the melody to the voice.** By default (`octave: 'auto'`), once a line is measured the whole melody moves by whole octaves so its middle sits within half an octave of how that voice speaks, keeping its shape. Low voices such as orion used to be asked for more than two octaves of lift and sang their high notes flat. `octave: 0` keeps the notes as written, and `octave: -2` to `2` shifts them exactly. The player's report to the model now says, per sung line, which octave it used, how high the voice speaks, and how many words were too far from the voice to reach their note.
 - `sing()` measures a word's spoken pitch across the whole word, weighted by loudness, so the part you hear is the part that lands on the note (the two browser engines used to disagree by up to a semitone on the same word). Known limits: a note far above the voice's speaking range hits the 4× speed cap, and a word whose pitch jumps mid-word is really two notes.
 
 ## 0.12.0 — October 4, 2026

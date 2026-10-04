@@ -248,18 +248,86 @@ export const SING_MIN_SPEED = 0.25;
 export const SING_MAX_SPEED = 4;
 
 /**
- * Each word's speed onto its note. An unvoiced word takes the previous
- * word's pitch (or the line's median when it is the first).
+ * Each word's speed onto its note, and how many words hit the 0.25–4 limit
+ * (those play off their note). An unvoiced word takes the previous word's
+ * pitch (or the line's median when it is the first).
  */
-export function wordSpeeds(spokenHz: Array<number | null>, targetMidi: number[]): number[] {
+export function wordSpeeds(spokenHz: Array<number | null>, targetMidi: number[]): { speeds: number[]; clamped: number } {
   const voiced = spokenHz.filter((h): h is number => typeof h === "number" && h > 0).sort((a, b) => a - b);
   const fallback = voiced.length ? voiced[voiced.length >> 1] : null;
   let previous = fallback;
-  return targetMidi.map((midi, i) => {
+  let clamped = 0;
+  const speeds = targetMidi.map((midi, i) => {
     const hz = spokenHz[i % spokenHz.length];
     const spoken = typeof hz === "number" && hz > 0 ? hz : previous;
     if (typeof hz === "number" && hz > 0) previous = hz;
     if (!spoken) return 1;
-    return Math.min(SING_MAX_SPEED, Math.max(SING_MIN_SPEED, midiToHz(midi) / spoken));
+    const raw = midiToHz(midi) / spoken;
+    if (raw > SING_MAX_SPEED || raw < SING_MIN_SPEED) clamped++;
+    return Math.min(SING_MAX_SPEED, Math.max(SING_MIN_SPEED, raw));
   });
+  return { speeds, clamped };
+}
+
+/** The line's speaking pitch: the median of its voiced words. Null when none is voiced. */
+export function spokenMedianHz(spokenHz: Array<number | null>): number | null {
+  const voiced = spokenHz.filter((h): h is number => typeof h === "number" && h > 0).sort((a, b) => a - b);
+  if (!voiced.length) return null;
+  const mid = voiced.length >> 1;
+  return voiced.length % 2 ? voiced[mid] : (voiced[mid - 1] + voiced[mid]) / 2;
+}
+
+/** Farthest `octave: 'auto'` moves a melody, either way. */
+export const AUTO_OCTAVE_LIMIT = 4;
+
+/**
+ * `octave: 'auto'`: the whole octaves that bring the notes' median within
+ * ±6 semitones of the voice's speaking pitch, so each word moves as little as
+ * it can (the shape of the melody is kept). 0 when nothing was voiced.
+ * Measured why: orion speaks near 100 Hz, and c5 asks 5× of a word — past the
+ * 4× limit, so it sang 4–5 semitones flat; asteria, near 250 Hz, needs no move.
+ */
+export function autoOctave(noteMidis: number[], spokenHz: number | null): number {
+  if (!spokenHz || !noteMidis.length) return 0;
+  const sorted = [...noteMidis].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  const notes = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const voice = 69 + 12 * Math.log2(spokenHz / 440);
+  // Round half toward no move: exactly 6 semitones away stays where written.
+  const k = -Math.round((notes - voice) / 12 - 1e-9 * Math.sign(notes - voice));
+  return Math.max(-AUTO_OCTAVE_LIMIT, Math.min(AUTO_OCTAVE_LIMIT, k === 0 ? 0 : k));
+}
+
+/** What one sing() call became, for the model's report. */
+export interface SungReport {
+  line: string;
+  voice: string;
+  /** Loaded and measured yet. */
+  ready: boolean;
+  /** Octaves the notes moved. */
+  octave?: number;
+  /** Chosen by `octave: 'auto'`. */
+  auto?: boolean;
+  /** The voice's speaking pitch, Hz. */
+  spokenHz?: number | null;
+  words?: number;
+  /** Words at the speed limit (playing off their note). */
+  clamped?: number;
+}
+
+/** One sentence for the model about the evaluation's sung lines; "" when there are none. */
+export function describeSung(reports: SungReport[]): string {
+  if (!reports.length) return "";
+  const parts = reports.slice(0, 4).map((r) => {
+    const name = `'${r.line.length > 40 ? `${r.line.slice(0, 40)}…` : r.line}'`;
+    if (!r.ready) return `${name} still loading`;
+    const voice = r.spokenHz ? `${r.voice} speaks near ${Math.round(r.spokenHz)} Hz` : `${r.voice}, no voiced word measured`;
+    const shift = `octave ${r.octave! > 0 ? "+" : ""}${r.octave}${r.auto ? " (auto)" : ""}`;
+    const limit = r.clamped
+      ? `; ${r.clamped} of ${r.words} words at the speed limit (more than two octaves from the voice) — they play off their note: write the notes nearer the voice`
+      : "";
+    return `${name}: ${shift}, ${voice}${limit}`;
+  });
+  const more = reports.length > 4 ? `; and ${reports.length - 4} more` : "";
+  return `sing: ${parts.join("; ")}${more}`;
 }
