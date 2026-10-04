@@ -650,9 +650,9 @@ export function generateStrudelPlayerHtml(options: StrudelPlayerOptions): string
       var run = evaluationTail.then(async function () {
         var token = stage.begin();
         var code = getLiveCode(ed);
-        // Voiced and about to start: load the say() clips first (superdough
+        // Voiced and about to start: load the say() and sing() clips first (superdough
         // drops a sample that isn't ready by its start time).
-        var hold = shouldPlay !== false && /\\bsay\\s*\\(/.test(code) &&
+        var hold = shouldPlay !== false && /\\b(?:say|sing)\\s*\\(/.test(code) &&
           !(ed.repl && ed.repl.state && ed.repl.state.started);
         try {
           await originalEvaluate(hold ? false : shouldPlay);

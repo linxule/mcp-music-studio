@@ -132,13 +132,15 @@ export function shapeDurableObjects(dates, groups, classes) {
  * its say() lines logs `prerender-miss` (a model call like any miss, so it
  * counts in ttsMiss too), `prerender-hit` (already cached) and
  * `prerender-skipped`; `inflight-timeout` is a player that waited for another
- * render's clip and rendered the line itself.
+ * render's clip and rendered the line itself. sing() lines add `words-hit` /
+ * `words-miss` (with `prerender-` in front when warmed): a miss is one Whisper
+ * call, ≈ 2% of the line's price (ttsWordsMiss).
  */
 export function shapeAnalytics(dates, rows) {
   const byDay = new Map(
     dates.map((d) => [
       d,
-      { date: d, sessionsNew: 0, sessionsLimited: 0, ttsHit: 0, ttsMiss: 0, ttsMissChars: 0, ttsPrerender: 0, ttsPrerenderChars: 0, ttsInflightTimeout: 0, ttsRefused: 0, toolCalls: 0 },
+      { date: d, sessionsNew: 0, sessionsLimited: 0, ttsHit: 0, ttsMiss: 0, ttsMissChars: 0, ttsPrerender: 0, ttsPrerenderChars: 0, ttsInflightTimeout: 0, ttsWordsMiss: 0, ttsRefused: 0, toolCalls: 0 },
     ]),
   );
   const tools = new Map();
@@ -156,7 +158,8 @@ export function shapeAnalytics(dates, rows) {
         day.ttsPrerender += n;
         day.ttsPrerenderChars += num(r.chars);
       }
-    } else if (r.blob1 === "tts" && r.blob2 === "inflight-timeout") day.ttsInflightTimeout += n;
+    } else if (r.blob1 === "tts" && (r.blob2 === "words-miss" || r.blob2 === "prerender-words-miss")) day.ttsWordsMiss += n;
+    else if (r.blob1 === "tts" && r.blob2 === "inflight-timeout") day.ttsInflightTimeout += n;
     else if (r.blob1 === "tts" && r.blob2 === "budget") day.ttsRefused += n;
     else if (r.blob1 === "tool_call") {
       day.toolCalls += n;

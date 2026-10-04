@@ -98,3 +98,12 @@ export function refund(
 
 /** Dollars to a hundredth of a cent: one line costs well under a cent. */
 export const usd = (micro: number): number => Math.round(micro / 100) / 10_000;
+
+/**
+ * sing() also transcribes the clip (Whisper, $0.000513 per audio minute) to
+ * find its words. Charged in Aura-2 characters, so the month stays one
+ * number: 513 / 30 ≈ 17.1 characters per minute, rounded up, at least 1.
+ */
+export const WHISPER_MICRO_USD_PER_MINUTE = 513;
+export const asrChars = (seconds: number): number =>
+  Math.max(1, Math.ceil(((Math.max(0, seconds) / 60) * WHISPER_MICRO_USD_PER_MINUTE) / AURA2_MICRO_USD_PER_CHAR));

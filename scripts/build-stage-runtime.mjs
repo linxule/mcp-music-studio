@@ -15,6 +15,8 @@ export const STAGE_INPUTS = [
   "src/shared/tts.ts",
   "src/shared/sample-url-fix.ts",
   "src/shared/remember-store.ts",
+  "src/shared/sing.ts",
+  "src/shared/sing-dsp.ts",
 ];
 
 const hash = createHash("sha256");

@@ -22,6 +22,7 @@
 //   onEvent(pattern, fn)  → fn(event) as each event of `pattern` becomes audible
 //   onTap(fn)             → fn({ x, y, cycle, next }) for taps on the stage (0..1)
 //   say(text, { voice })  → a PATTERN that plays the words as a sample
+//   sing(line, notes)     → a PATTERN that plays the words ON the notes
 //
 // The DUET field test (claude.ai web, desktop and phone apps) is why the last
 // two exist: speech never played and taps sounded only sometimes. A tap
@@ -42,7 +43,9 @@
 // =============================================================================
 
 import { noteNameToMidi } from "./hap-number.js";
-import { normalizeTts, ttsSampleName, ttsUrl } from "./tts.js";
+import { normalizeTts, ttsSampleName, ttsUrl, type TtsRequest } from "./tts.js";
+import { analyseWords, type AnalysedWord } from "./sing-dsp.js";
+import { buildPhrase, layoutWords, noteSource, ttsWordsUrl, wordSpeeds, type SungWord } from "./sing.js";
 import {
   createRememberStore,
   type RememberChange,
@@ -77,6 +80,16 @@ export interface StageEnv {
   prefetch?(url: string): void;
   /** Silence raw browser speechSynthesis (a stop, a new evaluation, teardown). */
   cancelSpeech?(): void;
+  /**
+   * sing(): the line's word timings and its decoded clip (mono), with the
+   * clip registered as the sample `ttsSampleName(request)`. Rejects after
+   * reporting a load failure itself (like say()).
+   */
+  loadSung?(request: TtsRequest): Promise<SungClip>;
+  /** A pattern that plays whatever `get()` returns when queried, silence while null. */
+  lazyPattern?(get: () => unknown): unknown;
+  /** Strudel's timecat / stepcat: [weight, pattern] pairs in one cycle. */
+  timecat?(...pairs: Array<[number, unknown]>): unknown;
   /** Turn a non-pattern (a single-quoted mini-notation string) into one. */
   toPattern?(value: unknown): unknown;
   /** Cycles per second, for converting the tap margin. */
@@ -218,6 +231,24 @@ export interface SayOptions {
   voice?: string;
 }
 
+export interface SingOptions extends SayOptions {
+  /** Shift every note by whole octaves (−2…2). Default 0. */
+  octave?: number;
+  // `hold` (loop a word's voiced middle to fill a long note) is not built:
+  // superdough has no per-event loop points for a slice, so it would take
+  // re-rendering the word into its own buffer. Long notes end early instead.
+}
+
+/** A sung line's clip, decoded: what sing() measures pitch on. */
+export interface SungClip {
+  words: SungWord[];
+  /** Mono samples of the decoded clip. */
+  channel: Float32Array;
+  sampleRate: number;
+  /** Seconds — the buffer's, which is what begin/end are fractions of. */
+  duration: number;
+}
+
 type Registration =
   | { kind: "frame"; fn: (frame: StageFrame) => void; failed: boolean }
   | {
@@ -292,6 +323,7 @@ export interface Stage {
     onEvent: (pattern: unknown, fn: (event: StageEvent) => void) => () => void;
     onTap: (fn: (tap: StageTap) => void) => () => void;
     say: (text: unknown, options?: SayOptions) => unknown;
+    sing: (line: unknown, notes: unknown, options?: SingOptions) => unknown;
     fader: (name: unknown, options?: FaderOptions) => ControlHandle;
     pad: (name: unknown, options?: PadOptions) => ControlHandle;
     xy: (name: unknown, options?: { label?: string }) => { x: ControlHandle; y: ControlHandle; readonly value: [number, number] };
@@ -623,6 +655,32 @@ export function createStage(env: StageEnv): Stage {
     }
   };
 
+  // sing(): one load + analysis per line, kept across evaluations (re-running a
+  // piece must not fetch and measure again). A failure is forgotten, so the
+  // next evaluation retries it, as say() does.
+  type SungLine = { promise: Promise<{ words: AnalysedWord[]; duration: number }>; result?: { words: AnalysedWord[]; duration: number } };
+  const sungLines = new Map<string, SungLine>();
+  const loadSungLine = (request: TtsRequest): SungLine => {
+    const id = `${request.voice}\u0000${request.text}`;
+    const known = sungLines.get(id);
+    if (known) return known;
+    const entry: SungLine = {
+      promise: env.loadSung!(request).then((clip) => {
+        try {
+          const result = { words: analyseWords(clip.channel, clip.sampleRate, clip.words), duration: clip.duration };
+          entry.result = result;
+          return result;
+        } catch (error) {
+          env.reportError("sing", error);
+          throw error;
+        }
+      }),
+    };
+    entry.promise.catch(() => sungLines.delete(id));
+    sungLines.set(id, entry);
+    return entry;
+  };
+
   const requireFunction = (api: string, fn: unknown): void => {
     if (typeof fn !== "function") throw new TypeError(`${api} needs a function, got ${typeof fn}`);
   };
@@ -656,6 +714,45 @@ export function createStage(env: StageEnv): Stage {
       env.registerSample(name, url);
       env.prefetch?.(url);
       return env.sound(name);
+    },
+    sing(line, notes, options = {}) {
+      const request = normalizeTts(line, options?.voice);
+      if ("error" in request) throw new TypeError(request.error.replace(/^say\(\)/, "sing()"));
+      const { loadSung, lazyPattern, timecat, sound } = env;
+      if (!loadSung || !lazyPattern || !timecat || !sound || !env.ttsOrigin) {
+        throw new Error("sing() is not available on this page");
+      }
+      const octave = finite(options.octave) ?? 0;
+      if (!Number.isInteger(octave) || Math.abs(octave) > 2) throw new RangeError("sing(): octave is a whole number from -2 to 2");
+      const source = noteSource(notes, (hap) => stageEvent(hap, Number(hap?.whole?.begin ?? 0)).midi, env.toPattern);
+      const name = ttsSampleName(request);
+      const sung = loadSungLine(request);
+      let phrase: unknown = null;
+      const build = (words: AnalysedWord[], duration: number) => {
+        const layout = layoutWords(words.length, source);
+        const speeds = wordSpeeds(
+          words.map((w) => w.hz),
+          layout.placed.map((p) => p.midi + 12 * octave),
+        );
+        phrase = buildPhrase({ sound, timecat, silence: lazyPattern(() => null) } as any, name, layout, (p) => ({
+          begin: words[p.index].start / duration,
+          end: words[p.index].end / duration,
+          speed: speeds[p.index],
+        }));
+      };
+      if (sung.result) build(sung.result.words, sung.result.duration);
+      else
+        sung.promise.then(
+          (r) => {
+            try {
+              build(r.words, r.duration);
+            } catch (error) {
+              env.reportError("sing", error);
+            }
+          },
+          () => undefined, // reported where it failed
+        );
+      return lazyPattern(() => phrase);
     },
     fader(name, options = {}) {
       const id = controlName("fader(name)", name);
@@ -922,7 +1019,7 @@ export interface BrowserStage {
   env: StageEnv;
   speech: ReturnType<typeof guardBrowserSpeech>;
   /**
-   * Resolves when every say() clip requested so far has loaded or failed, or
+   * Resolves when every say() clip and sing() line requested so far has loaded or failed, or
    * after `timeoutMs`. A page evaluates a voiced piece WITHOUT starting, waits
    * on this, then starts — superdough drops a sample that isn't decoded by its
    * start time, so a line in bar 0 was lost on first play.
@@ -942,6 +1039,8 @@ export function createBrowserStageEnv(options: BrowserStageOptions): BrowserStag
   // succeeded — a 429 or 502 can't poison it, and a later evaluation retries.
   type Clip = { state: "loading" | "ok" | "failed"; done: Promise<void>; names: Set<string> };
   const clips = new Map<string, Clip>();
+  /** sing() lines still loading (words, clip, decode) — speechReady waits on them too. */
+  const sungLoads = new Set<Promise<unknown>>();
   const register = (name: string, url: string) => {
     if (typeof w.samples !== "function") throw new Error("say(): samples() is not loaded yet");
     void w.samples({ [name]: [url] });
@@ -1082,9 +1181,74 @@ export function createBrowserStageEnv(options: BrowserStageOptions): BrowserStag
       loadClip(url);
     },
     cancelSpeech: () => speech.cancel(),
+    loadSung(request) {
+      const url = ttsUrl(options.ttsOrigin, request);
+      const done = (async (): Promise<SungClip> => {
+        // The words first: on a miss that request renders the clip too, so
+        // the clip fetch below is a cache hit.
+        let words: SungWord[];
+        try {
+          const res = await w.fetch(ttsWordsUrl(options.ttsOrigin, request), { mode: "cors" });
+          if (!res.ok) {
+            const why = String(await res.text().catch(() => "")).slice(0, 160);
+            throw new Error(`HTTP ${res.status}${why ? ` — ${why}` : ""}`);
+          }
+          const body = await res.json();
+          words = Array.isArray(body?.words) ? body.words : [];
+          if (!words.length) throw new Error("no words came back for this line");
+        } catch (err) {
+          options.reportSpeech?.(url, (err as Error)?.message ?? String(err));
+          throw err;
+        }
+        const clip = loadClip(url);
+        clip.names.add(ttsSampleName(request));
+        await clip.done;
+        if (clip.state !== "ok") throw new Error("the clip did not load"); // reported by loadClip
+        register(ttsSampleName(request), url);
+        let buffer: AudioBuffer;
+        try {
+          // A cache hit: the clip was just fetched (served immutable).
+          const res = await w.fetch(url, { mode: "cors" });
+          const ac = typeof w.getAudioContext === "function" ? w.getAudioContext() : new w.OfflineAudioContext(1, 1, 48000);
+          buffer = await ac.decodeAudioData(await res.arrayBuffer());
+        } catch (err) {
+          options.reportSpeech?.(url, `sing() could not decode the line: ${(err as Error)?.message ?? String(err)}`);
+          throw err;
+        }
+        let channel: Float32Array = buffer.getChannelData(0);
+        if (buffer.numberOfChannels > 1) {
+          channel = new Float32Array(channel);
+          for (let c = 1; c < buffer.numberOfChannels; c++) {
+            const other = buffer.getChannelData(c);
+            for (let i = 0; i < channel.length; i++) channel[i] += other[i];
+          }
+          for (let i = 0; i < channel.length; i++) channel[i] /= buffer.numberOfChannels;
+        }
+        return { words, channel, sampleRate: buffer.sampleRate, duration: buffer.duration };
+      })();
+      sungLoads.add(done);
+      const forget = () => void sungLoads.delete(done);
+      done.then(forget, forget);
+      return done;
+    },
+    lazyPattern(get) {
+      if (typeof w.Pattern !== "function") throw new Error("sing(): Strudel is not loaded yet");
+      return new w.Pattern((state: unknown) => {
+        const inner = get() as { query?: (state: unknown) => unknown[] } | null;
+        return inner && typeof inner.query === "function" ? inner.query(state) : [];
+      });
+    },
+    timecat(...pairs) {
+      const cat = w.stepcat ?? w.timecat ?? w.timeCat;
+      if (typeof cat !== "function") throw new Error("sing(): Strudel is not loaded yet");
+      return cat(...pairs);
+    },
   };
   const speechReady = async (timeoutMs: number) => {
-    const loading = [...clips.values()].filter((c) => c.state === "loading").map((c) => c.done);
+    const loading: Array<Promise<unknown>> = [
+      ...[...clips.values()].filter((c) => c.state === "loading").map((c) => c.done),
+      ...sungLoads,
+    ];
     if (!loading.length) return;
     let timer: unknown;
     await Promise.race([

@@ -1248,6 +1248,41 @@ arrange(
   [8,  stack(keys.release(1.5), pad, lead(B).slow(2).release(1.2).velocity(0.7))]
 ).pianoroll({ fold: 1 })`;
 
+const LULLABY = String.raw`setcps(0.3)
+
+// ════════════ LULLABY — the piano asks, a voice answers ════════════
+// sing(line, notes): the server speaks the line once, and each word is moved
+// onto its note (word i → note i). Two bars of piano ask; two bars of voice
+// answer. 72 bpm, C major: C → Am → F → G. 16 bars (≈ 53 s).
+
+// ── harmony: one four-bar loop ──
+const CHORDS = "<[c3,e3,g3] [a2,c3,e3] [f2,a2,c3] [g2,b2,d3]>"
+const ROOTS  = "<c2 a1 f1 g1>"
+
+// ── the ask: piano in bars 1–2 of every four, resting while the voice answers ──
+const ASK = "<[e4 g4 c5 g4] [a4@3 e4] ~ ~>"
+const piano = note(ASK).s('gm_epiano1').gain(0.42).room(0.4).release(0.9)
+
+// ── the answer: one sung line per bar, on that bar's chord tones ──
+// Notes near the speaking voice (f3–d4) keep the words human; an octave
+// higher and they turn into a cartoon.
+const moon = sing('the moon is low', "a3 c4 a3 f3", { voice: 'luna' })
+const sea  = sing('the sea is slow', "g3 b3 d4 g3", { voice: 'luna' })
+const voice = cat(silence, silence, moon, sea)
+  .gain(1.1).room(0.55).roomsize(5)
+
+// ── around them ──
+const keys = note(CHORDS).s('gm_epiano1').attack(0.05).release(1.6).gain(0.22).room(0.5)
+const bass = note(ROOTS).s('sine').release(0.8).gain(0.32).lpf(400)
+const kick = s("bd ~ ~ ~").bank('RolandTR808').gain(0.5)
+const hats = s("~ hh ~ hh").bank('RolandTR808').gain(0.12).hpf(800)
+
+// ── form: the second time round, the room fills in under the same call and answer ──
+arrange(
+  [8, stack(keys, piano, voice)],
+  [8, stack(keys, piano.gain(0.32), voice, bass, kick, hats)]
+).pianoroll({ fold: 1 })`;
+
 export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
   {
     id: "first-light",
@@ -1370,9 +1405,21 @@ export const STRUDEL_GALLERY: readonly GalleryPiece[] = [
     ],
     code: STILL_WATER,
   },
+  {
+    id: "lullaby",
+    title: "Lullaby — the piano asks, a voice answers",
+    summary:
+      "A 16-bar lullaby in C: two bars of electric piano ask, two bars of a sung line answer, on the chord tones of the bar it lands in. The second eight bars fill in a bass and the softest drums under the same call and answer. The shortest way to hear what sing() is, and is not — talk-singing, not a singer.",
+    teaches: [
+      "sing(line, notes): one word per note, in order, pitched onto it; the pattern takes .gain() and .room() like any sound",
+      "call and response by placement: cat(silence, silence, moon, sea) puts the answers in bars 3–4 of every four",
+      "notes near the speaking voice (f3–d4) keep words human; far from it they turn cartoonish",
+    ],
+    code: LULLABY,
+  },
 ];
 
-export const GALLERY_IDS = ["first-light", "duet", "petri-dish", "lossy-terminal", "signal-corruption", "weather-machine", "two-decks", "trade-a-beat", "still-water"] as const;
+export const GALLERY_IDS = ["first-light", "duet", "petri-dish", "lossy-terminal", "signal-corruption", "weather-machine", "two-decks", "trade-a-beat", "still-water", "lullaby"] as const;
 
 /** The plain-text index get-strudel-guide returns for topic "gallery". */
 export function galleryIndex(): string {
@@ -1385,7 +1432,8 @@ export function galleryIndex(): string {
     "drawn grid two players share. They show how the stage runtime (cycle, onFrame, onEvent,",
     "onTap, say), canvases, Hydra and arrange() fit together — and what an idea held all the",
     "way through looks like. Still Water is only music — no controls, no film — for when the",
-    "ask is a track: form, sound design and development, nothing to tap.",
+    "ask is a track: form, sound design and development, nothing to tap. Lullaby is the",
+    "shortest piece that sings (sing()): a sung line answering a piano.",
     "",
   ];
   for (const piece of STRUDEL_GALLERY) {
