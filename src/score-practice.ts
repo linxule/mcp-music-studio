@@ -84,8 +84,12 @@ export class VoiceMutes {
 export interface TimingEventLike {
   type?: string;
   milliseconds: number;
+  millisecondsPerMeasure?: number;
   startCharArray?: number[];
   endCharArray?: number[];
+  /** Sounding pitches of every note at this time; `duration` in whole notes. */
+  midiPitches?: Array<{ startChar?: number; duration: number }>;
+  midiGraceNotePitches?: unknown[];
 }
 
 export interface LoopRange {
@@ -106,11 +110,17 @@ export interface LoopRange {
  * ends), not at the next event: in two voices the next event may be the other
  * voice moving under a held note. Inside a repeat a selected note comes round
  * again; the range is the FIRST pass, ending before the first note heard twice.
+ *
+ * A note whose voice is unknown (not in `voiceOf`) can't tell another voice's
+ * onset from its own: it ends no earlier than its own written length
+ * (`wholeNotesPerMeasure` is the meter, 3/4 → 0.75) and, failing that, at the
+ * next event of any voice.
  */
 export function loopRange(
   events: readonly TimingEventLike[],
   selection: { from: number; to: number },
   voiceOf: ReadonlyMap<number, number>,
+  wholeNotesPerMeasure?: number,
 ): LoopRange | null {
   const { from, to } = selection;
   if (!(to > from)) return null;
@@ -123,15 +133,29 @@ export function loopRange(
   const first = events.findIndex((ev) => selectedChars(ev).length > 0);
   if (first < 0) return null;
 
+  /** How long the note at `c` sounds from its event's onset, in ms, if the event says. */
+  const ownLength = (ev: TimingEventLike, c: number): number => {
+    const perMeasure = ev.millisecondsPerMeasure;
+    if (!(perMeasure && wholeNotesPerMeasure && wholeNotesPerMeasure > 0)) return 0;
+    const whole = Math.max(0, ...(ev.midiPitches ?? []).filter((p) => p.startChar === c).map((p) => p.duration));
+    // With grace notes abcjs halves the note and starts it after them (abc_midi_flattener.js).
+    const written = ev.midiGraceNotePitches?.length ? whole * 2 : whole;
+    return (written * perMeasure) / wholeNotesPerMeasure;
+  };
+
   const seen = new Set<number>();
   /** Voice (or -1, unknown) → index of its last selected event. */
   const lastIndex = new Map<number, number>();
+  /** Where the unknown-voice notes end by their own length, at the latest. */
+  let unknownEnd = 0;
   for (let i = first; i < events.length; i++) {
     const chars = selectedChars(events[i]);
     if (chars.some((c) => seen.has(c))) break; // the repeat comes round
     for (const c of chars) {
       seen.add(c);
-      lastIndex.set(voiceOf.get(c) ?? -1, i);
+      const voice = voiceOf.get(c) ?? -1;
+      lastIndex.set(voice, i);
+      if (voice === -1) unknownEnd = Math.max(unknownEnd, events[i].milliseconds + ownLength(events[i], c));
     }
   }
 
@@ -151,6 +175,7 @@ export function loopRange(
     }
     endMs = Math.max(endMs, end ?? events[events.length - 1].milliseconds);
   }
+  endMs = Math.max(endMs, unknownEnd);
   const startMs = events[first].milliseconds;
   return endMs > startMs ? { startMs, endMs } : null;
 }

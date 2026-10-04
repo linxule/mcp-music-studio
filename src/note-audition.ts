@@ -10,7 +10,11 @@
  * past the Room; and it hands CreateSynth the tune's milliseconds per MEASURE,
  * which a sequence (meterSize 1) reads as milliseconds per WHOLE NOTE — so in
  * any meter but 4/4 the note's length is off (3/4 and 6/8: three quarters as
- * long, 2/4: half).
+ * long, 2/4: half). Grace notes follow the tune's playback too
+ * (abc_midi_flattener.js writeGraceNotes): played once, each its written
+ * length, and every chord tone starts after them — playEvent gives each grace
+ * 1/64 and puts them in front of the first chord tone only, so the others
+ * sound with the graces.
  */
 import ABCJS from "abcjs";
 
@@ -24,9 +28,18 @@ export interface AuditionPitch {
   cents?: number;
 }
 
+/** A clicked element's grace notes (abcjs `abcelem.midiGraceNotePitches`). */
+export interface AuditionGrace {
+  pitch: number;
+  /** Whole notes. abcjs makes the graces fill half the main note's length. */
+  durationInMeasures: number;
+  volume: number;
+  cents?: number;
+}
+
 export interface AuditionRequest {
   pitches: readonly AuditionPitch[];
-  graces?: readonly AuditionPitch[];
+  graces?: readonly AuditionGrace[];
   /** Milliseconds per whole note at the current tempo. */
   msPerWholeNote: number;
   synthOptions: Record<string, unknown>;
@@ -56,18 +69,34 @@ export async function auditionNote(request: AuditionRequest): Promise<boolean> {
   if (request.pitches.length === 0 || !(request.msPerWholeNote > 0)) return false;
   const maxWhole = (AUDITION_MAX_SECONDS * 1000) / request.msPerWholeNote;
   const sequence = new ABCJS.synth.SynthSequence();
-  request.pitches.forEach((note, i) => {
+  // The track's write position (abcjs 6.7.1 synth-sequence.js `starts`); the
+  // typed API has no rest, and a chord tone must wait for the graces.
+  const startAt = (track: number, wholeNotes: number) => {
+    (sequence as unknown as { starts: number[] }).starts[track] = wholeNotes;
+  };
+  const graces = request.graces ?? [];
+  const written = graces.reduce((sum, grace) => sum + (grace.durationInMeasures > 0 ? grace.durationInMeasures : 0), 0);
+  // Graces take at most half the audition, like they take half the note.
+  const scale = written > maxWhole / 2 ? maxWhole / 2 / written : 1;
+  let graceLength = 0;
+  if (graces.length > 0 && written > 0) {
     const track = sequence.addTrack() as unknown as number; // typed AudioTrack; returns the index
-    sequence.setInstrument(track, note.instrument);
-    if (i === 0) {
-      for (const grace of request.graces ?? []) {
-        sequence.appendNote(track, grace.pitch, 1 / 64, grace.volume || AUDITION_FALLBACK_VOLUME, grace.cents ?? 0);
-      }
+    sequence.setInstrument(track, request.pitches[0].instrument);
+    for (const grace of graces) {
+      if (!(grace.durationInMeasures > 0)) continue;
+      const length = grace.durationInMeasures * scale;
+      sequence.appendNote(track, grace.pitch, length, grace.volume || AUDITION_FALLBACK_VOLUME, grace.cents ?? 0);
+      graceLength += length;
     }
+  }
+  request.pitches.forEach((note) => {
+    const track = sequence.addTrack() as unknown as number;
+    sequence.setInstrument(track, note.instrument);
+    if (graceLength > 0) startAt(track, graceLength);
     sequence.appendNote(
       track,
       note.pitch,
-      Math.min(note.duration, maxWhole),
+      Math.min(note.duration, maxWhole - graceLength),
       note.volume || AUDITION_FALLBACK_VOLUME,
       note.cents ?? 0,
     );

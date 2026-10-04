@@ -49,7 +49,7 @@ import {
 } from "./abc-edit";
 import { TapTracker, listenForAudioGestures, resumeAudioContext } from "./audio-unlock";
 import { abcOffsetMap, type AbcOffsetMap } from "./abc-offsets";
-import { auditionNote, stopAudition, type AuditionPitch } from "./note-audition";
+import { auditionNote, stopAudition, type AuditionGrace, type AuditionPitch } from "./note-audition";
 import { PracticeRow } from "./practice-row";
 import {
   VoiceMutes,
@@ -1129,7 +1129,7 @@ interface ClickedElement {
   endChar?: number;
   rest?: unknown;
   midiPitches?: AuditionPitch[];
-  midiGraceNotePitches?: AuditionPitch[];
+  midiGraceNotePitches?: AuditionGrace[];
 }
 
 function onScoreClick(
@@ -1178,6 +1178,12 @@ function reportPointedSelection(from: number, to: number): void {
   if (text) setStatus(`Selected ${text.length > 40 ? `${text.slice(0, 40)}…` : text}`);
 }
 
+/** Whole notes per measure (3/4 → 0.75); 1 when the tune has no meter. */
+function meterWholeNotes(tune: ABCJS.TuneObject): number {
+  const meter = tune.getMeterFraction();
+  return meter?.den ? meter.num / meter.den : 1;
+}
+
 /** Sound a clicked note once, with the tune's instrument, bank, release and Room. */
 async function soundClickedNote(abcElem: ClickedElement): Promise<void> {
   const tune = state.visualObj?.[0];
@@ -1196,12 +1202,10 @@ async function soundClickedNote(abcElem: ClickedElement): Promise<void> {
     const pitches = abcElem.midiPitches ?? [];
     const primed = (state.synthControl as { midiBuffer?: { millisecondsPerMeasure?: number } } | null)
       ?.midiBuffer?.millisecondsPerMeasure;
-    const meter = tune.getMeterFraction();
-    const meterSize = meter?.den ? meter.num / meter.den : 1;
     await auditionNote({
       pitches,
       graces: abcElem.midiGraceNotePitches,
-      msPerWholeNote: (primed ?? tune.millisecondsPerMeasure()) / meterSize,
+      msPerWholeNote: (primed ?? tune.millisecondsPerMeasure()) / meterWholeNotes(tune),
       synthOptions: options,
       route: (buffer) => routeThroughRoom(buffer, audioContext, (ctx) => liveRoom.inputFor(ctx)),
     });
@@ -1243,6 +1247,7 @@ function activeLoopRange(control: ABCJS.SynthObjectController | null = state.syn
       timer.noteTimings,
       { from: map.toEffective(practiceLoop.from), to: map.toEffective(practiceLoop.to) },
       tuneVoices(tune.lines as unknown as TuneLineLike[]).voiceOf,
+      meterWholeNotes(tune),
     );
   }
   loopCache = { timer, range };

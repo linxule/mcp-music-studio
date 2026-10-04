@@ -177,6 +177,43 @@ describe("loopRange", () => {
   });
 });
 
+describe("loopRange — a note whose voice is unknown (Kimi review)", () => {
+  // Voice 0 holds a half note (chars 10, unknown to voiceOf) while voice 1
+  // moves in quarters at 0/500/1000. 4/4 at 2000 ms per measure: a half is 1000 ms.
+  const timeline: TimingEventLike[] = [
+    {
+      type: "event",
+      milliseconds: 0,
+      millisecondsPerMeasure: 2000,
+      startCharArray: [10, 20],
+      endCharArray: [12, 22],
+      midiPitches: [{ startChar: 10, duration: 0.5 }, { startChar: 20, duration: 0.25 }],
+    },
+    { type: "event", milliseconds: 500, millisecondsPerMeasure: 2000, startCharArray: [23], endCharArray: [25], midiPitches: [{ startChar: 23, duration: 0.25 }] },
+    { type: "event", milliseconds: 1000, millisecondsPerMeasure: 2000, startCharArray: [13, 26], endCharArray: [15, 28] },
+    { type: "end", milliseconds: 1500 },
+  ];
+  const voiceOf = new Map([[20, 1], [23, 1], [26, 1]]); // 10 and 13 missing
+
+  it("lasts its own written length, not until the other voice's next onset", () => {
+    expect(loopRange(timeline, { from: 10, to: 12 }, voiceOf, 1)).toEqual({ startMs: 0, endMs: 1000 });
+  });
+
+  it("in 3/4 the same length is measured against a 3/4 bar", () => {
+    const threeFour = timeline.map((ev) => (ev.type === "event" ? { ...ev, millisecondsPerMeasure: 1500 } : ev));
+    expect(loopRange(threeFour, { from: 10, to: 12 }, voiceOf, 0.75)).toEqual({ startMs: 0, endMs: 1000 });
+  });
+
+  it("with grace notes abcjs halved the pitch: the whole note still counts", () => {
+    const graced = [{ ...timeline[0], midiPitches: [{ startChar: 10, duration: 0.25 }], midiGraceNotePitches: [{}] }, ...timeline.slice(1)];
+    expect(loopRange(graced, { from: 10, to: 12 }, voiceOf, 1)).toEqual({ startMs: 0, endMs: 1000 });
+  });
+
+  it("with nothing to measure it falls back to the next event of any voice", () => {
+    expect(loopRange(timeline, { from: 10, to: 12 }, voiceOf)).toEqual({ startMs: 0, endMs: 500 });
+  });
+});
+
 describe("loopWrapTarget", () => {
   const range = { startMs: 1500, endMs: 4500 };
   it("past the end, or before the start, goes back to the start", () => {

@@ -49,6 +49,10 @@
   "ratelimits": [
     { "name": "TTS_IP_LIMITER", "namespace_id": "7101", "simple": { "limit": 12, "period": 60 } },
     { "name": "TTS_GLOBAL_LIMITER", "namespace_id": "7102", "simple": { "limit": 240, "period": 60 } },
+    // Lines a tool call warms ahead of the player (say() prerender), per MCP
+    // client address. Looser than TTS_IP_LIMITER: claude.ai's users share its
+    // egress addresses. Counted per line, not per call.
+    { "name": "TTS_PRERENDER_LIMITER", "namespace_id": "7105", "simple": { "limit": 60, "period": 60 } },
     // Live sessions. New sessions are created by MCP calls, which arrive from
     // the host's servers (one address for many users) — hence a loose limit.
     { "name": "SESSION_NEW_LIMITER", "namespace_id": "7103", "simple": { "limit": 60, "period": 60 } },
@@ -101,6 +105,7 @@
       "ratelimits": [
         { "name": "TTS_IP_LIMITER", "namespace_id": "7101", "simple": { "limit": 12, "period": 60 } },
         { "name": "TTS_GLOBAL_LIMITER", "namespace_id": "7102", "simple": { "limit": 240, "period": 60 } },
+        { "name": "TTS_PRERENDER_LIMITER", "namespace_id": "7105", "simple": { "limit": 60, "period": 60 } },
         { "name": "SESSION_NEW_LIMITER", "namespace_id": "7103", "simple": { "limit": 60, "period": 60 } },
         { "name": "SESSION_EVENTS_LIMITER", "namespace_id": "7104", "simple": { "limit": 240, "period": 60 } }
       ],
