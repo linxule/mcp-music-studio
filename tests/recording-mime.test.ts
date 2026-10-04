@@ -8,8 +8,7 @@
 // try/catch that exists for precisely this case, so the "Recording not supported
 // on this browser" status never appeared and the click died in the console.
 //
-// src/strudel-app.ts is a DOM-bound widget bundle with no importable surface, so
-// the helper is extracted from its source and executed in a node:vm context
+// The exported helper is also executed from its source in a node:vm context
 // where MediaRecorder is genuinely undeclared — the only way to reproduce a
 // ReferenceError, since a stubbed-in `undefined` global would not throw.
 // =============================================================================
@@ -21,7 +20,7 @@ import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 
 const SRC = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "..", "src", "strudel-app.ts"),
+  join(dirname(fileURLToPath(import.meta.url)), "..", "src", "strudel-app", "recording.ts"),
   "utf8",
 );
 

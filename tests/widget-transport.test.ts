@@ -249,7 +249,7 @@ describe("strudel transport", () => {
 
   it("says Ready when playback stops without an evaluation, unless an error is up", () => {
     expect(STRUDEL).toMatch(
-      /if \(!started && !isRecording && !statusEl\.classList\.contains\("error"\)\) \{\s*setStatus\("Ready", "normal"\);/,
+      /if \(!started && !widgetState\.isRecording && !statusEl\.classList\.contains\("error"\)\) \{\s*setStatus\("Ready", "normal"\);/,
     );
   });
 });
