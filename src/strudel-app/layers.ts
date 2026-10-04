@@ -462,6 +462,32 @@ export function getVisualCanvases(): { hydra: HTMLCanvasElement | null; viz: HTM
   return { hydra: getHydraCanvas(), viz: vizCanvas };
 }
 
+/**
+ * The stage's layers bottom to top, as the video recorder composites them:
+ * Hydra, #test-canvas unless feedStrudel hid it (Hydra already shows it), then
+ * the named 2D layers this pattern still uses.
+ */
+export function getVisualLayers(): HTMLCanvasElement[] {
+  const hydra = getHydraCanvas();
+  const out: HTMLCanvasElement[] = hydra ? [hydra] : [];
+  if (vizCanvas.style.display !== "none") out.push(vizCanvas);
+  drawLayers.forEach((layer) => {
+    if (layer.isConnected && !layer.classList.contains("viz-layer-idle")) out.push(layer);
+  });
+  return out;
+}
+
+/** The stage's size in CSS px and its background (the theme's), for the recorder. */
+export function stageFrame(): { width: number; height: number; background: string } {
+  return {
+    width: replSection.clientWidth,
+    height: replSection.clientHeight,
+    background: replSection.style.getPropertyValue("--viz-stage")
+      || getComputedStyle(document.documentElement).getPropertyValue("--background").trim()
+      || "#000",
+  };
+}
+
 export function observeVisualSize(onResize: () => void): void {
   // Keep the canvas backing store DPR-correct as the editor/iframe resizes.
   vizResizeObserver = new ResizeObserver(() => {

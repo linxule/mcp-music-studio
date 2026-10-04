@@ -91,8 +91,9 @@ describe("startRecording routes the null through the unsupported handler", () =>
     // The status string is the one the constructor's catch already used — a
     // browser without MediaRecorder must land in the same place as one that
     // rejects every MIME type.
+    // (Since video recording, one guard serves both kinds; the audio wording is unchanged.)
     expect(SRC).toMatch(
-      /const mime = pickRecordingMime\(\);\n\s*if \(mime === null\) \{\n\s*setStatus\("Recording not supported on this browser", "error"\);\n\s*return;/,
+      /: pickRecordingMime\(\);\n\s*if \(mime === null[^\n]*\{\n\s*setStatus\(`\$\{kind === "video" \? "Video recording" : "Recording"\} not supported on this browser`, "error"\);\n\s*return;/,
     );
   });
 });

@@ -1,7 +1,8 @@
 // Phone-sized check of the full-player share pages in WebKit (iPhone emulation):
 // no horizontal page scroll, the frame fills the width, Play and the control
 // strip are reachable (/play); the score is drawn, fits its frame and ▶ and
-// the toolbar are reachable (/score); and screenshots for eyes. Not a substitute
+// the toolbar are reachable (/score); the watch page shows the stage, its
+// tap-to-start and buttons inside the frame (/play?watch); and screenshots for eyes. Not a substitute
 // for a real iPhone (permission prompts, the silent switch, Safari fullscreen).
 //   ORIGIN=https://music-studio.linxule.com bun scripts/check-share-phone.mjs [outdir]
 import { webkit, devices } from "playwright";
@@ -107,5 +108,65 @@ for (const name of ["iPhone 15", "iPhone SE"]) {
   await page.screenshot({ path: `${OUT}/share-score-${name.replace(/\s+/g, "-")}.png`, fullPage: true });
   await ctx.close();
 }
+// ---- /play?watch: the stage alone, one tap to start ----
+for (const name of ["iPhone 15", "iPhone SE"]) {
+  const ctx = await browser.newContext({ ...devices[name] });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${ORIGIN}/play?c=${b64(CODE)}&title=${encodeURIComponent("Watch check")}&watch`, { waitUntil: "load" });
+  const frameEl = await page.waitForSelector("#stage iframe", { timeout: 20000 });
+  const frame = await frameEl.contentFrame();
+  await frame.waitForSelector(".watch-start", { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(4000);
+  const vw = page.viewportSize().width;
+  const outer = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+  outer.sw <= outer.cw ? ok(`${name} watch: no horizontal page scroll (${outer.sw} ≤ ${outer.cw})`) : fail(`${name} watch: page scrolls sideways (${outer.sw} > ${outer.cw})`);
+  const box = await frameEl.boundingBox();
+  box && box.width >= vw - 40 ? ok(`${name} watch: frame ${Math.round(box.width)}×${Math.round(box.height)}`) : fail(`${name} watch: frame box ${JSON.stringify(box)}`);
+  const look = () => frame.evaluate(() => {
+    const vis = (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { w: Math.round(r.width), h: Math.round(r.height), right: Math.round(r.right), bottom: Math.round(r.bottom), hidden: el.hidden || getComputedStyle(el).display === "none" || r.width === 0 };
+    };
+    return {
+      sw: document.documentElement.scrollWidth,
+      cw: document.documentElement.clientWidth,
+      ch: document.documentElement.clientHeight,
+      start: vis(".watch-start"),
+      code: vis(".strudel-container"),
+      play: vis("#play-btn"),
+      video: vis("#video-btn"),
+      full: vis("#fullscreen-btn"),
+      controls: vis(".ms-controls"),
+      inputs: document.querySelectorAll(".ms-controls input, .ms-controls button, .ms-controls .ms-xy").length,
+      status: document.querySelector("#status")?.textContent ?? "",
+    };
+  });
+  const before = await look();
+  before.sw <= before.cw + 1 ? ok(`${name} watch: widget fits its frame (${before.sw} ≤ ${before.cw})`) : fail(`${name} watch: widget scrolls sideways (${before.sw} > ${before.cw})`);
+  before.code?.hidden !== false ? ok(`${name} watch: code hidden`) : fail(`${name} watch: code shows ${JSON.stringify(before.code)}`);
+  before.start && !before.start.hidden && before.start.right <= before.cw && before.start.bottom <= before.ch
+    ? ok(`${name} watch: tap-to-start ${before.start.w}×${before.start.h}, inside the frame`)
+    : fail(`${name} watch: tap-to-start ${JSON.stringify(before.start)}`);
+  for (const key of ["play", "video", "full"]) {
+    const b = before[key];
+    b && !b.hidden && b.right <= before.cw + 1 ? ok(`${name} watch: ${key} button inside the frame`) : fail(`${name} watch: ${key} button ${JSON.stringify(b)}`);
+  }
+  await frame.tap(".watch-start").catch((e) => fail(`${name} watch: tap: ${e.message}`));
+  await frame.waitForSelector(".ms-controls input, .ms-controls button", { timeout: 20000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+  const after = await look();
+  !after.start ? ok(`${name} watch: the tap removed the overlay (status "${after.status}")`) : fail(`${name} watch: overlay still up after the tap`);
+  after.inputs >= 3 && after.controls && after.controls.right <= after.cw + 1
+    ? ok(`${name} watch: the piece's controls show (${after.inputs}), inside the frame`)
+    : fail(`${name} watch: controls ${JSON.stringify(after.controls)} inputs=${after.inputs}`);
+  errors.length ? fail(`${name} watch: page errors: ${errors.join(" | ").slice(0, 300)}`) : ok(`${name} watch: no page errors`);
+  await page.screenshot({ path: `${OUT}/share-watch-${name.replace(/\s+/g, "-")}.png`, fullPage: true });
+  await ctx.close();
+}
+
 await browser.close();
 process.exitCode = failed ? 1 : 0;

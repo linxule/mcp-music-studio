@@ -44,6 +44,8 @@ interface ShareInit {
   widget: string;
   /** The standalone page, for browsers the full player doesn't suit. */
   classic?: string;
+  /** A watch page (`?watch`): the widget shows only its stage. */
+  watch?: boolean;
 }
 
 /** What the frame may use — the reason this page exists. */
@@ -280,7 +282,8 @@ async function mount(): Promise<void> {
   // The transport goes up before the frame navigates, so the widget's
   // initialize request can never arrive before our listener (dev/host.ts).
   await bridge.connect(new PostMessageTransport(frame.contentWindow!, frame.contentWindow!));
-  frame.src = init.widget;
+  // The widget reads ?watch=1 itself: stage only, code hidden, one tap to start.
+  frame.src = init.watch && !isScore ? `${init.widget}?watch=1` : init.widget;
   (window as unknown as { __share: unknown }).__share = { bridge, frame, init, relay, relayAnnotations: () => relay?.annotations() };
 }
 

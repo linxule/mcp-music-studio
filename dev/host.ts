@@ -282,8 +282,9 @@ function wireBridge(b: AppBridge): void {
 
   b.ondownloadfile = async ({ contents }) => {
     log("in", `ui/download-file — ${describeContent(contents as unknown[])}`);
-    // Kept for scripts (never logged): __harness.lastDownload.
+    // Kept for scripts (never logged): __harness.lastDownload / .downloads.
     lastDownload = contents as unknown[];
+    downloads.push(lastDownload);
     return {};
   };
 
@@ -319,6 +320,8 @@ function resultTextFor(args: Record<string, unknown>): string {
 
 /** The last ui/download-file contents, for scripts that want the bytes. */
 let lastDownload: unknown[] | null = null;
+/** Every ui/download-file's contents, oldest first (a video + its setlist arrive as two). */
+const downloads: unknown[][] = [];
 
 /** The last call sent, so "Replay" can deliver it again to a rebuilt frame. */
 let lastCall: { args: Record<string, unknown>; viewUUID: string } | null = null;
@@ -420,6 +423,7 @@ void mountFrame();
   send: () => sendToolInput(),
   replay: replayLastCall,
   get lastDownload() { return lastDownload; },
+  downloads,
   mount: mountFrame,
   setResultMeta(meta: Record<string, unknown>) {
     extraResultMeta = meta;
