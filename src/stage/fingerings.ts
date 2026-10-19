@@ -198,5 +198,12 @@ export function pitchForKey(chart: FingeringChart, key: string): number | null {
     const match = entries.find((e) => sameSet(e.keys, closed) || sameSet(e.keys.filter((k) => !chart.held.includes(k)), closed));
     if (match) return match.pitch;
   }
-  return entries.find((e) => e.keys.includes(key))?.pitch ?? null;
+  // Off the main sequence: the lowest fingering that uses the key, with any OTHER extra
+  // key let go — what this key alone adds. The clarinet's right-pinky F/C key first
+  // appears in E3 (with the left-pinky E key); alone it gives F3.
+  const lowest = entries.find((e) => e.keys.includes(key));
+  if (!lowest) return null;
+  const own = lowest.keys.filter((k) => k === key || chart.sequence.includes(k));
+  const alone = entries.find((e) => e.keys.includes(key) && sameSet(e.keys.filter((k) => !chart.held.includes(k)), own.filter((k) => !chart.held.includes(k))));
+  return (alone ?? lowest).pitch;
 }

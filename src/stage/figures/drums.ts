@@ -482,7 +482,7 @@ export function drumKit(): Figure {
       key: "d:block", cls: "kit", pri: 1, shadow: "block",
       decals: [
         decal([x0, y1, z1], [1, 0, 0], [0, 0, -1], slot(x1 - x0 - 3.2)),
-        decal([x0, y0, z1], [1, 0, 0], [0, 0, -1], slot(x1 - x0 - 3.2)),
+        decal([x1, y0, z1], [-1, 0, 0], [0, 0, -1], slot(x1 - x0 - 3.2)), // the back slot faces −y
       ],
     }));
     const clamp = at("y", [80, 29.15], 29.15 + 0.3, 42, 16);

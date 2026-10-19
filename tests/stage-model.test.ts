@@ -5,6 +5,7 @@ import ABCJS from "abcjs";
 import { describe, expect, it } from "vitest";
 import {
   assignStops,
+  bowed,
   clarinet,
   drumKit,
   flute,
@@ -29,6 +30,7 @@ import {
   type MapNote,
 } from "../src/stage/stage-model";
 import { buildStage } from "../src/stage/room";
+import { renderScene } from "../src/stage/iso";
 
 describe("who plays on which figure", () => {
   it("draws each GM family on its figure, and anything else on a keyboard", () => {
@@ -162,6 +164,16 @@ describe("figures map notes to parts", () => {
     expect(g.pitchOf("s0f5")).toBe(45);
   });
 
+  it("places what it can of a chord that needs one string twice (reviewer: G7 on a cello went dark)", () => {
+    // abcjs voices G7 at G3 B3 D4 F4; on a cello (C G D A) F4 and D4 both want the A string.
+    const g7 = assignStops([55, 59, 62, 65], [36, 43, 50, 57], 14);
+    expect(g7).toHaveLength(3);
+    expect(new Set(g7.map((s) => s.string)).size).toBe(3);
+    // E2 and F2 both live only on a guitar's low E string: one of them shows.
+    expect(assignStops([40, 41], [40, 45, 50, 55, 59, 64], 12)).toHaveLength(1);
+    expect(bowed("cello").light([55, 59, 62, 65]).length).toBeGreaterThan(0);
+  });
+
   it("fingers a whistle in D: all holes for D, cross-fingered C, half-holed F", () => {
     expect(FLUTE_FINGERING[0]).toBe("xxxxxx");
     expect(fluteKeys(62)).toEqual(["blow", "h0", "h1", "h2", "h3", "h4", "h5"]);
@@ -185,6 +197,7 @@ describe("figures map notes to parts", () => {
     expect(pitchForKey(CLARINET, "L3")).toBe(58); // T123: written C4
     expect(pitchForKey(CLARINET, "R3")).toBe(53); // all six: written G3
     expect(pitchForKey(CLARINET, "Reg")).toBe(68); // register key: written B♭4
+    expect(pitchForKey(CLARINET, "RP_F")).toBe(51); // right pinky F/C: written F3, not the E3 that also uses it
     expect(pitchForKey(CLARINET, "")).toBe(65); // nothing pressed: open G
     // Flute: the same, with the right pinky's E♭ held as usual.
     expect(pitchForKey(FLUTE, "L3")).toBe(67); // G4, not the third-octave D6 that also uses L3
@@ -220,5 +233,18 @@ describe("the room", () => {
       expect(apart, `${a.player.id} / ${b.player.id}`).toBe(true);
     }
     expect(placed.map((p) => p.player.id)).toEqual(players.map((p) => p.id)); // players' order kept
+  });
+
+  it("draws the shipped band (perspective on) with every pressable part and no NaN", () => {
+    const n = (pitch: number, instrument: number): MapNote => ({ pitch, instrument, start: 0, end: 1, volume: 90 });
+    const players = playersFrom([[n(72, 73)], [n(60, 71)], [n(76, 40)], [n(48, 42)], [n(60, 0), n(84, 0)], [n(36, 128)]], 1);
+    const { scene, placed } = buildStage(players, "Test");
+    expect(scene.eye).toBeGreaterThan(0);
+    const { svg } = renderScene(scene, 0);
+    expect(svg).not.toContain("NaN");
+    for (const p of placed) {
+      const keys = new Set(p.figure.parts.filter((x) => x.key).map((x) => x.key));
+      for (const k of keys) expect(svg.includes(`data-k="${k}"`), `${p.player.id}: ${k}`).toBe(true);
+    }
   });
 });

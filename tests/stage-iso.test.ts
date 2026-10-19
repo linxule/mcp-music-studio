@@ -8,6 +8,8 @@ import {
   box,
   cylinder,
   decal,
+  decalMatrix,
+  decalPieces,
   lathe,
   orderByBoxes,
   paintOrder,
@@ -82,6 +84,33 @@ describe("perspective (eye)", () => {
   it("is isometric when the eye is far", () => {
     const far = new View(0, [0, 0], 1e9), iso = new View(0, [0, 0]);
     for (const f of [...box(0, 0, 0, 1, 2, 3), ...cylinder("z", [5, 5], 2, 2, 0, 4, 24)]) expect(far.sees(f.pts, f.n)).toBe(iso.facing(f.n));
+  });
+
+  it("lays a large decal on its plane in perspective (reviewer: a piano plate's far pins were 15 units off)", () => {
+    const v = new View(0, [100, 100], 700);
+    const d = decal([0, 0, 50], [1, 0, 0], [0, 1, 0], "", [0, 0, 140, 60]);
+    const gap = (m: number[], a: number, b: number) => {
+      const want = v.P([a, b, 50]);
+      return Math.hypot(m[0] * a + m[2] * b + m[4] - want[0], m[1] * a + m[3] * b + m[5] - want[1]);
+    };
+    // One matrix for the whole plate is already far better than the origin's axes…
+    const one = decalMatrix(v, d);
+    expect(Math.max(...[[0, 0], [140, 0], [140, 60], [0, 60]].map(([a, b]) => gap(one, a, b)))).toBeLessThan(3.5);
+    // …and the tiles it is drawn in each sit within 0.4 of the plane.
+    const pieces = decalPieces(v, d);
+    expect(pieces.length).toBeGreaterThan(1);
+    for (const p of pieces) {
+      const [x0, y0, x1, y1] = p.clip!;
+      for (const [a, b] of [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [(x0 + x1) / 2, (y0 + y1) / 2]]) expect(gap(p.m, a, b)).toBeLessThan(0.45);
+    }
+    // A small decal stays one piece, unclipped; isometric never splits.
+    expect(decalPieces(v, decal([0, 0, 50], [1, 0, 0], [0, 1, 0], "", [0, 0, 6, 3]))).toHaveLength(1);
+    expect(decalPieces(new View(0, [100, 100]), d)).toHaveLength(1);
+  });
+
+  it("casts shadows through the same perspective as the objects", () => {
+    const v = new View(0, [100, 100], 700);
+    for (const p of [[20, 180, 40], [180, 20, 0], [150, 150, 70]] as Vec3[]) expect(v.shadowAt(p, 0)).toEqual(v.P([p[0], p[1], 0]));
   });
 
   it("renders a scene with an eye", () => {

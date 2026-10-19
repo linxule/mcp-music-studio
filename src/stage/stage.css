@@ -187,8 +187,9 @@
 .stage-svg .lcd { fill: var(--accent); font-family: ui-monospace, Menlo, monospace; font-weight: 700; letter-spacing: 0.08em; }
 
 @media (prefers-reduced-motion: reduce) {
-  .stage-svg .p { transition: none; }
-  .stage-svg .str.on .wire, .stage-svg .bow.on, .stage-svg .cym.on { animation: none; }
+  .stage-svg .p, .stage-svg .p.on, .stage-svg .p.down { transition: none; }
+  .stage-svg .str.on .wire, .stage-svg .str.down .wire, .stage-svg .cym.on, .stage-svg .cym.down { animation: none; }
+  .stage-svg .bow.on, .stage-svg .obj.odd .bow.on { transform: none; }
 }
 
 /* Phones: the hint gives the readout its room (after the caption rules, which set display). */

@@ -500,7 +500,8 @@ export function bowed(kind: BowedKind): Figure {
     return [[h, fbBottom(z), z], ...arc, [-h, fbBottom(z), z]];
   };
   const tapes = spec.tapes.map((stopN) => {
-    const z = (stopZ(neckStub(), stopN - 1) + stopZ(neckStub(), stopN)) / 2;
+    // A tape marks where the finger stops the string: the pitch's exact place (no fret to sit behind).
+    const z = stopZ(neckStub(), stopN);
     const h = fbHalf(z);
     return `<line class="tape" x1="${(-h).toFixed(2)}" y1="${(-z).toFixed(2)}" x2="${h.toFixed(2)}" y2="${(-z).toFixed(2)}"/>`;
   }).join("");

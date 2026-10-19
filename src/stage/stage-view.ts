@@ -7,8 +7,9 @@
  *   within a beat (`next`) — class toggles on parts drawn once.
  * - Press a key, a drum, a string stop: it sounds through the host while it is
  *   held; slide to the next one without lifting. The computer keyboard plays
- *   the instrument you are looking at, two rows like a DAW's (z–/ and q–]),
- *   ← → shift the octave.
+ *   the instrument you are looking at, mapped by physical key: GarageBand's
+ *   Musical Typing (a s d f … white, w e t … black; z x octave, c v velocity)
+ *   or a tracker's two rows (z s x d c … / q 2 w 3 e …, 2½ octaves); ← → octave.
  * - Press an instrument to look at it from the player's seat, with note
  *   names; the ✕ or Esc steps back. Digits 1–9 pick one.
  * - **Join** takes over an instrument's part: its voices go quiet in the
@@ -33,26 +34,59 @@ export interface StageHost {
   noteOff(program: number, pitch: number): void;
   /** You take over `player`'s part (its voices go quiet), or hand it back (null). */
   join?(player: Player | null): void;
+  /** Whether Join can quiet this player's part (a style's chords, bass and drums cannot be muted). */
+  canJoin?(player: Player): boolean;
+  /** Fetch `program`'s samples for `low…high` ahead of presses. */
+  warm?(program: number, low: number, high: number): void;
 }
 
 type Lights = Record<"on" | "yours" | "next", Set<string>>;
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+type Layout = "typing" | "rows";
 /**
- * Letters → semitones above the window's lowest C: two rows, as trackers and
- * DAWs lay out a computer keyboard — z s x d c … for the lower octave and a
- * half, q 2 w 3 e … an octave up — 2½ octaves under two hands.
+ * Physical keys (`KeyboardEvent.code`, so AZERTY and QWERTZ get the same shape)
+ * → semitones above the window's lowest C.
+ * - typing: GarageBand / Logic / Ableton "Musical Typing" — a s d f g h j k l ; '
+ *   white keys, w e t y u o p the black ones between; about 1½ octaves.
+ * - rows: a tracker's two rows — z s x d c v g b h n j m , l . ; / and
+ *   q 2 w 3 e r 5 t 6 y 7 u i 9 o 0 p [ = ] an octave up; 2½ octaves, two hands.
  */
-const LOWER_ROW = "zsxdcvgbhnjm,l.;/";
-const UPPER_ROW = "q2w3er5t6y7ui9o0p[=]";
-const WINDOW = 12 + UPPER_ROW.length - 1;
+const LAYOUTS: Record<Layout, Record<string, number>> = {
+  typing: {
+    KeyA: 0, KeyW: 1, KeyS: 2, KeyE: 3, KeyD: 4, KeyF: 5, KeyT: 6, KeyG: 7, KeyY: 8, KeyH: 9,
+    KeyU: 10, KeyJ: 11, KeyK: 12, KeyO: 13, KeyL: 14, KeyP: 15, Semicolon: 16, Quote: 17,
+  },
+  rows: Object.fromEntries([
+    ...["KeyZ", "KeyS", "KeyX", "KeyD", "KeyC", "KeyV", "KeyG", "KeyB", "KeyH", "KeyN", "KeyJ", "KeyM", "Comma", "KeyL", "Period", "Semicolon", "Slash"].map((c, i) => [c, i]),
+    ...["KeyQ", "Digit2", "KeyW", "Digit3", "KeyE", "KeyR", "Digit5", "KeyT", "Digit6", "KeyY", "Digit7", "KeyU", "KeyI", "Digit9", "KeyO", "Digit0", "KeyP", "BracketLeft", "Equal", "BracketRight"].map((c, i) => [c, 12 + i]),
+  ]),
+};
+const SPAN: Record<Layout, number> = { typing: 17, rows: 31 };
+const LAYOUT_NAMES: Record<Layout, string> = { typing: "typing", rows: "2 rows" };
+const LAYOUT_PREF_KEY = "music-studio-stage-keys";
+/** What a US keyboard prints on a physical key — the label until the browser tells us the user's own. */
+const QWERTY: Record<string, string> = { Comma: ",", Period: ".", Semicolon: ";", Slash: "/", Quote: "'", BracketLeft: "[", BracketRight: "]", Equal: "=" };
+const printed = (code: string) => QWERTY[code] ?? code.replace(/^(Key|Digit)/, "");
 /** Kinds whose keys carry their letter when you join. */
 const LABELLED = new Set(["grand", "keys", "mallets"]);
 /** A tap is a short press: long enough to hear the note bloom. */
 const TAP_HOLD_MS = 450;
-/** Letters → drum pieces, low row left to right. */
-const DRUM_ROW: Record<string, number> = { z: 36, x: 38, c: 42, v: 48, b: 45, n: 41, m: 49, ",": 51, ".": 76 };
+/** Physical keys → drum pieces, low row left to right (both layouts). */
+const DRUM_KEYS: Record<string, number> = { KeyZ: 36, KeyX: 38, KeyC: 42, KeyV: 48, KeyB: 45, KeyN: 41, KeyM: 49, Comma: 51, Period: 76 };
 const MIN_PRESS_MS = 110;
+/** Musical Typing's C / V step, as GarageBand's. */
+const VELOCITY_STEP = 20;
+
+interface Hold {
+  obj: string;
+  keys: string[];
+  serial: number;
+  program?: number;
+  pitch?: number;
+  /** A MIDI note: not released when the page loses focus (note-offs still arrive). */
+  midi?: boolean;
+}
 
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -94,10 +128,18 @@ export class StageView {
    * src/audio-unlock.ts TapTracker), and `preventDefault` on pointerdown cannot
    * stop a pan under `touch-action: manipulation`.
    */
-  private pointers = new Map<number, { obj: string; key: string; at: number; x: number; y: number; touch: boolean }>();
-  /** Held parts; `serial` lets a delayed release free only its own press. */
-  private held = new Map<string, { obj: string; keys: string[]; serial: number; program?: number; pitch?: number }>();
+  private pointers = new Map<number, { obj: string; key: string; at: number; x: number; y: number; touch: boolean; serial: number }>();
+  /** Everything held — a pointer on a part, a letter, a MIDI note — by hold id; `serial` lets a delayed release free only its own press. */
+  private held = new Map<string, Hold>();
+  /** How many holds keep each part down (the same key held from two places stays down until both let go). */
+  private downs = new Map<string, number>();
   private serial = 0;
+  private layout: Layout = readLayout();
+  /** The user's own keyboard layout (code → printed character), where the browser can say. */
+  private layoutMap: Map<string, string> | null = null;
+  private velocity = 90;
+  private midiAccess: MIDIAccess | null = null;
+  private readonly keysBtn: HTMLButtonElement;
   /** The part you are playing (a player id), if you joined one. */
   private joined: string | null = null;
   /** Where each instrument's letter window starts (its lowest C), once moved. */
@@ -126,6 +168,7 @@ export class StageView {
         </span></div>
       <div class="stage-cap tr"><span class="stage-name"></span>
         <button class="stage-btn" data-act="mode" title="Frame the whole instrument, or just where the hands go" hidden>whole</button>
+        <button class="stage-btn" data-act="keys" title="How the computer keyboard maps to the keys" hidden>keys</button>
         <button class="stage-btn" data-act="join" title="Play this part yourself: it goes quiet in the playback and shows you what to play" hidden>join</button>
         <button class="stage-btn" data-act="midi" title="Play with a MIDI keyboard" hidden>midi</button>
         <button class="stage-btn" data-act="back" title="Back to the band (Esc)" aria-label="Back to the band" hidden>✕</button></div>
@@ -153,7 +196,11 @@ export class StageView {
       this.frame(true);
     });
     this.join = this.el.querySelector('[data-act="join"]')!;
-    this.join.addEventListener("click", () => this.setJoined(this.joined ? null : this.focus));
+    this.join.addEventListener("click", () => this.setJoined(this.joined && this.joined === this.focus ? null : this.focus));
+    this.keysBtn = this.el.querySelector('[data-act="keys"]')!;
+    this.keysBtn.addEventListener("click", () => this.setLayout(this.layout === "typing" ? "rows" : "typing"));
+    const kb = (navigator as Navigator & { keyboard?: { getLayoutMap?: () => Promise<Map<string, string>> } }).keyboard;
+    kb?.getLayoutMap?.().then((m) => { this.layoutMap = m; this.drawKeyLabels(); }).catch(() => undefined);
     this.midi = this.el.querySelector('[data-act="midi"]')!;
     this.midi.addEventListener("click", () => void this.connectMidi());
     this.el.querySelector('[data-act="in"]')!.addEventListener("click", () => this.zoomBy(1.6));
@@ -180,10 +227,11 @@ export class StageView {
     }
     this.el.addEventListener("keydown", (e) => this.onKey(e, true));
     this.el.addEventListener("keyup", (e) => this.onKey(e, false));
-    window.addEventListener("blur", () => this.releaseAll());
-    // Focus leaving the Stage takes its held letters with it (their keyup goes elsewhere).
+    // Focus leaving the Stage takes its held letters and pointers with it (their keyup
+    // goes elsewhere); MIDI notes stay — their note-offs arrive wherever focus is.
+    window.addEventListener("blur", () => this.releaseInput());
     this.el.addEventListener("focusout", (e) => {
-      if (!this.el.contains(e.relatedTarget as Node | null)) this.releaseAll();
+      if (!this.el.contains(e.relatedTarget as Node | null)) this.releaseInput();
     });
   }
 
@@ -231,6 +279,8 @@ export class StageView {
     } else {
       cancelAnimationFrame(this.raf);
       this.raf = 0;
+      // Hidden, the Stage can't show your part: hand it back to the band.
+      this.setJoined(null);
       this.releaseAll();
     }
   }
@@ -261,6 +311,10 @@ export class StageView {
     }
     for (const [obj, l] of this.lights) {
       for (const cls of ["on", "yours", "next"] as const) for (const k of l[cls]) this.mark(obj, k, cls, true);
+    }
+    for (const id of this.downs.keys()) {
+      const [obj, k] = id.split("\n");
+      this.mark(obj, k, "down", true);
     }
     let band: Rect | null = null;
     for (const r of rendered.objects.values()) {
@@ -302,7 +356,7 @@ export class StageView {
     const keys = this.index.get(placed.player.id);
     const base = this.baseFor(placed);
     let r: Rect | null = null;
-    for (let p = base; p <= base + WINDOW; p++) {
+    for (let p = base; p <= base + SPAN[this.layout]; p++) {
       for (const k of placed.figure.light([p])) {
         const el = keys?.get(k)?.[0] as SVGGraphicsElement | undefined;
         if (!el) continue;
@@ -368,26 +422,36 @@ export class StageView {
     const placed = this.focused();
     const n = placed ? this.stage!.placed.indexOf(placed) + 1 : 0;
     this.fig.textContent = placed ? `Fig. 1.${n}` : "Fig. 1";
-    const joined = Boolean(placed && placed.player.id === this.joined);
-    this.name.textContent = placed ? `${placed.player.label}${joined ? " · you" : ""}` : this.title;
+    const joinedHere = Boolean(placed && placed.player.id === this.joined);
+    const joinedPlayer = this.joined ? this.placedById(this.joined)?.player : undefined;
+    this.name.textContent = placed
+      ? `${placed.player.label}${joinedHere ? " · you" : ""}`
+      : `${this.title}${joinedPlayer ? ` · you: ${joinedPlayer.label}` : ""}`;
     this.back.hidden = !placed;
     this.mode.hidden = !placed;
     this.mode.textContent = this.whole ? "hands" : "whole";
     this.mode.setAttribute("aria-pressed", String(this.whole));
-    this.join.hidden = !placed || !this.host.join;
-    this.join.textContent = joined ? "leave" : "join";
-    this.join.setAttribute("aria-pressed", String(joined));
-    this.midi.hidden = !joined || typeof navigator === "undefined" || !("requestMIDIAccess" in navigator);
-    this.el.classList.toggle("close", Boolean(placed));
-    this.el.classList.toggle("joined", joined);
+    this.join.hidden = !placed || !this.host.join || !(this.host.canJoin?.(placed.player) ?? true);
+    this.join.textContent = joinedHere ? "leave" : "join";
+    this.join.setAttribute("aria-pressed", String(joinedHere));
+    this.midi.hidden = !joinedHere || typeof navigator === "undefined" || !("requestMIDIAccess" in navigator);
     const target = this.target();
-    const keys = target && target.figure.kind !== "drums" ? ` ${noteName(this.baseFor(target))}–${noteName(this.baseFor(target) + WINDOW)}` : "";
-    this.hint.textContent = this.notice || (joined
-      ? `your part: play the dashed notes · keys z–/ q–]${keys} · ← → octave · esc leaves`
+    const pitched = Boolean(target && target.figure.kind !== "drums");
+    this.keysBtn.hidden = !placed || !pitched;
+    this.keysBtn.textContent = `keys: ${LAYOUT_NAMES[this.layout]}`;
+    this.el.classList.toggle("close", Boolean(placed));
+    this.el.classList.toggle("joined", Boolean(this.joined));
+    const range = target && pitched ? ` ${noteName(this.baseFor(target))}–${noteName(this.baseFor(target) + SPAN[this.layout])}` : "";
+    const how = this.layout === "typing" ? `keys a–' ·${range} · z x or ← → octave` : `keys z–/ q–] ·${range} · ← → octave`;
+    this.hint.textContent = this.notice || (joinedHere
+      ? `your part: play the dashed notes · ${how} · esc leaves`
       : placed
-        ? `press or type to play${keys} · join to take this part · ⌘-scroll or double-click to zoom · esc steps back`
+        ? `press or type to play · ${how} · join to take this part · esc steps back`
         : "press an instrument to look closer · ⌘-scroll or double-click to zoom");
     this.svg.setAttribute("aria-label", placed ? `${placed.player.label}, seen from the player's seat` : `The band: ${this.stage?.placed.map((p) => p.player.label).join(", ")}`);
+    // A control that just hid itself must not take keyboard focus away with it.
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.hidden && this.el.contains(active)) this.el.focus({ preventScroll: true });
     this.lastT = NaN;
   }
 
@@ -397,6 +461,15 @@ export class StageView {
     if (!id) this.whole = false;
     this.caption();
     this.frame(true);
+    this.warmWindow();
+  }
+
+  /** Fetch the samples the letters reach on the instrument in view, so a first press is not late. */
+  private warmWindow(): void {
+    const target = this.focus ? this.target() : undefined;
+    if (!target || target.figure.kind === "drums") return;
+    const base = this.baseFor(target);
+    this.host.warm?.(target.player.program, base, base + SPAN[this.layout]);
   }
 
   private focused(): Placed | undefined {
@@ -466,41 +539,65 @@ export class StageView {
     return this.stage?.placed.find((p) => p.player.id === id);
   }
 
-  /** Press part `key` of `obj`: it goes down and sounds. */
-  private pressKey(obj: string, key: string): void {
+  /** Hold `keys` of `placed` down under `id` and sound `pitch`; returns the hold's serial. */
+  private hold(id: string, placed: Placed, keys: string[], pitch: number | null, velocity?: number, midi = false): number {
+    if (this.held.has(id)) this.unhold(id);
+    const obj = placed.player.id, program = placed.player.program;
+    for (const k of keys) this.down(obj, k, 1);
+    this.held.set(id, { obj, keys, serial: ++this.serial, program, pitch: pitch ?? undefined, midi });
+    if (pitch !== null) this.host.noteOn(program, pitch, velocity);
+    return this.serial;
+  }
+
+  /** Let go of hold `id` — only the press numbered `serial`, when given. */
+  private unhold(id: string, serial?: number): void {
+    const h = this.held.get(id);
+    if (!h || (serial !== undefined && h.serial !== serial)) return;
+    this.held.delete(id);
+    for (const k of h.keys) this.down(h.obj, k, -1);
+    if (h.program !== undefined && h.pitch !== undefined) this.host.noteOff(h.program, h.pitch);
+  }
+
+  private down(obj: string, key: string, delta: number): void {
+    const id = `${obj}\n${key}`;
+    const n = (this.downs.get(id) ?? 0) + delta;
+    if (n <= 0) {
+      this.downs.delete(id);
+      this.mark(obj, key, "down", false);
+    } else {
+      this.downs.set(id, n);
+      if (n === 1 && delta > 0) this.mark(obj, key, "down", true);
+    }
+  }
+
+  /** Press part `key` of `obj` (a pointer): it goes down and sounds. Returns the hold's serial. */
+  private pressKey(obj: string, key: string): number {
     const placed = this.placedById(obj);
-    if (!placed) return;
+    if (!placed) return 0;
     const pitch = placed.figure.pitchOf(key);
     const keys = pitch === null ? [key] : placed.figure.light([pitch]);
     if (!keys.includes(key)) keys.push(key);
-    for (const k of keys) this.mark(obj, k, "down", true);
-    const program = placed.player.program;
-    this.held.set(`${obj}\n${key}`, { obj, keys, serial: ++this.serial, program, pitch: pitch ?? undefined });
-    if (pitch !== null) this.host.noteOn(program, pitch);
+    return this.hold(`ptr:${obj}\n${key}`, placed, keys, pitch, this.velocity);
   }
 
-  /** Release a held part — only the press numbered `serial`, when given. */
   private releaseKey(obj: string, key: string, serial?: number): void {
-    const id = `${obj}\n${key}`;
-    const held = this.held.get(id);
-    if (!held || (serial !== undefined && held.serial !== serial)) return;
-    this.held.delete(id);
-    for (const k of held.keys) this.mark(obj, k, "down", false);
-    if (held.program !== undefined && held.pitch !== undefined) this.host.noteOff(held.program, held.pitch);
+    this.unhold(`ptr:${obj}\n${key}`, serial);
   }
 
   /** Release after the press has shown for MIN_PRESS_MS. */
-  private releaseLater(obj: string, key: string, at: number): void {
-    const serial = this.held.get(`${obj}\n${key}`)?.serial;
+  private releaseLater(obj: string, key: string, at: number, serial: number): void {
     const wait = Math.max(0, MIN_PRESS_MS - (performance.now() - at));
     setTimeout(() => this.releaseKey(obj, key, serial), wait);
   }
 
+  /** Pointers and letters (not MIDI): what focus leaving takes with it. */
+  private releaseInput(): void {
+    for (const [id, h] of [...this.held]) if (!h.midi) this.unhold(id);
+    this.pointers.clear();
+  }
+
   private releaseAll(): void {
-    for (const id of [...this.held.keys()]) {
-      const [obj, key] = id.split("\n");
-      this.releaseKey(obj, key);
-    }
+    for (const id of [...this.held.keys()]) this.unhold(id);
     this.pointers.clear();
     this.sustained.clear();
     this.pedal = false;
@@ -521,11 +618,12 @@ export class StageView {
     }
     const obj = objEl.dataset.obj!, key = part.dataset.k!;
     const touch = e.pointerType !== "mouse";
-    this.pointers.set(e.pointerId, { obj, key, at: performance.now(), x: e.clientX, y: e.clientY, touch });
+    const p = { obj, key, at: performance.now(), x: e.clientX, y: e.clientY, touch, serial: 0 };
+    this.pointers.set(e.pointerId, p);
     if (touch) return; // a tap candidate: plays on lift, if it was not a scroll
     e.preventDefault();
     this.el.focus({ preventScroll: true });
-    this.pressKey(obj, key);
+    p.serial = this.pressKey(obj, key);
     try {
       this.svg.setPointerCapture(e.pointerId);
     } catch { /* the pointer is already gone */ }
@@ -552,10 +650,10 @@ export class StageView {
     const part = el?.closest<SVGGElement>("[data-k]");
     const obj = part?.closest<SVGGElement>("[data-obj]")?.dataset.obj;
     if (!part || obj !== p.obj || part.dataset.k === p.key) return;
-    this.releaseKey(p.obj, p.key);
+    this.releaseKey(p.obj, p.key, p.serial);
     p.key = part.dataset.k!;
     p.at = performance.now();
-    this.pressKey(p.obj, p.key);
+    p.serial = this.pressKey(p.obj, p.key);
   }
 
   private onPointerUp(e: PointerEvent): void {
@@ -570,12 +668,11 @@ export class StageView {
     if (p.touch) {
       // A tap: it lifted where it landed and the browser never took it for a pan.
       if (e.type !== "pointerup") return;
-      this.pressKey(p.obj, p.key);
-      const serial = this.held.get(`${p.obj}\n${p.key}`)?.serial;
+      const serial = this.pressKey(p.obj, p.key);
       setTimeout(() => this.releaseKey(p.obj, p.key, serial), TAP_HOLD_MS);
       return;
     }
-    this.releaseLater(p.obj, p.key, p.at);
+    this.releaseLater(p.obj, p.key, p.at, p.serial);
   }
 
   /** Press an instrument to look closer; press the paper to step back. */
@@ -591,47 +688,80 @@ export class StageView {
   }
 
   private onKey(e: KeyboardEvent, down: boolean): void {
+    const code = e.code || e.key;
+    // A release always counts, modifiers or not: a key let go with ⌘ or Shift down
+    // must not leave its note ringing (holds are named by physical key, which Shift
+    // doesn't change).
+    if (!down) {
+      this.unhold(`key:${code}`);
+      return;
+    }
+    // macOS sends no keyup while ⌘ is held: let go of every letter now.
+    if (e.key === "Meta") {
+      for (const [id, h] of [...this.held]) if (id.startsWith("key:") && !h.midi) this.unhold(id);
+      return;
+    }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const joined = this.joined !== null;
-    if (down && e.key === "Escape" && (this.joined || this.focus)) {
+    if (e.key === "Escape" && (this.joined || this.focus)) {
       e.preventDefault();
       if (this.joined) this.setJoined(null);
       else this.setFocus(null);
       return;
     }
     const target = this.target();
-    if (down && (e.key === "ArrowLeft" || e.key === "ArrowRight") && target && target.figure.kind !== "drums") {
+    const pitched = Boolean(target && target.figure.kind !== "drums");
+    // A note key wins over everything below (digits, 0, = are notes in two rows while joined).
+    const offset = pitched ? LAYOUTS[this.layout][code] : undefined;
+    const rowsDigits = this.layout === "rows" && !joined && /^Digit|^Equal$/.test(code);
+    if (target && offset !== undefined && !rowsDigits) {
       e.preventDefault();
-      const base = Math.min(96, Math.max(12, this.baseFor(target) + (e.key === "ArrowLeft" ? -12 : 12)));
-      this.bases.set(target.player.id, base);
-      this.caption();
-      this.drawKeyLabels();
-      if (target.player.id === this.joined && !this.whole) this.frame(true);
+      if (!e.repeat) this.playHold(target, `key:${code}`, this.baseFor(target) + offset, this.velocity);
       return;
     }
-    // Joined, the whole keyboard is the instrument: digits, 0 and = are notes.
-    if (!joined) {
-      if (down && (e.key === "+" || e.key === "=")) { e.preventDefault(); this.zoomBy(1.6); return; }
-      if (down && e.key === "0") { e.preventDefault(); this.frame(true); return; }
-      if (down && /^[1-9]$/.test(e.key) && this.stage) {
-        const placed = this.stage.placed[Number(e.key) - 1];
-        if (placed) { e.preventDefault(); this.setFocus(placed.player.id); }
-        return;
-      }
-    } else if (down && e.key === "+") { e.preventDefault(); this.zoomBy(1.6); return; }
-    if (down && (e.key === "-" || e.key === "_")) { e.preventDefault(); this.zoomBy(1 / 1.6); return; }
-    const hold = `letter:${e.key.toLowerCase()}`;
-    // A letter releases wherever it was pressed — the instrument in view may have changed since.
-    if (!down) {
-      this.stopHold(hold);
+    if (target && !pitched && DRUM_KEYS[code] !== undefined) {
+      e.preventDefault();
+      if (!e.repeat) this.playHold(target, `key:${code}`, DRUM_KEYS[code], this.velocity);
       return;
     }
-    if (!target) return;
-    const pitch = this.letterPitch(target, e.key.toLowerCase());
-    if (pitch === null) return;
-    e.preventDefault();
-    if (e.repeat) return;
-    this.playHold(target, hold, pitch);
+    if (target && pitched && (e.key === "ArrowLeft" || e.key === "ArrowRight" || (this.layout === "typing" && (code === "KeyZ" || code === "KeyX")))) {
+      e.preventDefault();
+      this.shiftOctave(target, e.key === "ArrowLeft" || code === "KeyZ" ? -12 : 12);
+      return;
+    }
+    if (this.layout === "typing" && (code === "KeyC" || code === "KeyV")) {
+      e.preventDefault();
+      this.velocity = Math.min(127, Math.max(10, this.velocity + (code === "KeyV" ? VELOCITY_STEP : -VELOCITY_STEP)));
+      this.flash(`velocity ${this.velocity}`);
+      return;
+    }
+    if (e.key === "+" || e.key === "=") { e.preventDefault(); this.zoomBy(1.6); return; }
+    if (e.key === "-" || e.key === "_") { e.preventDefault(); this.zoomBy(1 / 1.6); return; }
+    if (e.key === "0") { e.preventDefault(); this.frame(true); return; }
+    if (/^[1-9]$/.test(e.key) && this.stage) {
+      const placed = this.stage.placed[Number(e.key) - 1];
+      if (placed) { e.preventDefault(); this.setFocus(placed.player.id); }
+    }
+  }
+
+  private shiftOctave(target: Placed, by: number): void {
+    this.bases.set(target.player.id, this.clampBase(this.baseFor(target) + by));
+    this.caption();
+    this.drawKeyLabels();
+    this.warmWindow();
+    if (target.player.id === this.joined && !this.whole) this.frame(true);
+  }
+
+  setLayout(layout: Layout): void {
+    if (layout === this.layout) return;
+    this.releaseInput();
+    this.layout = layout;
+    try { localStorage.setItem(LAYOUT_PREF_KEY, layout); } catch { /* storage blocked */ }
+    this.caption();
+    this.drawKeyLabels();
+    this.warmWindow();
+    const target = this.target();
+    if (target && target.player.id === this.joined && !this.whole) this.frame(true);
   }
 
   /** The instrument letters and MIDI play: the part you joined, the one in view, or the melody. */
@@ -639,39 +769,24 @@ export class StageView {
     return (this.joined ? this.placedById(this.joined) : undefined) ?? this.focused() ?? this.stage?.placed[0];
   }
 
+  /** Keep the letter window on the samples (A0–C8): its lowest C between C1 and the top that still fits. */
+  private clampBase(base: number): number {
+    const top = 12 * Math.floor((108 - SPAN[this.layout]) / 12);
+    return Math.min(top, Math.max(24, base));
+  }
+
   /** Where `placed`'s letter window starts: a C, set so the window centres on the part's range. */
   private baseFor(placed: Placed): number {
     const moved = this.bases.get(placed.player.id);
-    if (moved !== undefined) return moved;
+    if (moved !== undefined) return this.clampBase(moved);
     const { low, high } = placed.player;
     const mid = Number.isFinite(low) ? (low + high) / 2 : 60;
-    return Math.min(96, Math.max(12, 12 * Math.round((mid - WINDOW / 2) / 12)));
+    return this.clampBase(12 * Math.round((mid - SPAN[this.layout] / 2) / 12));
   }
 
-  /** The pitch a letter plays on this instrument. */
-  private letterPitch(placed: Placed, letter: string): number | null {
-    if (placed.figure.kind === "drums") return DRUM_ROW[letter] ?? null;
-    if (letter.length !== 1) return null;
-    const lo = LOWER_ROW.indexOf(letter);
-    if (lo >= 0) return this.baseFor(placed) + lo;
-    const up = UPPER_ROW.indexOf(letter);
-    return up >= 0 ? this.baseFor(placed) + 12 + up : null;
-  }
-
-  /** Hold `pitch` on `placed` under the name `hold` (a letter, a MIDI note) until stopHold. */
-  private playHold(placed: Placed, hold: string, pitch: number, velocity?: number): void {
-    const obj = placed.player.id;
-    const id = `${obj}\n${hold}`;
-    if (this.held.has(id)) this.releaseKey(obj, hold);
-    const keys = placed.figure.light([pitch]);
-    for (const k of keys) this.mark(obj, k, "down", true);
-    const program = placed.player.program;
-    this.held.set(id, { obj, keys, serial: ++this.serial, program, pitch });
-    this.host.noteOn(program, pitch, velocity);
-  }
-
-  private stopHold(hold: string): void {
-    for (const [id, h] of [...this.held]) if (id.endsWith(`\n${hold}`)) this.releaseKey(h.obj, hold);
+  /** Hold `pitch` on `placed` under the name `hold` (a letter, a MIDI note) until it is let go. */
+  private playHold(placed: Placed, hold: string, pitch: number, velocity?: number, midi = false): void {
+    this.hold(hold, placed, placed.figure.light([pitch]), pitch, velocity, midi);
   }
 
   // ---------------------------------------------------------------------------
@@ -680,38 +795,40 @@ export class StageView {
 
   /** Take over `id`'s part, or hand it back (null). */
   setJoined(id: string | null): void {
+    const placed = id ? this.placedById(id) : undefined;
+    if (id && (!placed || !(this.host.canJoin?.(placed.player) ?? true))) return;
     if (id === this.joined) return;
     this.releaseAll();
     this.joined = id;
-    const placed = id ? this.placedById(id) : undefined;
-    if (id && !placed) this.joined = null;
     this.host.join?.(placed?.player ?? null);
     if (placed && this.focus !== placed.player.id) this.setFocus(placed.player.id);
-    else this.frame(true);
+    else if (!this.el.hidden) this.frame(true);
     this.caption();
     this.drawKeyLabels();
+    if (placed) this.warmWindow();
   }
 
   get joinedPart(): string | null {
     return this.joined;
   }
 
-  /** Each mapped key of the joined keyboard carries its letter. */
+  /** Each mapped key of the joined keyboard carries the character the user's own keyboard prints there. */
   private drawKeyLabels(): void {
     this.labels.innerHTML = "";
     const placed = this.joined ? this.placedById(this.joined) : undefined;
     if (!placed || !LABELLED.has(placed.figure.kind) || this.el.hidden) return;
+    const base = this.baseFor(placed);
     let out = "";
-    for (const letter of LOWER_ROW + UPPER_ROW) {
-      const pitch = this.letterPitch(placed, letter);
-      if (pitch === null) continue;
+    for (const [code, offset] of Object.entries(LAYOUTS[this.layout])) {
+      const pitch = base + offset;
       const key = placed.figure.light([pitch])[0];
       const el = key && this.index.get(placed.player.id)?.get(key)?.[0];
       if (!el) continue;
       const at = keyTop(el);
       if (!at) continue;
       const black = [1, 3, 6, 8, 10].includes(pitch % 12);
-      out += `<text class="kbd${black ? " b" : ""}" x="${at.x.toFixed(2)}" y="${(at.y + at.size * 0.35).toFixed(2)}" font-size="${at.size.toFixed(2)}" text-anchor="middle">${escapeXml(letter.toUpperCase())}</text>`;
+      const label = (this.layoutMap?.get(code) ?? printed(code)).toUpperCase();
+      out += `<text class="kbd${black ? " b" : ""}" x="${at.x.toFixed(2)}" y="${(at.y + at.size * 0.35).toFixed(2)}" font-size="${at.size.toFixed(2)}" text-anchor="middle">${escapeXml(label)}</text>`;
     }
     this.labels.innerHTML = out;
   }
@@ -719,7 +836,7 @@ export class StageView {
   private flash(text: string): void {
     this.notice = text;
     clearTimeout(this.noticeTimer);
-    this.noticeTimer = window.setTimeout(() => { this.notice = ""; this.caption(); }, 5000);
+    this.noticeTimer = window.setTimeout(() => { this.notice = ""; this.caption(); }, 4000);
     this.caption();
   }
 
@@ -727,7 +844,8 @@ export class StageView {
   private async connectMidi(): Promise<void> {
     const nav = navigator as Navigator & { requestMIDIAccess?: () => Promise<MIDIAccess> };
     try {
-      const access = await nav.requestMIDIAccess!();
+      // One access, kept: a second request would deliver every message twice.
+      const access = this.midiAccess ?? (this.midiAccess = await nav.requestMIDIAccess!());
       const attach = () => {
         const names: string[] = [];
         for (const input of access.inputs.values()) {
@@ -746,18 +864,22 @@ export class StageView {
   private onMidi(data: Uint8Array): void {
     const [status, d1, d2] = data;
     const cmd = status & 0xf0;
-    const placed = this.target();
-    if (!placed) return;
-    if (cmd === 0x90 && d2 > 0) {
-      this.sustained.delete(d1);
-      this.playHold(placed, `midi:${d1}`, d1, d2);
-    } else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) {
+    // MIDI plays only the part you joined; a note-off still releases what it started.
+    const placed = this.joined ? this.placedById(this.joined) : undefined;
+    const off = cmd === 0x80 || (cmd === 0x90 && d2 === 0);
+    if (off) {
       if (this.pedal) this.sustained.add(d1);
-      else this.stopHold(`midi:${d1}`);
+      else this.unhold(`midi:${d1}`);
+      return;
+    }
+    if (!placed) return;
+    if (cmd === 0x90) {
+      this.sustained.delete(d1);
+      this.playHold(placed, `midi:${d1}`, d1, d2, true);
     } else if (cmd === 0xb0 && d1 === 64) {
       this.pedal = d2 >= 64;
       if (!this.pedal) {
-        for (const p of this.sustained) this.stopHold(`midi:${p}`);
+        for (const p of this.sustained) this.unhold(`midi:${p}`);
         this.sustained.clear();
       }
     }
@@ -781,4 +903,12 @@ function keyTop(el: Element): { x: number; y: number; size: number } | null {
   const fx = (f1[0] + f2[0]) / 2, fy = (f1[1] + f2[1]) / 2;
   const width = Math.hypot(f1[0] - f2[0], f1[1] - f2[1]);
   return { x: cx + (fx - cx) * 0.45, y: cy + (fy - cy) * 0.45, size: width * 0.62 };
+}
+
+function readLayout(): Layout {
+  try {
+    return localStorage.getItem(LAYOUT_PREF_KEY) === "rows" ? "rows" : "typing";
+  } catch {
+    return "typing";
+  }
 }

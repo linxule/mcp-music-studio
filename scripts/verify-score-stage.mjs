@@ -136,18 +136,45 @@ for (let i = 0; i < 40 && !yours; i++) {
 }
 check(yours, "the joined part shows as yours while the band plays");
 await sleep(1500); // the part's samples were fetched on join
+// A real keyboard (Playwright's, through focus): Musical Typing by default, a d g = C E G.
+await f.focus(".stage");
+const celloDown = () => f.evaluate(() => document.querySelectorAll('.stage-svg g[data-obj="cello"] .down').length);
 const s0 = await f.evaluate(() => globalThis.__starts.length);
-await f.evaluate(() => { for (const key of ["z", "c", "b"]) document.querySelector(".stage").dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })); });
+for (const k of ["a", "d", "g"]) await page.keyboard.down(k);
 await sleep(600);
 const s1 = await f.evaluate(() => globalThis.__starts.length);
 check(s1 - s0 >= 3, "a three-key chord sounds three notes at once", `${s1 - s0} source starts`);
-check(await f.evaluate(() => document.querySelectorAll('.stage-svg g[data-obj="cello"] .down').length > 0), "the held notes show on the instrument");
-await f.evaluate(() => { for (const key of ["z", "c", "b"]) document.querySelector(".stage").dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true })); });
+check((await celloDown()) > 0, "the held notes show on the instrument");
+for (const k of ["a", "d", "g"]) await page.keyboard.up(k);
 await sleep(200);
-check(await f.evaluate(() => document.querySelectorAll('.stage-svg g[data-obj="cello"] .down').length === 0), "letting go releases them");
+check((await celloDown()) === 0, "letting go releases them");
+// Let go of a key while Shift is down: the hold is the physical key, so it still releases.
+await page.keyboard.down("s");
+await page.keyboard.down("Shift");
+await page.keyboard.up("s");
+await page.keyboard.up("Shift");
+await sleep(150);
+check((await celloDown()) === 0, "a key let go with Shift down still releases");
+// The other layout: two rows (z s x d c … / q 2 w 3 e …).
+await f.click('.stage-btn[data-act="keys"]');
+await page.keyboard.down("z");
+await sleep(150);
+check((await celloDown()) > 0, "two rows: z plays");
+await page.keyboard.up("z");
+await f.click('.stage-btn[data-act="keys"]'); // back to Musical Typing (the choice is remembered)
 await f.click('.stage-btn[data-act="join"]');
 await sleep(400);
 check((await celloOn()) === "true", "leaving gives the voice back");
+// A voice muted before joining is the listener's: leaving keeps it muted.
+await f.evaluate(() => [...document.querySelectorAll(".practice-voice-btn")].find((b) => /cello/i.test(b.textContent)).click());
+await sleep(400);
+await f.click('.stage-btn[data-act="join"]');
+await sleep(300);
+await f.click('.stage-btn[data-act="join"]');
+await sleep(300);
+check((await celloOn()) === "false", "a voice muted before joining stays muted after leaving");
+await f.evaluate(() => [...document.querySelectorAll(".practice-voice-btn")].find((b) => /cello/i.test(b.textContent)).click());
+await sleep(300);
 await f.click('.stage-btn[data-act="back"]');
 await sleep(500);
 check(await f.evaluate(() => !document.querySelector(".stage")?.classList.contains("close")), "✕ steps back to the band");

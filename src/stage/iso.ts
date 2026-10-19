@@ -201,13 +201,18 @@ export class View {
   /** Screen position of a point. */
   P(p: Vec3): [number, number] {
     const [a, b, z] = this.rot(p);
+    return this.project(a, b, z);
+  }
+
+  /** Screen position of a point already in view coordinates. */
+  private project(a: number, b: number, z: number): [number, number] {
     const sx = (a - b) * C30, sy = (a + b) * S30 - z;
     if (!this.eye) return [sx, sy];
     // Two-point perspective: scale about the centre's image by eye / (eye - d),
     // d = distance toward the viewer measured on the ground, so a vertical line
     // keeps one scale and stays vertical (a 3-point view leans tall things out
-    // at the edges). Separating-axis order still holds: the eye is outside
-    // every part's box.
+    // at the edges). The separating-axis order and `sees` stay exact while the
+    // band sits within about ±1.2·eye of the centre across the screen.
     const cx = this.center[0], cy = this.center[1];
     const d = (a - cx + (b - cy)) / Math.SQRT2;
     const k = this.eye / Math.max(this.eye * 0.2, this.eye - d);
@@ -240,8 +245,9 @@ export class View {
     const [nx, ny, nz] = this.dir(n);
     const cx = this.center[0], cy = this.center[1];
     const d = (a - cx + (b - cy)) / Math.SQRT2;
+    const clamped = this.eye - d < this.eye * 0.2;
     const k = this.eye / Math.max(this.eye * 0.2, this.eye - d);
-    const g = (k * k) / this.eye / Math.SQRT2; // ∇k = g·(1, 1, 0)
+    const g = clamped ? 0 : (k * k) / this.eye / Math.SQRT2; // ∇k = g·(1, 1, 0); flat where P clamps
     const qx = (a - b) * C30 - (cx - cy) * C30, qy = (a + b) * S30 - z - (cx + cy) * S30;
     // a = qy·rowX − qx·rowY, rows of the isometric matrix: X = (C30, −C30, 0), Y = (S30, S30, −1).
     const ax = qy * C30 - qx * S30, ay = -qy * C30 - qx * S30, az = qx;
@@ -272,7 +278,7 @@ export class View {
     const h = Math.max(0, z - z0) * SHADOW_LENGTH;
     const sa = a - (LIGHT[0] / LIGHT[2]) * h;
     const sb = b - (LIGHT[1] / LIGHT[2]) * h;
-    return [(sa - sb) * C30, (sa + sb) * S30 - z0];
+    return this.project(sa, sb, z0);
   }
 }
 
@@ -535,6 +541,72 @@ export const decal = (o: Vec3, u: Vec3, v: Vec3, svg: string, rect?: Decal["rect
   rect ? { o, u, v, svg, rect } : { o, u, v, svg };
 
 /** A decal's covered corners in 3D (just its origin when it declares no rect). */
+type Affine = [number, number, number, number, number, number];
+/** Largest gap (drawing units) allowed between a decal piece and the plane it lies on. */
+const DECAL_TOLERANCE = 0.4;
+let clipSerial = 0;
+
+/**
+ * The SVG matrix that lays a decal on its plane. In isometric that is exact
+ * from the origin's axes. In perspective no one matrix is exact; the one that
+ * fits the decal's area best (least squares over a 3 × 3 grid of its rect) is
+ * close for a small decal, and `decalPieces` tiles a large one.
+ */
+export function decalMatrix(view: View, d: Decal): Affine {
+  if (!view.eye || !d.rect) {
+    const o = view.P(d.o), pu = view.P(add(d.o, d.u)), pv = view.P(add(d.o, d.v));
+    return [pu[0] - o[0], pu[1] - o[1], pv[0] - o[0], pv[1] - o[1], o[0], o[1]];
+  }
+  return fitOver(view, d, d.rect).m;
+}
+
+/** The least-squares matrix over a sub-rect of a decal, and its worst gap there. */
+function fitOver(view: View, d: Decal, r: readonly [number, number, number, number]): { m: Affine; err: number } {
+  const [x0, y0, x1, y1] = r;
+  const local: [number, number][] = [];
+  for (const fx of [0, 0.5, 1]) for (const fy of [0, 0.5, 1]) local.push([x0 + (x1 - x0) * fx, y0 + (y1 - y0) * fy]);
+  const screen = local.map(([a, b]) => view.P(add(d.o, add(scale(d.u, a), scale(d.v, b)))));
+  let sxx = 0, sxy = 0, syy = 0, sx = 0, sy = 0;
+  for (const [a, b] of local) { sxx += a * a; sxy += a * b; syy += b * b; sx += a; sy += b; }
+  const m = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, local.length]];
+  const det3 = (q: number[][]) => q[0][0] * (q[1][1] * q[2][2] - q[1][2] * q[2][1]) - q[0][1] * (q[1][0] * q[2][2] - q[1][2] * q[2][0]) + q[0][2] * (q[1][0] * q[2][1] - q[1][1] * q[2][0]);
+  const D = det3(m);
+  const solve = (axis: 0 | 1): [number, number, number] => {
+    let ra = 0, rb = 0, rc = 0;
+    local.forEach(([a, b], i) => { const t = screen[i][axis]; ra += a * t; rb += b * t; rc += t; });
+    if (Math.abs(D) < 1e-12) return [0, 0, rc / local.length];
+    const col = (c: number) => m.map((row, k) => row.map((v, j) => (j === c ? [ra, rb, rc][k] : v)));
+    return [det3(col(0)) / D, det3(col(1)) / D, det3(col(2)) / D];
+  };
+  const [A, B, C] = solve(0), [E, F, G] = solve(1);
+  let err = 0;
+  local.forEach(([a, b], i) => { err = Math.max(err, Math.hypot(A * a + B * b + C - screen[i][0], E * a + F * b + G - screen[i][1])); });
+  return { m: [A, E, B, F, C, G], err };
+}
+
+/**
+ * A decal as pieces, each with its own matrix and (when split) the part of the
+ * decal it shows. In perspective a decal too large for one matrix (a piano's
+ * plate, 140 long: one matrix leaves its far pins units away from the strings)
+ * is tiled until every piece is within DECAL_TOLERANCE of its plane.
+ */
+export function decalPieces(view: View, d: Decal): { m: Affine; clip?: [number, number, number, number] }[] {
+  if (!view.eye || !d.rect) return [{ m: decalMatrix(view, d) }];
+  const whole = fitOver(view, d, d.rect);
+  if (whole.err <= DECAL_TOLERANCE) return [{ m: whole.m }];
+  // The gap grows with the square of a piece's size: split each long side enough.
+  const [x0, y0, x1, y1] = d.rect;
+  const n = Math.min(6, Math.ceil(Math.sqrt(whole.err / DECAL_TOLERANCE)));
+  const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+  const nx = w >= h / 3 ? n : 1, ny = h >= w / 3 ? n : 1;
+  const out: { m: Affine; clip: [number, number, number, number] }[] = [];
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+    const r: [number, number, number, number] = [x0 + ((x1 - x0) * i) / nx, y0 + ((y1 - y0) * j) / ny, x0 + ((x1 - x0) * (i + 1)) / nx, y0 + ((y1 - y0) * (j + 1)) / ny];
+    out.push({ m: fitOver(view, d, r).m, clip: r });
+  }
+  return out;
+}
+
 export function decalCorners(d: Decal): Vec3[] {
   if (!d.rect) return [d.o];
   const [x0, y0, x1, y1] = d.rect;
@@ -614,7 +686,12 @@ export function orderByBoxes<T extends Sortable>(items: T[]): T[] {
       if (pick < 0 || items[i].depth < items[pick].depth) pick = i;
     }
     if (pick < 0) {
-      for (let i = 0; i < n; i++) if (!done[i] && (pick < 0 || items[i].depth < items[pick].depth)) pick = i;
+      // A cycle: free the item that waits on the fewest others (farthest first on a tie),
+      // so nothing outside the cycle is drawn before what must come before it.
+      for (let i = 0; i < n; i++) {
+        if (done[i]) continue;
+        if (pick < 0 || inDeg[i] < inDeg[pick] || (inDeg[i] === inDeg[pick] && items[i].depth < items[pick].depth)) pick = i;
+      }
     }
     done[pick] = true;
     out.push(items[pick]);
@@ -715,11 +792,17 @@ function partSvg(view: View, p: Part): string {
   if (ink) s += `<path class="ink" d="${ink}"/>`;
   for (const st of p.strokes) s += `<path class="${st.cls}" d="${pathOf(st.pts.map((q) => view.P(q)), false)}"/>`;
   for (const d of p.decals) {
-    if (!view.facing(cross(d.u, d.v))) continue;
-    // The plane's local axes at the decal's origin (exact in isometric; in perspective, true at the origin).
-    const o = view.P(d.o), pu = view.P(add(d.o, d.u)), pv = view.P(add(d.o, d.v));
-    const u = [pu[0] - o[0], pu[1] - o[1]], v = [pv[0] - o[0], pv[1] - o[1]];
-    s += `<g transform="matrix(${[u[0], u[1], v[0], v[1], o[0], o[1]].map((x) => x.toFixed(4)).join(" ")})">${d.svg}</g>`;
+    if (!view.sees(d.rect ? decalCorners(d) : [d.o, add(d.o, d.u), add(d.o, d.v)], cross(d.u, d.v))) continue;
+    for (const piece of decalPieces(view, d)) {
+      const m = piece.m.map((x) => x.toFixed(4)).join(" ");
+      if (!piece.clip) {
+        s += `<g transform="matrix(${m})">${d.svg}</g>`;
+        continue;
+      }
+      // A tile: the decal clipped to this piece (a hair of overlap hides the seams).
+      const [cx0, cy0, cx1, cy1] = piece.clip, e = 0.05, id = `dc${++clipSerial}`;
+      s += `<g transform="matrix(${m})"><clipPath id="${id}"><rect x="${f1(Math.min(cx0, cx1) - e)}" y="${f1(Math.min(cy0, cy1) - e)}" width="${f1(Math.abs(cx1 - cx0) + 2 * e)}" height="${f1(Math.abs(cy1 - cy0) + 2 * e)}"/></clipPath><g clip-path="url(#${id})">${d.svg}</g></g>`;
+    }
   }
   if (!s) return "";
   const cls = `p m-${p.mat}${p.cls ? " " + p.cls : ""}`;

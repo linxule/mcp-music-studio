@@ -1230,7 +1230,9 @@ let voiceNames: string[] = [];
 
 /** Adopt the engraved score's voices (before anything primes it). */
 function syncVoices(tune: ABCJS.TuneObject | undefined): void {
+  const before = voiceNames.join("\n");
   voiceNames = tune ? tuneVoices(tune.lines as unknown as TuneLineLike[]).names : [];
+  if (voiceNames.join("\n") !== before) resetJoin();
   voiceMutes.setVoiceCount(voiceNames.length);
   syncPracticeRow();
 }
@@ -1427,6 +1429,7 @@ let joinedVoices: number[] = [];
 
 /** Take over a player's part: mute its voices (they show as "your part"), fetch its samples. */
 function joinPart(player: Player | null): void {
+  const before = voiceMutes.voicesOff()?.join() ?? "";
   for (const v of joinedVoices) if (voiceMutes.isMuted(v)) voiceMutes.toggle(v);
   joinedVoices = [];
   if (player) {
@@ -1436,10 +1439,25 @@ function joinPart(player: Player | null): void {
         joinedVoices.push(v);
       }
     }
-    void liveVoice.preload(player.program, player.low - 12, player.high + 12);
+    void liveVoice.preload(player.program, player.low, player.high);
   }
+  // Nothing to quiet (the voice was already muted): no re-prime, no gap in the music.
+  if ((voiceMutes.voicesOff()?.join() ?? "") === before) return;
   syncPracticeRow();
   if (state.visualObj && state.synthControl) void applySettings(undefined, true);
+}
+
+/** Only a score voice can be muted; a style's chords, bass and drums cannot (they come after the voices). */
+const canJoinPart = (player: Player) => (player.tracks ?? []).some((v) => v < voiceMutes.voiceCount);
+
+/**
+ * The score's voices changed under a joined part: their numbers may no longer
+ * name the same voices, so the part is handed back (the voices Join muted are
+ * unmuted — those mutes were Join's, not the listener's).
+ */
+function resetJoin(): void {
+  if (stageView.joinedPart) stageView.setJoined(null);
+  joinedVoices = [];
 }
 
 const stageView = new StageView({
@@ -1456,6 +1474,8 @@ const stageView = new StageView({
   },
   noteOff: (program, pitch) => liveVoice.noteOff(program, pitch),
   join: joinPart,
+  canJoin: canJoinPart,
+  warm: (program, low, high) => void liveVoice.preload(program, low, high),
 });
 sheetSectionEl.before(stageView.el);
 
@@ -2544,6 +2564,7 @@ async function applyScoreInput(args: Record<string, unknown>, transport: RenderT
 
   state.currentInstrument = preparedInput.instrument;
   // A new piece plays every voice, and loops nothing.
+  resetJoin();
   voiceMutes.setVoiceCount(0);
   practiceLoop = null;
   // A new tool call hands the instrument back to the score (#25).

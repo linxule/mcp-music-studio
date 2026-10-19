@@ -13,7 +13,9 @@ export interface Stop { string: number; fret: number }
  * Choose a string and fret for each pitch, at most one note per string: the
  * hand position a teacher would show first (low frets, a narrow span, open
  * strings welcome). Brute force — a chord has at most as many notes as the
- * instrument has strings.
+ * instrument has strings. A note no free string can reach is left out (the
+ * most notes placed wins): a cello voicing G7 at G3 B3 D4 F4 needs the A
+ * string twice, and must still show the other three, not go dark.
  */
 export function assignStops(pitches: readonly number[], tuning: readonly number[], maxFret: number): Stop[] {
   const lowest = tuning[0], highest = tuning[tuning.length - 1] + maxFret;
@@ -22,14 +24,20 @@ export function assignStops(pitches: readonly number[], tuning: readonly number[
   let bestCost = Infinity;
   const used = new Array<boolean>(tuning.length).fill(false);
   const chosen: Stop[] = [];
+  const SKIPPED = 1000;
+  let skipped = 0;
   const walk = (i: number) => {
     if (i === wanted.length) {
       const fretted = chosen.filter((s) => s.fret > 0).map((s) => s.fret);
       const span = fretted.length ? Math.max(...fretted) - Math.min(...fretted) : 0;
-      const cost = chosen.reduce((sum, s) => sum + s.fret, 0) + span * 3 + (span > 4 ? 40 : 0);
+      const cost = skipped * SKIPPED + chosen.reduce((sum, s) => sum + s.fret, 0) + span * 3 + (span > 4 ? 40 : 0);
       if (cost < bestCost) { bestCost = cost; best = chosen.map((s) => ({ ...s })); }
       return;
     }
+    // Leave this note out (only worth it when nothing better places it).
+    skipped++;
+    if (skipped * SKIPPED < bestCost) walk(i + 1);
+    skipped--;
     for (let s = 0; s < tuning.length; s++) {
       const fret = wanted[i] - tuning[s];
       if (used[s] || fret < 0 || fret > maxFret) continue;
@@ -105,10 +113,14 @@ export function neckParts(n: NeckSpec): Part[] {
       }),
     );
     for (let k = 0; k <= n.frets; k++) {
-      // The open string's cell sits just above the nut, like a chord chart's ○.
-      const top = k === 0 ? n.nutZ + 3.2 : stopZ(n, k - 1);
-      const bottom = k === 0 ? n.nutZ + 0.4 : stopZ(n, k);
-      const zc = k === 0 ? n.nutZ + 1.8 : bottom + (top - bottom) * 0.42;
+      // The open string's cell sits just above the nut, like a chord chart's ○. A
+      // fretted stop is the cell behind its fret; a fretless one (the violin
+      // family) is the exact place the pitch sounds, its cell halfway to each
+      // neighbour.
+      const fretless = !n.fretted && k > 0;
+      const top = k === 0 ? n.nutZ + 3.2 : fretless ? (stopZ(n, k - 1) + stopZ(n, k)) / 2 : stopZ(n, k - 1);
+      const bottom = k === 0 ? n.nutZ + 0.4 : fretless ? (stopZ(n, k) + stopZ(n, k + 1)) / 2 : stopZ(n, k);
+      const zc = k === 0 ? n.nutZ + 1.8 : fretless ? stopZ(n, k) : bottom + (top - bottom) * 0.42;
       const xc = stringX(n, i, zc);
       const spacing = (2 * Math.abs(stringX(n, 0, zc))) / (strings - 1);
       const w = spacing;
