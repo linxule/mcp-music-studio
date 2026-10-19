@@ -164,10 +164,24 @@ const focused = await f.evaluate(() => document.activeElement?.id);
 check(sel.text === "B,,2", "with the editor open, a click selects the bass note's ABC", JSON.stringify(sel));
 check(focused === "abc-editor", "…and a mouse click focuses the editor on it", String(focused));
 
-// Shift extends.
-await clickNote(0, 4);
-await clickNote(0, 7, ["Shift"]);
-sel = await editor();
+// Shift extends. Wait for the first click's selection before Shift-clicking:
+// without the wait, a slow first report left nothing to extend (flaked in CI).
+const settle = async (want) => {
+  for (let i = 0; i < 30; i++) {
+    const s = await editor();
+    if (s.text === want) return s;
+    await sleep(100);
+  }
+  return editor();
+};
+async function clickThenShift(voice, from, to) {
+  const before = (await editor()).text;
+  await clickNote(voice, from);
+  for (let i = 0; i < 30 && (await editor()).text === before; i++) await sleep(100);
+  await clickNote(voice, to, ["Shift"]);
+}
+await clickThenShift(0, 4, 7);
+sel = await settle("g2 a2 b2 c'2");
 check(sel.text === "g2 a2 b2 c'2", "Shift-click extends the selection to the second note", JSON.stringify(sel));
 const marked = await f.evaluate(() => document.querySelectorAll("#sheet-music .abcjs-note_selected").length);
 check(marked >= 4, `the selection is marked on the score (${marked} elements)`);
@@ -197,9 +211,8 @@ const small = await editor();
 check(small.text === "b2", "control: the same press moving 5 px selects the note", JSON.stringify(small));
 
 // ── 2. Loop bars 2–3 (inside the tune) ──────────────────────────────────────
-await clickNote(0, 4);
-await clickNote(0, 11, ["Shift"]);
-sel = await editor();
+await clickThenShift(0, 4, 11);
+sel = await settle("g2 a2 b2 c'2 | c'2 b2 a2 g2");
 check(sel.text === "g2 a2 b2 c'2 | c'2 b2 a2 g2", "selected bars 2–3", JSON.stringify(sel));
 const startsBefore = (await starts()).length;
 await f.click(".practice-loop-btn");
@@ -247,8 +260,7 @@ await sleep(1200);
 
 // ── 4. Loop through the tune's end (bars 3–4) ───────────────────────────────
 await f.click(".practice-loop-btn"); // off
-await clickNote(0, 8);
-await clickNote(0, 15, ["Shift"]);
+await clickThenShift(0, 8, 15);
 await f.click(".practice-loop-btn");
 const seenEnd = [];
 for (let t = 0; t < 2.6 * 2 * BAR_S * 1000; t += 50) {
