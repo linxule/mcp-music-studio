@@ -102,10 +102,22 @@ await f.locator('.stage-svg g[data-obj="cello"] .p:not([data-k])').first().click
 await sleep(600);
 check(await f.evaluate(() => document.querySelector(".stage")?.classList.contains("close")), "pressing an instrument looks closer");
 const vb = () => f.evaluate(() => document.querySelector(".stage-svg").getAttribute("viewBox").split(" ").map(Number));
-const hands = await vb();
+// The framing eases over ~0.4 s, slower on a loaded CI runner: read it once it has stopped moving.
+const settled = async (from) => {
+  // First let it leave `from` (the animation may not have started yet), then wait for it to stop.
+  for (let i = 0; from && i < 20 && (await vb()).every((v, k) => Math.abs(v - from[k]) < 0.01); i++) await sleep(100);
+  let last = await vb();
+  for (let i = 0; i < 40; i++) {
+    await sleep(120);
+    const now = await vb();
+    if (now.every((v, k) => Math.abs(v - last[k]) < 0.01)) return now;
+    last = now;
+  }
+  return last;
+};
+const hands = await settled();
 await f.click('.stage-btn[data-act="mode"]');
-await sleep(700);
-const whole = await vb();
+const whole = await settled(hands);
 check(whole[3] > hands[3] * 1.3, "whole frames the entire instrument", `${hands[3].toFixed(0)} → ${whole[3].toFixed(0)} tall`);
 await f.click('.stage-btn[data-act="in"]');
 await sleep(100);
