@@ -23,7 +23,12 @@ const built = existsSync(file("dist/strudel-app.html")) && existsSync(file("dist
 // 0.12: 396k → 420k for two real features in the widget (sing()'s word analysis
 // and YIN in stage-runtime, and video recording) — 400.7k after both. The
 // markers below, not this number, are what catch tool-defs leaking in.
-const BUDGET = { "dist/strudel-app.html": 420_000, "dist/mcp-app.html": 915_000 } as const;
+// Unreleased: 915k → 1,000k for the sheet widget's Stage (src/stage/), an
+// opt-in band of playable instruments built from real dimensions — ~129k, most
+// of it instrument geometry (violin family 19k, guitars 17k, piano 13k, drums
+// 13k minified) — 977k after it. Decided with the user rather than trimming
+// the instruments.
+const BUDGET = { "dist/strudel-app.html": 420_000, "dist/mcp-app.html": 1_000_000 } as const;
 
 /** Each marker must really be in its source, or its absence from a widget proves nothing. */
 const MARKERS: Array<{ marker: string; source: string; what: string; widgets: Array<keyof typeof BUDGET> }> = [

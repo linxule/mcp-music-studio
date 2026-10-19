@@ -1,0 +1,6 @@
+/* Clarinet (src/stage/figures/clarinet.ts): the rim of the plain L3 tone hole, drilled into black wood. */
+.stage-svg .clar-rim { fill: none; stroke: var(--lo); stroke-width: 0.9; vector-effect: non-scaling-stroke; }
+/* Smooth tops drawn over the solids (the engine rounds points to 0.1 unit): in the part's own tones, so they light with it. */
+.stage-svg .clar-top { fill: var(--tl); stroke: var(--line); stroke-width: 0.7; vector-effect: non-scaling-stroke; }
+.stage-svg .clar-band { fill: none; stroke: var(--tl); }
+.stage-svg .clar-edge { fill: none; stroke: var(--line); stroke-width: 0.7; vector-effect: non-scaling-stroke; }

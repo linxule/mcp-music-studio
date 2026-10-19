@@ -165,6 +165,44 @@ K:G
     },
   },
   {
+    // Five instruments, one per voice: the Stage's chamber-music demo (flute,
+    // clarinet, violin, cello, piano). Minuet in G (attr. Petzold, public
+    // domain), arranged for the harness.
+    id: "abc-quintet",
+    label: "ABC — quintet (Stage demo)",
+    widget: "abc",
+    args: {
+      title: "Minuet in G",
+      abcNotation: `X:1
+T:Minuet in G
+C:attr. Christian Petzold, arr. for quintet
+M:3/4
+L:1/8
+Q:1/4=112
+K:G
+V:1 name="Flute"
+%%MIDI program 73
+d2 GABc | d2 G2 G2 | e2 cdef | g2 G2 G2 | c2 dcBA | B2 cBAG | F2 GABG | A6 |
+d2 GABc | d2 G2 G2 | e2 cdef | g2 G2 G2 | c2 dcBA | B2 cBAG | A2 BAGF | G6 |]
+V:2 name="Clarinet"
+%%MIDI program 71
+B4 A2 | B4 B2 | c4 A2 | B4 B2 | A4 F2 | G4 D2 | D4 F2 | F6 |
+B4 A2 | B4 B2 | c4 A2 | B4 B2 | A4 F2 | G4 E2 | F4 D2 | D6 |]
+V:3 name="Violin"
+%%MIDI program 40
+g4 f2 | g2 d2 B2 | c4 e2 | d6 | e4 c2 | d4 B2 | A2 d2 c2 | d6 |
+g4 f2 | g2 d2 B2 | c4 e2 | d6 | e2 f2 e2 | d4 B2 | c2 d2 c2 | B6 |]
+V:4 name="Cello" clef=bass
+%%MIDI program 42
+G,4 D,2 | G,4 B,,2 | C,4 E,2 | G,4 D,2 | A,,4 C,2 | G,,4 B,,2 | D,4 F,2 | D,6 |
+G,4 D,2 | G,4 B,,2 | C,4 E,2 | G,4 D,2 | C,4 A,,2 | B,,4 G,,2 | D,4 D,,2 | G,,6 |]
+V:5 name="Piano"
+%%MIDI program 0
+z2 [G,B,D]2 [G,B,D]2 | z2 [G,B,D]2 [G,B,D]2 | z2 [CEG]2 [CEG]2 | z2 [G,B,D]2 [G,B,D]2 | z2 [A,CE]2 [A,CE]2 | z2 [G,B,D]2 [G,B,D]2 | z2 [DFA]2 [DFAc]2 | z2 [DFA]2 [DFA]2 |
+z2 [G,B,D]2 [G,B,D]2 | z2 [G,B,D]2 [G,B,D]2 | z2 [CEG]2 [CEG]2 | z2 [G,B,D]2 [G,B,D]2 | z2 [CEG]2 [CEG]2 | z2 [G,B,D]2 [G,B,D]2 | z2 [DFAc]2 [DFAc]2 | [G,B,D]6 |]`,
+    },
+  },
+  {
     // Two voices, so the Edit pane's bar counting (per voice, not summed) and
     // the multi-stave re-render are both easy to eyeball.
     id: "abc-two-voice",

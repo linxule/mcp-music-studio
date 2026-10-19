@@ -1,0 +1,6 @@
+/* Marimba (mallets.ts): the suspension cord, bolt heads and the open tube mouths. */
+.stage-svg .mb-cord { fill: none; stroke: var(--mid); stroke-width: 0.7; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.stage-svg .mb-bolt { fill: var(--s1); stroke: var(--mid); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.stage-svg .mb-mouth { fill: var(--k1); stroke: var(--mid); stroke-width: 0.4; vector-effect: non-scaling-stroke; }
+.stage-svg .mb-hole { fill: var(--k1); }
+.stage-svg .mb-seam { fill: none; stroke: var(--lo); stroke-width: 0.5; vector-effect: non-scaling-stroke; }

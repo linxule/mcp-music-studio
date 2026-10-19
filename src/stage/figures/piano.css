@@ -1,0 +1,14 @@
+/* Grand piano and stage keyboard line art (src/stage/figures/piano.ts). Paper and line tones only. */
+.stage-svg .gp-open { fill: var(--s1); stroke: var(--lo); stroke-width: 0.6; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.stage-svg .gp-hole { fill: var(--s1); stroke: var(--mid); stroke-width: 0.6; vector-effect: non-scaling-stroke; }
+.stage-svg .gp-bolt, .stage-svg .gp-pin, .stage-svg .gp-hitch { fill: var(--mid); }
+.stage-svg .gp-bridge { fill: none; stroke: var(--mid); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.stage-svg .gp-bridge-top { fill: none; stroke: var(--s2); stroke-width: 1.1; stroke-linecap: round; stroke-linejoin: round; }
+.stage-svg .gp-str { fill: none; stroke: var(--lo); stroke-width: 0.35; vector-effect: non-scaling-stroke; }
+.stage-svg .gp-bass { fill: none; stroke: var(--mid); stroke-width: 0.75; vector-effect: non-scaling-stroke; }
+.stage-svg .gp-damp { fill: var(--k3); }
+.stage-svg .gp-trim { fill: none; stroke: var(--lo); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.stage-svg .gp-lock { fill: var(--s1); stroke: var(--mid); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.stage-svg .sk-slot { fill: var(--k2); }
+.stage-svg .sk-tick { fill: none; stroke: var(--hi); stroke-width: 0.8; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.stage-svg .sk-led { fill: var(--faint); stroke: var(--mid); stroke-width: 0.4; vector-effect: non-scaling-stroke; }

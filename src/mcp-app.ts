@@ -91,6 +91,7 @@ import {
   queueWarp,
   readTransport,
   reprime,
+  transportPosition,
   restoreLoop,
   seekTransport,
   trackTransport,
@@ -104,6 +105,11 @@ import {
   type TimingEventLike as SwingTimingEvent,
 } from "./swing-timing";
 import { VERSION } from "./version";
+import { StageView } from "./stage/stage-view";
+import { LiveVoice } from "./stage/live-voice";
+import type { Player } from "./stage/stage-model";
+import { playersFromBuffer, playersFromTune, type StageFeed } from "./stage/stage-feed";
+import "./stage/stage.css";
 
 // =============================================================================
 // State
@@ -318,10 +324,13 @@ function currentSynthOptions(): Record<string, unknown> {
  */
 interface SwingCapture {
   swung: NoteMapNote[][] | null;
+  /** The same map for the Stage (src/stage/stage-feed.ts): followSwing consumes `swung`. */
+  stage?: NoteMapNote[][] | null;
 }
 
 function captureSwungNoteMap(tracks: NoteMapNote[][], context: SwingCapture): NoteMapNote[][] {
   context.swung = tracks;
+  context.stage = tracks;
   return tracks;
 }
 
@@ -449,6 +458,7 @@ const cursorControl: CursorControl & { extraMeasuresAtBeginning?: number } = {
     followSwing(controller);
     routeRoom(controller);
     fixSeeks(controller);
+    feedStageTimeline(controller);
   },
 };
 
@@ -646,6 +656,7 @@ function reengraveForInstrument(): void {
   if (!visualObj || (visualObj as unknown as unknown[]).length === 0) return;
   state.visualObj = visualObj;
   sheetSectionEl.scrollTop = scrollTop;
+  refreshStage();
 }
 
 /**
@@ -1219,7 +1230,9 @@ let voiceNames: string[] = [];
 
 /** Adopt the engraved score's voices (before anything primes it). */
 function syncVoices(tune: ABCJS.TuneObject | undefined): void {
+  const before = voiceNames.join("\n");
   voiceNames = tune ? tuneVoices(tune.lines as unknown as TuneLineLike[]).names : [];
+  if (voiceNames.join("\n") !== before) resetJoin();
   voiceMutes.setVoiceCount(voiceNames.length);
   syncPracticeRow();
 }
@@ -1376,6 +1389,191 @@ function syncPracticeRow(): void {
 editorEl.addEventListener("select", highlightScoreSelection);
 editorEl.addEventListener("keyup", highlightScoreSelection);
 editorEl.addEventListener("pointerup", () => setTimeout(highlightScoreSelection, 0));
+
+// =============================================================================
+// Stage — the instruments playing the score (src/stage/)
+// =============================================================================
+//
+// A playing room drawn above the score: one instrument per sound in the tune's
+// audio (the voices, and a style's chords, bass and drums), each lighting what
+// it plays as the transport moves — keys go down, strings ring with a dot
+// where the finger stops them, holes close. For someone learning a part, with
+// a voice muted in the practice row, that voice's instrument still shows its
+// notes (outlined): the part is theirs to play. Every key, drum and string
+// stop can be pressed and sounds through the same synth as the click-to-hear
+// path. Off until the Stage button is pressed; the choice is remembered.
+
+const STAGE_PREF_KEY = "music-studio-stage";
+
+/** Playing along: held notes from the score's own samples, through the Room (src/stage/live-voice.ts). */
+const liveVoice = new LiveVoice({
+  context: audioContext,
+  output(ctx) {
+    try {
+      return liveRoom.inputFor(ctx);
+    } catch {
+      return ctx.destination;
+    }
+  },
+  bank() {
+    const o = currentSynthOptions();
+    return {
+      url: typeof o.soundFontUrl === "string" ? o.soundFontUrl : SOUNDFONTS[DEFAULT_SOUNDFONT].url,
+      multiplier: typeof o.soundFontVolumeMultiplier === "number" ? o.soundFontVolumeMultiplier : 1,
+    };
+  },
+});
+
+/** Voices Join muted — and only those: a voice already muted stays muted when you leave. */
+let joinedVoices: number[] = [];
+
+/** Take over a player's part: mute its voices (they show as "your part"), fetch its samples. */
+function joinPart(player: Player | null): void {
+  const before = voiceMutes.voicesOff()?.join() ?? "";
+  for (const v of joinedVoices) if (voiceMutes.isMuted(v)) voiceMutes.toggle(v);
+  joinedVoices = [];
+  if (player) {
+    for (const v of player.tracks ?? []) {
+      if (v < voiceMutes.voiceCount && !voiceMutes.isMuted(v)) {
+        voiceMutes.toggle(v);
+        joinedVoices.push(v);
+      }
+    }
+    void liveVoice.preload(player.program, player.low, player.high);
+  }
+  // Nothing to quiet (the voice was already muted): no re-prime, no gap in the music.
+  if ((voiceMutes.voicesOff()?.join() ?? "") === before) return;
+  syncPracticeRow();
+  if (state.visualObj && state.synthControl) void applySettings(undefined, true);
+}
+
+/** Only a score voice can be muted; a style's chords, bass and drums cannot (they come after the voices). */
+const canJoinPart = (player: Player) => (player.tracks ?? []).some((v) => v < voiceMutes.voiceCount);
+
+/**
+ * The score's voices changed under a joined part: their numbers may no longer
+ * name the same voices, so the part is handed back (the voices Join muted are
+ * unmuted — those mutes were Join's, not the listener's).
+ */
+function resetJoin(): void {
+  if (stageView.joinedPart) stageView.setJoined(null);
+  joinedVoices = [];
+}
+
+const stageView = new StageView({
+  position() {
+    const control = state.synthControl;
+    if (!control) return { t: 0, running: false };
+    const timer = (control as unknown as { timer?: { isRunning?: boolean } | null }).timer;
+    return { t: transportPosition(control), running: Boolean(timer?.isRunning) };
+  },
+  noteOn(program, pitch, velocity) {
+    if (disposed) return;
+    void resumeAudioContext(audioContext(), AUDIO_RESUME_TIMEOUT_MS);
+    liveVoice.noteOn(program, pitch, velocity);
+  },
+  noteOff: (program, pitch) => liveVoice.noteOff(program, pitch),
+  join: joinPart,
+  canJoin: canJoinPart,
+  warm: (program, low, high) => void liveVoice.preload(program, low, high),
+});
+sheetSectionEl.before(stageView.el);
+
+/** The band from the last prime (exact timing), until the score changes. */
+let stageTimeline: StageFeed | null = null;
+let stageDirty = true;
+
+function readStagePref(): boolean {
+  try {
+    return localStorage.getItem(STAGE_PREF_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
+const stageBtn = document.createElement("button");
+stageBtn.className = "toolbar-btn toolbar-btn-text stage-toggle";
+stageBtn.textContent = "Stage";
+stageBtn.title = "Stage: watch the instruments play the score — press them to play along";
+
+function syncStageButton(): void {
+  stageBtn.setAttribute("aria-pressed", String(stageView.visible));
+  stageBtn.setAttribute("aria-label", stageView.visible ? "Stage shown" : "Stage hidden");
+}
+
+stageBtn.addEventListener("click", () => {
+  const on = !stageView.visible;
+  setStageVisible(on);
+  try {
+    localStorage.setItem(STAGE_PREF_KEY, on ? "on" : "off");
+  } catch { /* the preference just isn't remembered */ }
+});
+toolbarEl.appendChild(stageBtn);
+
+function setStageVisible(on: boolean): void {
+  if (on) feedStage();
+  stageView.setVisible(on);
+  syncStageButton();
+}
+
+/** The score changed (a new tool call, an edit, an instrument): the band may have too. */
+function refreshStage(): void {
+  stageDirty = true;
+  stageTimeline = null;
+  if (stageView.visible) feedStage();
+}
+
+function stageOptions(): Record<string, unknown> {
+  const { sequenceCallback: _s, callbackContext: _c, ...options } = currentSynthOptions();
+  return options;
+}
+
+function feedStage(): void {
+  const tune = state.visualObj?.[0];
+  if (stageTimeline) {
+    stageView.setPlayers(stageTimeline.players, displayTitle(), stageTimeline.beatSeconds);
+    stageDirty = false;
+    return;
+  }
+  if (!stageDirty) return;
+  stageDirty = false;
+  if (!tune) {
+    stageView.setPlayers([], displayTitle());
+    return;
+  }
+  try {
+    const feed = playersFromTune(tune, stageOptions());
+    stageView.setPlayers(feed?.players ?? [], displayTitle(), feed?.beatSeconds);
+  } catch (error) {
+    console.debug("Stage: couldn't read the tune's audio:", error);
+  }
+}
+
+/** After every prime: the notes exactly as they were rendered (tempo %, swing, mutes). */
+function feedStageTimeline(controller: unknown): void {
+  // This runs inside abcjs's go() (cursorControl.onReady): it must never throw
+  // there, or the load reads as failed on every ▶. Read the notes now (the
+  // swung map is per prime); draw later, outside the prime chain.
+  if (controller !== state.synthControl) return;
+  try {
+    stageTimeline = playersFromBuffer(controller, state.visualObj?.[0]);
+  } catch (error) {
+    stageTimeline = null;
+    console.debug("Stage: couldn't read the primed audio:", error);
+  }
+  if (!stageTimeline || !stageView.visible) return;
+  setTimeout(() => {
+    try {
+      feedStage();
+    } catch (error) {
+      console.debug("Stage: couldn't draw the band:", error);
+    }
+  }, 0);
+}
+
+/** Sound one pressed note through the widget's synth settings and the Room. */
+
+setStageVisible(readStagePref());
 
 // =============================================================================
 // ABC Source Editor
@@ -1617,6 +1815,7 @@ function engraveEdit(abc: string, effective: string, messages: string[]): ABCJS.
   state.visualObj = visualObj;
   state.currentAbc = abc;
   syncVoices(visualObj[0]);
+  refreshStage();
   lastEditRendered = abc;
   renderTitle();
   syncInstrumentSelect();
@@ -2191,6 +2390,7 @@ async function renderAbc(
       throw new Error("Failed to parse music notation");
     }
     syncVoices(state.visualObj[0]);
+    refreshStage();
 
     if (!ABCJS.synth.supportsAudio()) {
       throw new Error("Audio not supported in this browser");
@@ -2364,6 +2564,7 @@ async function applyScoreInput(args: Record<string, unknown>, transport: RenderT
 
   state.currentInstrument = preparedInput.instrument;
   // A new piece plays every voice, and loops nothing.
+  resetJoin();
   voiceMutes.setVoiceCount(0);
   practiceLoop = null;
   // A new tool call hands the instrument back to the score (#25).
@@ -2518,6 +2719,8 @@ app.ontoolcancelled = (params) => {
 // continuation, including ones whose generation is still current.
 app.onteardown = () => {
   disposed = true;
+  stageView.setVisible(false); // stops its frame loop; the stored preference is untouched
+  liveVoice.allOff();
   studioSession.dispose();
   newGeneration();
   cancelPartialRender();

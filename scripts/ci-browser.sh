@@ -24,9 +24,9 @@ mkdir -p "$LOGS"
 CHECKS=("$@")
 if [ ${#CHECKS[@]} -eq 0 ]; then
   if [ "${BROWSER:-chromium}" = "webkit" ]; then
-    CHECKS=(plain session controls remember swap studio share-player share-score score-click record)
+    CHECKS=(plain session controls remember swap studio share-player share-score score-click score-stage record)
   else
-    CHECKS=(plain session controls sensors remember swap studio share-player share-score share-webmcp score-click record)
+    CHECKS=(plain session controls sensors remember swap studio share-player share-score share-webmcp score-click score-stage record)
   fi
 fi
 

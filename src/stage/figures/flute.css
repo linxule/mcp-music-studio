@@ -1,0 +1,6 @@
+/* The flute's own line-art classes (src/stage/figures/flute.ts). */
+.stage-svg .p.m-flsteel { --bl: var(--s2); --bm: var(--s1); --bd: var(--lo); }
+.stage-svg .fl-point { fill: var(--s2); stroke: var(--mid); stroke-width: 0.6; vector-effect: non-scaling-stroke; }
+.stage-svg .p.on .fl-point, .stage-svg .p.down .fl-point { fill: var(--accent-l); stroke: var(--accent-d); }
+.stage-svg .fl-bore { fill: var(--k2); }
+.stage-svg .fl-edge { fill: none; stroke: var(--s3); stroke-width: 0.6; vector-effect: non-scaling-stroke; }
