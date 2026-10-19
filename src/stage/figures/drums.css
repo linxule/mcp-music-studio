@@ -1,0 +1,8 @@
+/* Drum kit (drums.ts): drums are the subject (hi lines) but don't shift when hit;
+   the port hole's rim, the beater patch, cymbal tonal grooves, the throne's welt. */
+.stage-svg .kit { --line: var(--hi); }
+.stage-svg .kd-ring { fill: none; stroke: var(--mid); stroke-width: 0.8; vector-effect: non-scaling-stroke; }
+.stage-svg .kd-patch { fill: none; stroke: var(--lo); stroke-width: 0.6; vector-effect: non-scaling-stroke; }
+.stage-svg .kd-groove { fill: none; stroke: var(--faint); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.stage-svg .p.on .kd-groove, .stage-svg .p.down .kd-groove { stroke: var(--accent-d); stroke-opacity: 0.45; }
+.stage-svg .kd-welt { fill: none; stroke: var(--lo); stroke-width: 0.8; stroke-dasharray: 1.2 1; stroke-linecap: round; vector-effect: non-scaling-stroke; }

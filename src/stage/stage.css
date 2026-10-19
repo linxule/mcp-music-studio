@@ -1,0 +1,195 @@
+/* The Stage: the sheet widget's band (src/stage/).
+
+   Anatomy's discipline (github.com/wheresryan22/anatomy, MIT): every solid is
+   filled in close shades of the paper so nearer parts hide farther ones; form
+   is carried by line tones (hi / mid / lo / faint); colour appears only where
+   it means something — what is playing. Ebony and black keys stay dark
+   because they are. Light first, dark follows the host's theme.
+
+   Faces carry only a tone band (l / m / d) and their part's material class;
+   lighting a part, the next note, the user's own part: class changes, never a
+   re-render. The tone variables are registered colours (@property), so a
+   part leaving `.on` fades back instead of snapping. */
+
+@property --tl { syntax: "<color>"; inherits: true; initial-value: #000; }
+@property --tm { syntax: "<color>"; inherits: true; initial-value: #000; }
+@property --td { syntax: "<color>"; inherits: true; initial-value: #000; }
+
+.stage {
+  /* Paper and its shades (about 3% apart), ink and its shades. */
+  --paper: #f7f6f2;
+  --s3: #fdfcf9; --s2: #f1efe9; --s1: #e5e2da;
+  --k3: #4a4844; --k2: #36342f; --k1: #262421;
+  /* Line tones. */
+  --hi: #1c1b19; --mid: #55524c; --lo: #8f8a80; --faint: #cdc8bd;
+  /* The one colour: what is playing. */
+  --accent: #e8590c; --accent-l: #ffb27a; --accent-m: #ff8a3d; --accent-d: #d9480f;
+  --halo: rgba(40, 35, 25, 0.12);
+  position: relative;
+  background: var(--paper);
+  color: var(--hi);
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow: hidden;
+  outline: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .stage {
+    --paper: #18181a;
+    --s3: #2a2a2e; --s2: #232327; --s1: #1d1d20;
+    --k3: #101012; --k2: #0c0c0d; --k1: #080809;
+    --hi: #ededef; --mid: #a3a3a9; --lo: #6b6b72; --faint: #38383e;
+    --accent: #ffa94d; --accent-l: #ffd8a8; --accent-m: #ffa94d; --accent-d: #f76707;
+    --halo: rgba(0, 0, 0, 0.45);
+  }
+}
+:root[data-theme="dark"] .stage {
+  --paper: #18181a;
+  --s3: #2a2a2e; --s2: #232327; --s1: #1d1d20;
+  --k3: #101012; --k2: #0c0c0d; --k1: #080809;
+  --hi: #ededef; --mid: #a3a3a9; --lo: #6b6b72; --faint: #38383e;
+  --accent: #ffa94d; --accent-l: #ffd8a8; --accent-m: #ffa94d; --accent-d: #f76707;
+  --halo: rgba(0, 0, 0, 0.45);
+}
+
+.stage[hidden] { display: none; }
+.stage:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+/* In the sheet widget: a card above the score. Inline it has a fixed height
+   (never vh — the host sizes an inline frame to our own report); fullscreen
+   it takes half the frame. */
+/* Inline: at most 290 px and at most 45% of the host's cap, so a short frame still shows the score. */
+.main > .stage { flex: 0 0 auto; border: 1px solid var(--color-border); border-radius: 8px; --stage-h: min(420px, calc(var(--frame-max-height, 640px) * 0.62)); }
+:root[data-frame="fill"] .main > .stage { --stage-h: clamp(300px, calc(var(--frame-height, 100vh) * 0.6), 900px); }
+@media (max-width: 520px) { .main > .stage { --stage-h: min(260px, calc(var(--frame-max-height, 640px) * 0.5)); } .stage-cap.bl { display: none; } }
+
+.stage-svg { display: block; width: 100%; height: var(--stage-h, 300px); touch-action: manipulation; }
+
+/* The card's four corners: Fig. N, the title, the hint, the live readout. */
+.stage-cap { position: absolute; z-index: 2; display: flex; align-items: center; gap: 8px; letter-spacing: 0.08em; pointer-events: none; }
+.stage-cap > * { pointer-events: auto; }
+/* Long captions clip rather than run into each other. */
+.stage-cap.tr { max-width: 62%; } .stage-cap.bl { max-width: 50%; } .stage-cap.br { max-width: 48%; justify-content: flex-end; }
+.stage-name, .stage-cap.bl, .stage-cap.br { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage-cap.bl, .stage-cap.br { display: block; }
+.stage-cap.tl { top: 9px; left: 12px; }
+.stage-cap.tr { top: 7px; right: 10px; text-transform: uppercase; color: var(--mid); }
+.stage-cap.bl { bottom: 8px; left: 12px; color: var(--lo); text-transform: uppercase; font-size: 11px; }
+.stage-cap.br { bottom: 8px; right: 12px; text-transform: lowercase; }
+.stage-fig { font-weight: 700; }
+.stage-btn {
+  font: inherit; font-size: 12px; line-height: 1; color: var(--hi); background: var(--paper);
+  border: 1px solid var(--lo); border-radius: 999px; padding: 4px 9px; cursor: pointer;
+}
+.stage-btn:hover { border-color: var(--hi); }
+
+/* ---- Solids ---- */
+.stage-svg .p {
+  --bl: var(--s3); --bm: var(--s2); --bd: var(--s1);
+  --tl: var(--bl); --tm: var(--bm); --td: var(--bd);
+  --line: var(--mid);
+  transition: transform 70ms ease-out, --tl 0.6s ease-out, --tm 0.6s ease-out, --td 0.6s ease-out;
+}
+.stage-svg .f { stroke: var(--line); stroke-width: 0.8; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.stage-svg .f.l { fill: var(--tl); }
+.stage-svg .f.m { fill: var(--tm); }
+.stage-svg .f.d { fill: var(--td); }
+/* Strips of a curved surface: closed in their own colour; the outline is drawn once, along rims and silhouette. */
+.stage-svg .f.s.l { stroke: var(--tl); stroke-width: 0.6; }
+.stage-svg .f.s.m { stroke: var(--tm); stroke-width: 0.6; }
+.stage-svg .f.s.d { stroke: var(--td); stroke-width: 0.6; }
+.stage-svg .ink { fill: none; stroke: var(--line); stroke-width: 0.8; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.stage-svg [data-k] { cursor: pointer; }
+/* The halo under each instrument. */
+.stage-svg .shadow { filter: blur(3px); }
+.stage-svg .shadow path { fill: var(--halo); }
+
+/* Materials are tone families, not colours: paper, or ink for what is really dark. */
+.stage-svg .p.m-ebony, .stage-svg .p.m-felt, .stage-svg .p.m-seat, .stage-svg .p.m-screen { --bl: var(--k3); --bm: var(--k2); --bd: var(--k1); --line: var(--hi); }
+.stage-svg .p.m-cell { --bl: transparent; --bm: transparent; --bd: transparent; }
+/* What the player touches is the subject: its lines are `hi`. */
+.stage-svg .key, .stage-svg .cell, .stage-svg .str, .stage-svg .hole, .stage-svg .wkey, .stage-svg .drum, .stage-svg .cym, .stage-svg .bar { --line: var(--hi); }
+
+/* ---- Playing: the only colour ---- */
+.stage-svg .p.on, .stage-svg .p.down { --tl: var(--accent-l); --tm: var(--accent-m); --td: var(--accent-d); --line: var(--accent-d); transition: transform 70ms ease-out; }
+.stage-svg .key.on, .stage-svg .key.down, .stage-svg .bar.on, .stage-svg .bar.down { transform: translateY(1px); }
+.stage-svg .drum.on, .stage-svg .drum.down { transform: translateY(1px); }
+/* Next: outlined in the accent, a beat ahead — where your hand goes next. */
+.stage-svg .p.next:not(.on) .f:not(.s), .stage-svg .p.next:not(.on) .ink { stroke: var(--accent); stroke-width: 1.6; }
+/* Yours: a muted practice voice still shows its notes — dashed, for you to play. */
+.stage-svg .p.yours:not(.on) .f:not(.s), .stage-svg .p.yours:not(.on) .ink { stroke: var(--accent-d); stroke-width: 1.4; stroke-dasharray: 3 2; }
+
+.stage-svg .cym.on, .stage-svg .cym.down { animation: stage-wobble 260ms ease-out; transform-box: fill-box; transform-origin: center; }
+@keyframes stage-wobble {
+  0% { transform: rotate(0) translateY(0); }
+  25% { transform: rotate(-3deg) translateY(1px); }
+  60% { transform: rotate(2deg); }
+  100% { transform: rotate(0); }
+}
+
+/* Strings ring; the stop shows as a dot, like a chord chart; the bow reverses each note. */
+.stage-svg .wire { stroke: var(--mid); stroke-width: 0.7; vector-effect: non-scaling-stroke; fill: none; pointer-events: stroke; }
+.stage-svg .wire.w0 { stroke-width: 1.2; }
+.stage-svg .wire.w1 { stroke-width: 1; }
+.stage-svg .wire.w2 { stroke-width: 0.9; }
+.stage-svg .str.on .wire, .stage-svg .str.down .wire { stroke: var(--accent); stroke-width: 1.4; animation: stage-ring 55ms linear infinite alternate; }
+@keyframes stage-ring { from { transform: translateX(-0.35px); } to { transform: translateX(0.35px); } }
+.stage-svg .hit { fill: transparent; }
+.stage-svg .cell:hover .hit { fill: color-mix(in srgb, var(--accent) 18%, transparent); }
+.stage-svg .cell .dot { fill: none; stroke: none; }
+.stage-svg .cell.on .dot, .stage-svg .cell.down .dot { fill: var(--accent); stroke: var(--hi); stroke-width: 0.8; vector-effect: non-scaling-stroke; }
+.stage-svg .cell.on .dot.open, .stage-svg .cell.down .dot.open { fill: var(--paper); stroke: var(--accent); stroke-width: 1.6; }
+.stage-svg .cell.next:not(.on) .dot { fill: none; stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 1.5 1.2; vector-effect: non-scaling-stroke; }
+.stage-svg .cell.yours:not(.on) .dot { fill: color-mix(in srgb, var(--accent) 30%, transparent); stroke: var(--accent-d); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.stage-svg .fing { display: none; fill: var(--paper); font-family: ui-monospace, Menlo, monospace; font-weight: 800; }
+.stage-svg .cell.on .fing, .stage-svg .cell.down .fing, .stage-svg .cell.yours .fing { display: inline; }
+.stage-svg .bow { transition: transform 600ms linear; }
+.stage-svg .bow.on { transform: translateX(3px); }
+.stage-svg .obj.odd .bow.on { transform: translateX(-3px); }
+
+/* Holes, keys and mouthpieces of the winds. */
+.stage-svg .hole .dot { fill: none; }
+.stage-svg .hole.on .dot, .stage-svg .hole.down .dot { fill: var(--accent); stroke: var(--hi); stroke-width: 0.8; vector-effect: non-scaling-stroke; }
+.stage-svg .hole.next:not(.on) .dot { stroke: var(--accent); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.stage-svg .hole.yours:not(.on) .dot { fill: color-mix(in srgb, var(--accent) 30%, transparent); stroke: var(--accent-d); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.stage-svg .blow.on .mouth, .stage-svg .blow.down .mouth { fill: var(--accent-d); }
+.stage-svg .blow.on .hit { fill: color-mix(in srgb, var(--accent) 30%, transparent); }
+.stage-svg .octmark { fill: var(--accent-d); font-family: ui-monospace, Menlo, monospace; font-weight: 800; opacity: 0; }
+.stage-svg .oct.on .octmark { opacity: 1; }
+
+/* Line-art details (frets, inlays, holes, rosettes, purfling, bow, labels). */
+.stage-svg .fret { stroke: var(--lo); stroke-width: 0.35; }
+.stage-svg .inlay { fill: var(--faint); }
+.stage-svg .tape { stroke: var(--s3); stroke-width: 0.5; stroke-opacity: 0.7; }
+.stage-svg .tonehole, .stage-svg .mouth, .stage-svg .cuphole, .stage-svg .fdot { fill: var(--k1); }
+.stage-svg circle.hole { fill: var(--k1); }
+.stage-svg .ring { fill: none; stroke: var(--mid); stroke-width: 0.9; vector-effect: non-scaling-stroke; }
+.stage-svg .rosette { fill: none; stroke: var(--mid); stroke-width: 0.8; vector-effect: non-scaling-stroke; }
+.stage-svg .guard { fill: var(--s1); stroke: var(--mid); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.stage-svg .fhole { fill: none; stroke: var(--k1); stroke-width: 1.3; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.stage-svg .purfling { fill: none; stroke: var(--lo); stroke-width: 0.7; vector-effect: non-scaling-stroke; }
+.stage-svg .stick { stroke: var(--hi); stroke-width: 1.5; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.stage-svg .hair { stroke: var(--lo); stroke-width: 0.9; vector-effect: non-scaling-stroke; }
+.stage-svg .pole { stroke: var(--mid); stroke-width: 1.3; stroke-linecap: round; vector-effect: non-scaling-stroke; fill: none; }
+.stage-svg .prop { stroke: var(--hi); stroke-width: 1.2; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.stage-svg .wirestrings line, .stage-svg .wire-row line { stroke: var(--faint); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.stage-svg .lbl { fill: var(--lo); font-family: ui-monospace, Menlo, monospace; font-weight: 700; display: none; }
+/* Joined: each mapped key carries its computer-keyboard letter (guidance, so ink, not the accent). */
+.stage-svg .kbd { fill: var(--hi); font-family: ui-monospace, Menlo, monospace; font-weight: 800; pointer-events: none; }
+.stage-svg .kbd.b { fill: var(--paper); }
+.stage.joined .stage-name { color: var(--accent-d); }
+.stage.close .stage-svg .lbl, .stage.zoomed .stage-svg .lbl { display: inline; }
+.stage-zoom { display: inline-flex; gap: 4px; margin-left: 4px; }
+.stage-zoom .stage-btn { padding: 3px 8px; }
+.stage-svg { cursor: grab; }
+.stage-svg:active { cursor: grabbing; }
+.stage-svg .key.b .lbl { fill: var(--faint); }
+.stage-svg .lcd { fill: var(--accent); font-family: ui-monospace, Menlo, monospace; font-weight: 700; letter-spacing: 0.08em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-svg .p { transition: none; }
+  .stage-svg .str.on .wire, .stage-svg .bow.on, .stage-svg .cym.on { animation: none; }
+}
+
+/* Phones: the hint gives the readout its room (after the caption rules, which set display). */
+@media (max-width: 520px) { .stage-cap.bl { display: none; } .stage-cap.br { max-width: 70%; } }

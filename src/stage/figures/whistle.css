@@ -1,0 +1,6 @@
+/* The tin whistle's own line-art classes (src/stage/figures/whistle.ts). */
+.stage-svg .wh-bore { fill: var(--k2); }
+.stage-svg .wh-ramp { fill: var(--s1); stroke: var(--mid); stroke-width: 0.6; vector-effect: non-scaling-stroke; }
+.stage-svg .wh-flue { fill: none; stroke: var(--s3); stroke-width: 0.9; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.stage-svg .wh-blade { fill: none; stroke: var(--hi); stroke-width: 1; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.stage-svg .blow.on .wh-ramp, .stage-svg .blow.down .wh-ramp { fill: var(--accent-l); stroke: var(--accent-d); }

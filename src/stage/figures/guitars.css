@@ -1,0 +1,16 @@
+/* Line-art details of the guitars (src/stage/figures/guitars.ts): binding, rosette, hardware. */
+.stage-svg .g-bind { fill: none; stroke: var(--lo); stroke-width: 0.6; vector-effect: non-scaling-stroke; }
+.stage-svg .g-tick { fill: none; stroke: var(--lo); stroke-width: 0.45; vector-effect: non-scaling-stroke; }
+.stage-svg .g-tile { fill: var(--s1); stroke: var(--lo); stroke-width: 0.4; vector-effect: non-scaling-stroke; }
+.stage-svg .g-screw { fill: var(--s3); stroke: var(--mid); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.stage-svg .g-pole { fill: var(--s1); stroke: var(--hi); stroke-width: 0.45; vector-effect: non-scaling-stroke; }
+.stage-svg .g-dot { fill: var(--k2); }
+.stage-svg .g-hole { fill: var(--k1); }
+.stage-svg .g-slot { fill: var(--k2); stroke: var(--mid); stroke-width: 0.4; vector-effect: non-scaling-stroke; }
+.stage-svg .g-edge { fill: none; stroke: var(--mid); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.stage-svg .g-knot { fill: none; stroke: var(--mid); stroke-width: 1; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+/* A bass's strings are thicker than a guitar's. */
+.stage-svg .wire.g-heavy { stroke-width: 1.1; }
+.stage-svg .wire.g-heavy.w0 { stroke-width: 1.8; }
+.stage-svg .wire.g-heavy.w1 { stroke-width: 1.5; }
+.stage-svg .wire.g-heavy.w2 { stroke-width: 1.3; }

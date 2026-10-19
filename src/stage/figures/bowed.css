@@ -1,0 +1,8 @@
+/* The violin family (bowed.ts). The bow plays by moving (stage.css reverses it
+   each note); it keeps its wood and ebony, so the colour on the instrument
+   stays on the sounding string and its stop. */
+.stage-svg .p.bow.on, .stage-svg .p.bow.down { --tl: var(--bl); --tm: var(--bm); --td: var(--bd); --line: var(--mid); }
+.stage-svg .p.m-ebony.bow.on, .stage-svg .p.m-ebony.bow.down { --line: var(--hi); }
+/* The bow is "next" or "yours" for every note; it is not where the hand goes, so it keeps its own lines. */
+.stage-svg .p.bow.next:not(.on) .f:not(.s), .stage-svg .p.bow.next:not(.on) .ink,
+.stage-svg .p.bow.yours:not(.on) .f:not(.s), .stage-svg .p.bow.yours:not(.on) .ink { stroke: var(--line); stroke-width: 0.8; stroke-dasharray: none; }

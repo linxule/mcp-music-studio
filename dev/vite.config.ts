@@ -56,6 +56,10 @@ export default defineConfig({
   root: here,
   publicDir: false,
   plugins: [serveBuiltWidgets()],
+  // node_modules is a symlink to node_modules.nosync (iCloud), and Vite only
+  // pre-bundles what it resolves under a path named node_modules — so abcjs
+  // (CommonJS) reached the dev pages raw and had no default export.
+  optimizeDeps: { include: ["abcjs"] },
   server: {
     port: 5177,
     strictPort: true,
