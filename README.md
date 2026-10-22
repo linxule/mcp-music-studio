@@ -2,7 +2,7 @@
 
 **English** · [简体中文](https://github.com/linxule/mcp-music-studio/blob/main/README.zh-CN.md) · [Français](https://github.com/linxule/mcp-music-studio/blob/main/README.fr.md) · [日本語](https://github.com/linxule/mcp-music-studio/blob/main/README.ja.md)
 
-[![npm](https://img.shields.io/npm/v/mcp-music-studio)](https://www.npmjs.com/package/mcp-music-studio) [![CI](https://github.com/linxule/mcp-music-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/linxule/mcp-music-studio/actions/workflows/ci.yml) [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](https://github.com/linxule/mcp-music-studio/blob/main/LICENSE)
+[![npm](https://img.shields.io/npm/v/mcp-music-studio)](https://www.npmjs.com/package/mcp-music-studio) [![CI](https://github.com/linxule/mcp-music-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/linxule/mcp-music-studio/actions/workflows/ci.yml) [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](https://github.com/linxule/mcp-music-studio/blob/main/LICENSE) [![Toolweather](https://toolweather.toolweather.workers.dev/badge/io.github.linxule/mcp-music-studio.svg)](https://toolweather.pages.dev/servers/io.github.linxule--mcp-music-studio/)
 
 Make music with an AI assistant, inside the chat. Ask for a song and get sheet music you can play and edit. Ask for a beat and get a live-coding player with visuals. Then edit the piece together, move its controls while it plays, or take turns with the AI.
 
