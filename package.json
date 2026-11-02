@@ -80,7 +80,7 @@
     "@modelcontextprotocol/client": "^2.2.0",
     "@modelcontextprotocol/core": "^2.2.0",
     "@modelcontextprotocol/ext-apps": "^2.0.3",
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@strudel/core": "1.2.6",
     "@strudel/mini": "1.2.6",
     "@strudel/tonal": "1.2.6",
@@ -95,7 +95,7 @@
     "@playwright/test": "1.64.1",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
-    "@types/node": "26.6.5",
+    "@types/node": "26.6.6",
     "acorn": "^8.14.0",
     "concurrently": "^10.0.6",
     "cross-env": "^10.1.0",
@@ -103,7 +103,7 @@
     "vite": "^8.3.1",
     "vite-plugin-singlefile": "^2.3.3",
     "vitest": "5.0.5",
-    "wrangler": "4.151.2"
+    "wrangler": "4.156.0"
   },
   "types": "dist/server.d.ts",
   "exports": {
