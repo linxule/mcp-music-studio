@@ -1,9 +1,6 @@
 import type { GALLERY_IDS } from "./src/strudel-gallery.js";
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type {
-  CallToolResult,
-  ReadResourceResult,
-} from "@modelcontextprotocol/sdk/types.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
+import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/server";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -237,8 +234,8 @@ export function createServer(options?: ServerOptions): McpServer {
       inputSchema: config.inputSchema,
       annotations: playAnnotations,
     };
-    // uiToolMeta supplies both current and legacy metadata spellings. Register
-    // directly with SDK v1; ext-apps v2 server helpers require an SDK v2 server.
+    // uiToolMeta supplies both current and legacy metadata spellings, so the
+    // tool is registered directly rather than through ext-apps' registerAppTool.
     if (inlineMode) {
       server.registerTool(
         name,

@@ -1,5 +1,5 @@
 import ABCJS from "abcjs";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { PLAY_SHEET_NEUTRAL_TEXT } from "./shared/tool-defs.js";
 import { INSTRUMENTS, resolveInvocationSettings } from "./music-logic.js";
 import { findLeadingProgram, instrumentForProgram } from "./abc-program.js";

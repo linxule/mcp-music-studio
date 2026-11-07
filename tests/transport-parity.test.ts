@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-
+import type { McpServer } from "@modelcontextprotocol/server";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { createServer } from "../server";
 import { createMusicServer } from "../worker/src/index";
 import { ABC_GUIDE_TOPICS } from "../src/abc-guide";

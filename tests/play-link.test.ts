@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/client";
 import {
   NO_INLINE_PLAYER_TAIL,
   NO_INLINE_PLAYER_TAIL_WITH_LINK,

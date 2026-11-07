@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "../server";
 import { SHEET_RESOURCE_URI, STRUDEL_RESOURCE_URI } from "../src/shared/tool-defs";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 
 type ContentBlock = {
   type: string;

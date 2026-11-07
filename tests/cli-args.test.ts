@@ -10,6 +10,7 @@ import {
   isOriginAllowed,
   normalizeArgv,
   parseCliOptions,
+  sdkOriginHostnames,
 } from "../src/cli-args";
 
 // argv as a real launcher hands it over: [node, script, ...flags].
@@ -237,5 +238,22 @@ describe("CORS policy", () => {
       argv("--host", "0.0.0.0", "--allow-origin", "*"),
     );
     expect(options.warnings.join(" ")).toContain("every website");
+  });
+});
+
+describe("SDK Origin check", () => {
+  it("keeps the SDK default without an allowlist or on a non-loopback bind", () => {
+    expect(sdkOriginHostnames("127.0.0.1", [])).toBeUndefined();
+    expect(sdkOriginHostnames("0.0.0.0", ["https://studio.example.com"])).toBeUndefined();
+  });
+
+  it("passes an allowlist's hostnames on a loopback bind", () => {
+    expect(
+      sdkOriginHostnames("127.0.0.1", ["https://studio.example.com:8443", "http://[::1]:6274", "not a url"]),
+    ).toEqual(["studio.example.com", "[::1]"]);
+  });
+
+  it("maps the wildcard to Host validation only", () => {
+    expect(sdkOriginHostnames("localhost", ["*"])).toBeNull();
   });
 });

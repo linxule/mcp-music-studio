@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { MAX_SOURCE_CHARS } from "./input-bounds.js";
 import { STYLE_NAMES } from "../music-logic.js";
 import { VISUAL_PRESETS } from "./visual-presets.js";

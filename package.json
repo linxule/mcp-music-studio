@@ -77,10 +77,12 @@
     "node": ">=20.11"
   },
   "dependencies": {
-    "@modelcontextprotocol/client": "^2.2.0",
-    "@modelcontextprotocol/core": "^2.2.0",
-    "@modelcontextprotocol/ext-apps": "^2.0.3",
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/core": "^2.4.0",
+    "@modelcontextprotocol/express": "^2.0.2",
+    "@modelcontextprotocol/ext-apps": "^2.0.4",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@modelcontextprotocol/server": "^2.4.0",
     "@strudel/core": "1.2.6",
     "@strudel/mini": "1.2.6",
     "@strudel/tonal": "1.2.6",

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { createServer, handlePlaySheetMusic } from "../server";
 import type { ParseOnlyFn } from "../src/server-logic";
 import { SERVER_INSTRUCTIONS } from "../src/shared/tool-defs";

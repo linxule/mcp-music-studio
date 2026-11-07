@@ -1,8 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import worker, { WIDGET_BUILD, createMusicServer } from "../worker/src/index";
 import { VERSION } from "../src/version";
 import { encodeShareParam } from "../src/shared/share-url";
@@ -12,9 +11,8 @@ import { encodeShareParam } from "../src/shared/share-url";
 // =============================================================================
 //
 // These routes are hand-rolled inside `fetch` and are never exercised by the MCP
-// SDK, so nothing else covers them. `agents/mcp` is aliased to a stub in
-// vitest.config.ts (see tests/stubs/agents-mcp.ts), and the bundled widget HTML
-// is loaded by the same config's html-as-text plugin.
+// SDK, so nothing else covers them. The bundled widget HTML is loaded by
+// vitest.config.ts's html-as-text plugin.
 
 const ENV = {} as never;
 const CTX = { waitUntil: () => {}, passThroughOnException: () => {} } as never;

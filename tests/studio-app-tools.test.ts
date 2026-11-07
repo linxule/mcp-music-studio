@@ -2,7 +2,7 @@ import { studioSchemasFor } from "../src/studio-schemas";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@modelcontextprotocol/ext-apps";
 import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { InMemoryTransport } from "@modelcontextprotocol/client";
 import { registerStudioAppTools } from "../src/studio-app-tools";
 import { createStudioSession, installStudioBridge, type StudioCommand, type StudioMode, type StudioSnapshot, type StudioState } from "../src/studio-session";
 import { injectTempo } from "../src/shared/tempo";

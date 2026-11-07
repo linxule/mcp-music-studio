@@ -8,10 +8,9 @@
     "tail": "wrangler tail"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/server": "^2.4.0",
     "abcjs": "~6.7.1",
     "acorn": "^8.19.0",
-    "agents": "^0.28.1",
     "tonal": "^6.5.1",
     "zod": "^4.6.7"
   },

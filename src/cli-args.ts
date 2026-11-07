@@ -156,6 +156,39 @@ export function isOriginAllowed(
   return LOOPBACK_ORIGIN_RE.test(origin);
 }
 
+/** The bind addresses on which the SDK's createMcpExpressApp arms Host/Origin checks. */
+const SDK_LOOPBACK_BINDS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+/**
+ * What to hand the SDK app factory's Origin check so `--allow-origin` keeps
+ * working. Since SDK v2, `createMcpExpressApp` on a loopback bind answers 403
+ * to any browser Origin that is not localhost-class unless it is given its own
+ * list, which would void an explicit allowlist before CORS ever saw it.
+ *
+ * - `undefined` → keep the SDK default: no list given (loopback pages only,
+ *   the same as `isOriginAllowed`), or a non-loopback bind (no Origin check).
+ * - `null` → the explicit `*` wildcard, which the SDK's list cannot express:
+ *   Host-header validation only, as before v2.
+ * - `string[]` → the allowlist's hostnames. The SDK check is port-agnostic;
+ *   CORS still matches each full origin exactly.
+ */
+export function sdkOriginHostnames(
+  host: string,
+  allowedOrigins: readonly string[],
+): string[] | null | undefined {
+  if (allowedOrigins.length === 0 || !SDK_LOOPBACK_BINDS.has(host)) return undefined;
+  if (allowedOrigins.includes("*")) return null;
+  const hostnames = new Set<string>();
+  for (const origin of allowedOrigins) {
+    try {
+      hostnames.add(new URL(origin).hostname);
+    } catch {
+      // Not an origin a browser can send; CORS will never match it either.
+    }
+  }
+  return [...hostnames];
+}
+
 function parsePort(raw: string | undefined, warnings: string[]): number {
   if (raw === undefined || raw.trim() === "") return DEFAULT_PORT;
   const port = Number.parseInt(raw.trim(), 10);

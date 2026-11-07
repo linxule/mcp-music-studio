@@ -3,16 +3,16 @@ import { SOURCE_URL } from "../../src/source-info.js";
 // MCP Music Studio — Cloudflare Worker
 //
 // Remote MCP server for one-paste setup. Stateless handler (new server per
-// request) using createLegacyMcpHandler + WorkerTransport — matches the official
-// ext-apps example pattern for reliable UI rendering in Claude Desktop.
+// request) on the SDK's WebStandardStreamableHTTPServerTransport with JSON
+// responses — matches the official ext-apps example pattern for reliable UI
+// rendering in Claude Desktop.
 //
 // Tool names, schemas, descriptions, annotations, _meta, instructions, and the
 // search-music-docs behavior are imported from ../../src/shared/tool-defs so
 // they never drift from the local stdio/HTTP server (server.ts).
 // =============================================================================
 
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createLegacyMcpHandler } from "agents/mcp";
+import { McpServer, ResourceTemplate, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { z } from "zod";
 // abcjs runs parse-only here (no DOM touched at import time — its one browser
 // polyfill is wrapped in try/catch), which is what convert-abc-to-strudel needs.
@@ -233,6 +233,49 @@ const EXT_APPS_MIME = "text/html;profile=mcp-app" as const;
 // FNV-1a: a few lines, synchronous (crypto.subtle is async and can't run at
 // module scope), and identity is all that's wanted here — not collision
 // resistance against an adversary.
+
+// =============================================================================
+// /mcp transport — stateless JSON, CORS-open
+// =============================================================================
+//
+// Until the SDK v2 port this route ran on `agents/mcp`'s createLegacyMcpHandler
+// (an SDK v1 WorkerTransport). Its SDK v2 replacement, `agents/mcp/server`'s
+// createMcpHandler, answers 2025-era clients over SSE only, and Claude Desktop
+// Connectors need JSON (see the /mcp route). So the same wiring is kept here on
+// the v2 transport: a fresh transport per request, `enableJsonResponse`, and
+// the wrapper's CORS headers (preflight answered here, `*` origin, OPTIONS
+// added to a 405's `Allow`).
+
+const MCP_CORS_PREFLIGHT_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, mcp-session-id, MCP-Protocol-Version",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Max-Age": "86400",
+};
+
+async function handleMcpRequest(server: McpServer, request: Request): Promise<Response> {
+  if (request.method === "OPTIONS") return new Response(null, { headers: MCP_CORS_PREFLIGHT_HEADERS });
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  await server.connect(transport);
+  try {
+    const response = await transport.handleRequest(request);
+    const headers = new Headers(response.headers);
+    const allow = headers.get("Allow");
+    if (response.status === 405 && allow && !allow.includes("OPTIONS")) headers.set("Allow", `${allow}, OPTIONS`);
+    headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("Access-Control-Expose-Headers", "mcp-session-id");
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  } catch (error) {
+    console.error("MCP handler error:", error);
+    return Response.json(
+      { jsonrpc: "2.0", error: { code: -32603, message: error instanceof Error ? error.message : "Internal server error" }, id: null },
+      { status: 500 },
+    );
+  }
+}
 
 function widgetFingerprint(html: string): string {
   let hash = 0x811c9dc5;
@@ -781,7 +824,7 @@ export function createMusicServer(
   // ===========================================================================
 
   // Any earlier release's URI resolves too — see SHEET_RESOURCE_TEMPLATE.
-  server.resource(
+  server.registerResource(
     "sheet-music-any-version",
     new ResourceTemplate(SHEET_RESOURCE_TEMPLATE, { list: undefined }),
     { mimeType: EXT_APPS_MIME, description: "Sheet Music Viewer UI (any release's URI)" },
@@ -790,7 +833,7 @@ export function createMusicServer(
       return { contents: [{ uri: uri.href, mimeType: EXT_APPS_MIME, text: sheetMusicHtml, _meta: { ui: { csp: { ...SHEET_CSP } } } }] };
     },
   );
-  server.resource(
+  server.registerResource(
     "strudel-any-version",
     new ResourceTemplate(STRUDEL_RESOURCE_TEMPLATE, { list: undefined }),
     { mimeType: EXT_APPS_MIME, description: "Strudel Live Pattern REPL (any release's URI)" },
@@ -806,7 +849,7 @@ export function createMusicServer(
   );
 
   for (const uri of [SHEET_RESOURCE_URI, LEGACY_SHEET_RESOURCE_URI]) {
-    server.resource(
+    server.registerResource(
       uri,
       uri,
       { mimeType: EXT_APPS_MIME, description: "Sheet Music Viewer UI" },
@@ -824,7 +867,7 @@ export function createMusicServer(
   }
 
   for (const uri of [STRUDEL_RESOURCE_URI, LEGACY_STRUDEL_RESOURCE_URI]) {
-    server.resource(
+    server.registerResource(
       uri,
       uri,
       { mimeType: EXT_APPS_MIME, description: "Strudel Live Pattern REPL" },
@@ -1014,7 +1057,7 @@ export function createMusicServer(
 
   for (const topic of ABC_GUIDE_TOPICS) {
     const uri = `music://guide/${topic}`;
-    server.resource(
+    server.registerResource(
       `Music Guide: ${topic}`,
       uri,
       { mimeType: "text/plain", description: `Music reference: ${topic}` },
@@ -1026,7 +1069,7 @@ export function createMusicServer(
 
   for (const topic of STRUDEL_GUIDE_TOPICS) {
     const uri = `music://strudel-guide/${topic}`;
-    server.resource(
+    server.registerResource(
       `Strudel Guide: ${topic}`,
       uri,
       { mimeType: "text/plain", description: `Strudel reference: ${topic}` },
@@ -1774,21 +1817,7 @@ export default {
       // enableJsonResponse is required for Claude Desktop Connectors to render
       // ext-apps UI — the default SSE response format isn't parsed correctly
       // by the Connector client for resources/read calls.
-      const server = createMusicServer(env, url.origin, request, ctx);
-      // Keep the SDK v1 server on Agents' explicit legacy adapter. The default
-      // createMcpHandler now accepts SDK v2 servers with a different context API.
-      const handler = createLegacyMcpHandler(
-        server as unknown as Parameters<typeof createLegacyMcpHandler>[0],
-        {
-          // `route` is optional and defaults to "/mcp"; the handler 404s
-          // anything else. We already matched, and we accept the trailing-slash
-          // form too, so hand it the path we actually dispatched on.
-          route: url.pathname,
-          sessionIdGenerator: undefined,
-          enableJsonResponse: true,
-        },
-      );
-      return handler(request, env, ctx);
+      return handleMcpRequest(createMusicServer(env, url.origin, request, ctx), request);
     }
 
     // Server icon for MCP client UIs (serverInfo.icons → this URL). Proxies the
