@@ -2,7 +2,7 @@ import { liveStudioSchemas, scoreStudioSchemas } from "../src/studio-schemas";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@modelcontextprotocol/ext-apps";
 import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { InMemoryTransport } from "@modelcontextprotocol/client";
 import { z } from "zod";
 import {
   createWidgetToolRelay, findModelContext, registerWebMcpTool, toWebMcpValue,

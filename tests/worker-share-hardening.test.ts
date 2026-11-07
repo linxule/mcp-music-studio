@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import worker, {
   SHARE_RATE_LIMIT_MAX,
   SHARE_RATE_LIMIT_WINDOW_SECONDS,

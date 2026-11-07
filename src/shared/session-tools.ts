@@ -9,7 +9,7 @@
 // =============================================================================
 
 import { z } from "zod";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, ServerContext } from "@modelcontextprotocol/server";
 import { LOADED_STOPPED, SESSION_ID_RE, SESSION_MAX_QUANTIZE, staleWidgetHint, type QueuedPattern, type SessionEvent } from "./session.js";
 import { MAX_SOURCE_CHARS } from "./tool-defs.js";
 
@@ -273,11 +273,11 @@ export function registerSessionTools(
     },
     async (
       args: { session: string; wait?: "pass" | "activity" },
-      extra?: { signal?: AbortSignal },
+      ctx?: ServerContext,
     ): Promise<CallToolResult> => {
       // A cancelled call must stop listening, or the player's Pass is told a
       // model heard it when none will (Codex review).
-      const text = await backend.state(args.session, args.wait ? { mode: args.wait } : undefined, extra?.signal);
+      const text = await backend.state(args.session, args.wait ? { mode: args.wait } : undefined, ctx?.mcpReq.signal);
       if (text === null) return unknownSession(args.session);
       return { content: [{ type: "text", text }] };
     },

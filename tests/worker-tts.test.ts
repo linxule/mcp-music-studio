@@ -1,8 +1,7 @@
 // GET /tts — the server half of say(): render once, cache by content, cap what
 // a public route can cost.
 import { describe, expect, it } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import worker, { createMusicServer, ttsCacheKey } from "../worker/src/index";
 import { VoiceBudget } from "../worker/src/voice-budget-do";
 import { TTS_MAX_CHARS, TTS_MODEL, ttsUrl } from "../src/shared/tts";

@@ -38,11 +38,6 @@ export default defineConfig({
   plugins: [htmlAsText],
   resolve: {
     alias: [
-      // `agents` lives in worker/package.json only — see tests/stubs/agents-mcp.ts.
-      {
-        find: /^agents\/mcp$/,
-        replacement: path.resolve(root, "tests/stubs/agents-mcp.ts"),
-      },
       // @strudel/core (a devDependency, used by tests/guide-executable.test.ts to
       // actually RUN the guide's examples) statically imports @kabelsalat/web,
       // whose package.json is `"type": "module"` with `main` pointing at an IIFE

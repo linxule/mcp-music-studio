@@ -2,7 +2,7 @@ import { liveStudioSchemas, scoreStudioSchemas } from "../src/studio-schemas";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@modelcontextprotocol/ext-apps";
 import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { InMemoryTransport } from "@modelcontextprotocol/client";
 import { registerStudioAppTools } from "../src/studio-app-tools";
 import {
   createStudioSession, STUDIO_SWAP_DEFAULT_QUANTIZE, type StudioSnapshot, type StudioState, type StudioSwapHooks,

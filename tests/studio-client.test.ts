@@ -2,7 +2,7 @@ import { scoreStudioSchemas } from "../src/studio-schemas";
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '@modelcontextprotocol/ext-apps';
 import { AppBridge } from '@modelcontextprotocol/ext-apps/app-bridge';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { InMemoryTransport } from "@modelcontextprotocol/client";
 import { createStudioClient, createStudioHumanTransport } from '../dev/studio-client';
 import { registerStudioAppTools } from '../src/studio-app-tools';
 import { createStudioSession, type StudioSnapshot } from '../src/studio-session';

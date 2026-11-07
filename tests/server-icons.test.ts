@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "../server";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { SERVER_ICONS, WEBSITE_URL, LOGO_URL } from "../src/shared/tool-defs";
 
 // Guards that the server advertises its logo + website in the initialize

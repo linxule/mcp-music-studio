@@ -18,7 +18,7 @@ import { MAX_SOURCE_CHARS } from "./input-bounds.js";
 import { playLiveInputSchema } from "./play-live-schema.js";
 import { playSheetInputSchema } from "./play-sheet-schema.js";
 export { MAX_SOURCE_CHARS, playLiveInputSchema, playSheetInputSchema };
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { analyzeHarmonyResult, HARMONY_TASKS } from "./harmony.js";
 import {
   convertAbcToStrudel,

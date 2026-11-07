@@ -6,18 +6,19 @@
  * Argument parsing lives in src/cli-args.ts (pure + unit-tested).
  */
 
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import type { McpServer } from "@modelcontextprotocol/server";
+import { createMcpExpressApp, localhostHostValidation } from "@modelcontextprotocol/express";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import cors from "cors";
-import type { Request, Response } from "express";
+import express, { type Request, type Response } from "express";
 import { createServer } from "./server.js";
 import {
   displayUrl,
   isLoopbackHost,
   isOriginAllowed,
   parseCliOptions,
+  sdkOriginHostnames,
   type CliOptions,
 } from "./src/cli-args.js";
 
@@ -42,9 +43,19 @@ export async function startStreamableHTTPServer(
 ): Promise<void> {
   const { host, port, allowedOrigins } = options;
 
-  // Passing the real bind address is what enables the SDK's Host-header
-  // validation for loopback hosts (and makes it warn loudly for 0.0.0.0/::).
-  const app = createMcpExpressApp({ host });
+  // Passing the real bind address is what enables the SDK's Host-header (and,
+  // since SDK v2, Origin) validation for loopback hosts, and makes it warn
+  // loudly for 0.0.0.0/::. An explicit --allow-origin list is handed to the
+  // Origin check too; `*` keeps Host validation only (see sdkOriginHostnames).
+  const originHostnames = sdkOriginHostnames(host, allowedOrigins);
+  let app: express.Express;
+  if (originHostnames === null) {
+    app = express();
+    app.use(localhostHostValidation());
+    app.use(express.json());
+  } else {
+    app = createMcpExpressApp(originHostnames ? { host, allowedOrigins: originHostnames } : { host });
+  }
 
   app.use(
     cors({
@@ -58,7 +69,7 @@ export async function startStreamableHTTPServer(
 
   app.all("/mcp", async (req: Request, res: Response) => {
     const server = createServer();
-    const transport = new StreamableHTTPServerTransport({
+    const transport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });
 
