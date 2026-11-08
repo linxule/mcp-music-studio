@@ -94,6 +94,14 @@ const f = frame();
 if (!f) throw new Error("the sheet widget never loaded");
 await f.waitForSelector("#sheet-music .abcjs-note", { timeout: 30000 });
 await f.waitForSelector(".abcjs-midi-start", { timeout: 30000 });
+await f.evaluate(() => {
+  const ed = document.getElementById("abc-editor");
+  globalThis.__log = [];
+  const sel = () => `${ed.selectionStart}-${ed.selectionEnd}`;
+  for (const t of ["keydown", "keyup", "pointerdown", "mousedown", "pointerup", "mouseup", "click", "focusin", "focusout", "select"]) {
+    document.addEventListener(t, (e) => globalThis.__log.push(`${performance.now().toFixed(0)} ${t} sh=${e.shiftKey} tgt=${e.target?.tagName ?? e.target}${e.target?.getAttribute?.("class") ? "." + String(e.target.getAttribute("class")).split(" ")[0] : ""} sel=${sel()} act=${document.activeElement?.id || document.activeElement?.tagName}`), true);
+  }
+});
 
 const isPlaying = () => f.evaluate(() => document.querySelector(".abcjs-midi-start")?.classList.contains("abcjs-pushed") ?? false);
 async function waitPlaying(want, ms = 15000) {
@@ -183,6 +191,7 @@ async function clickThenShift(voice, from, to) {
 await clickThenShift(0, 4, 7);
 sel = await settle("g2 a2 b2 c'2");
 check(sel.text === "g2 a2 b2 c'2", "Shift-click extends the selection to the second note", JSON.stringify(sel));
+if (sel.text !== "g2 a2 b2 c'2") console.error("LOG\n" + (await f.evaluate(() => globalThis.__log.slice(-40).join("\n"))));
 const marked = await f.evaluate(() => document.querySelectorAll("#sheet-music .abcjs-note_selected").length);
 check(marked >= 4, `the selection is marked on the score (${marked} elements)`);
 

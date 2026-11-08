@@ -115,10 +115,18 @@ const settled = async (from) => {
   }
   return last;
 };
+await f.evaluate(() => {
+  globalThis.__raf = [];
+  const svg = document.querySelector(".stage-svg");
+  let last = performance.now();
+  const tick = (t) => { globalThis.__raf.push([Math.round(t - last), svg.getAttribute("viewBox").split(" ")[3]]); last = t; requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+});
 const hands = await settled();
 await f.click('.stage-btn[data-act="mode"]');
 const whole = await settled(hands);
 check(whole[3] > hands[3] * 1.3, "whole frames the entire instrument", `${hands[3].toFixed(0)} → ${whole[3].toFixed(0)} tall`);
+{ const r = await f.evaluate(() => globalThis.__raf); console.error("RAF max gap", Math.max(...r.map((x) => x[0])), "frames", r.length, "seq", JSON.stringify(r.filter((x, i) => i === 0 || x[1] !== r[i - 1][1] || x[0] > 100))); }
 await f.click('.stage-btn[data-act="in"]');
 await sleep(100);
 const zin = await vb();

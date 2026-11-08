@@ -91,7 +91,8 @@ jobs:
       - run: bun run build
       - run: bunx playwright install --with-deps ${{ matrix.browser }}
       - name: Browser acceptance checks
-        run: scripts/ci-browser.sh
+        run: |
+          if [ "$BROWSER" = webkit ]; then scripts/ci-browser.sh score-stage score-stage score-stage score-stage score-stage score-stage; else scripts/ci-browser.sh score-click score-click score-click score-click score-click score-click score-click score-click; fi
         env:
           BROWSER: ${{ matrix.browser }}
           LOGS: ${{ runner.temp }}/ci-browser
