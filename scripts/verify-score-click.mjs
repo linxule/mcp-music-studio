@@ -120,10 +120,30 @@ const editor = () => f.evaluate(() => {
   return { from: ta.selectionStart, to: ta.selectionEnd, text: ta.value.slice(ta.selectionStart, ta.selectionEnd) };
 });
 const note = (voice, n) => f.locator(`#sheet-music .abcjs-note.abcjs-v${voice}`).nth(n);
+/** Wait until the frame is as tall as the widget. The host resizes the frame
+ *  to each height the widget reports, a frame or two after its layout changes;
+ *  closing the review panel and then opening the editor sends two reports
+ *  (444, then 646 px) ~30 ms apart. In between, the focused editor scrolls the
+ *  short frame by ~200 px, and a click aimed in that window lands an editor's
+ *  height above its note, in the textarea (#60). The widget's height is what
+ *  the ext-apps SDK reports: <html> measured at max-content. */
+const frameSettled = () =>
+  f.waitForFunction(() => {
+    const root = document.documentElement;
+    const inline = root.style.height;
+    root.style.height = "max-content";
+    const want = Math.ceil(root.getBoundingClientRect().height);
+    root.style.height = inline;
+    return Math.abs(innerHeight - want) <= 1;
+  }, null, { polling: 50, timeout: 5000 }).catch(() => {});
 /** Click a notehead where a person would. A staff line may be on top there:
- *  abcjs then finds the nearest note by coordinates, as it does for a person. */
-const clickNote = (voice, n, modifiers = []) =>
-  note(voice, n).locator(".abcjs-notehead").first().click({ force: true, modifiers });
+ *  abcjs then finds the nearest note by coordinates, as it does for a person.
+ *  `force` skips Playwright's own wait for a still target, so wait for the
+ *  frame first. */
+const clickNote = async (voice, n, modifiers = []) => {
+  await frameSettled();
+  await note(voice, n).locator(".abcjs-notehead").first().click({ force: true, modifiers });
+};
 
 // The tool call autoplays; let it start, then stop it so clicks are measured alone.
 check(await waitPlaying(true), "the tool call autoplays");
@@ -191,6 +211,7 @@ check(marked >= 4, `the selection is marked on the score (${marked} elements)`);
 const before = await editor();
 const head = note(0, 9).locator(".abcjs-notehead").first();
 await head.scrollIntoViewIfNeeded();
+await frameSettled();
 const box = await head.boundingBox();
 await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 await page.mouse.down();
@@ -276,6 +297,7 @@ await f.click(".practice-loop-btn"); // off
 // ── 5. Progress-bar seeks keep highlight and audio together ─────────────────
 const progress = f.locator(".abcjs-midi-progress-background");
 const clickAt = async (fraction) => {
+  await frameSettled();
   const b = await progress.boundingBox();
   await page.mouse.click(b.x + b.width * fraction, b.y + b.height / 2);
 };

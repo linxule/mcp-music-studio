@@ -53,8 +53,20 @@ for (const id of ["flute", "clarinet", "violin", "cello", "acoustic_grand_piano"
 // is pressed only if it is not already playing (a press would pause it).
 const lit = () => f.evaluate(() => [...document.querySelectorAll(".stage-svg .on[data-k]")].map((e) => `${e.closest("[data-obj]").dataset.obj}:${e.dataset.k}`));
 const playing = () => f.evaluate(() => document.querySelector(".abcjs-midi-start")?.classList.contains("abcjs-pushed") ?? false);
-await sleep(1500);
-if (!(await playing())) await f.click(".abcjs-midi-start");
+// Autoplay waits for the samples, which takes seconds on a loaded runner; a
+// press while they load would pause it, so give autoplay the same 15 s the
+// score-click check does before pressing.
+const waitPlaying = async (ms = 15000) => {
+  for (let t = 0; t < ms; t += 100) {
+    if (await playing()) return true;
+    await sleep(100);
+  }
+  return false;
+};
+if (!(await waitPlaying())) {
+  await f.click(".abcjs-midi-start");
+  await waitPlaying(5000);
+}
 check(await playing(), "the score is playing");
 let seen = new Set();
 for (let i = 0; i < 40; i++) {
@@ -98,24 +110,35 @@ await sleep(1500);
 check((await f.evaluate(() => globalThis.__starts.length)) === n0, "a scroll that starts on a key plays nothing");
 
 // Press the cello's body (not a string): the close-up opens; ✕ steps back.
-await f.locator('.stage-svg g[data-obj="cello"] .p:not([data-k])').first().click({ force: true });
-await sleep(600);
-check(await f.evaluate(() => document.querySelector(".stage")?.classList.contains("close")), "pressing an instrument looks closer");
 const vb = () => f.evaluate(() => document.querySelector(".stage-svg").getAttribute("viewBox").split(" ").map(Number));
-// The framing eases over ~0.4 s, slower on a loaded CI runner: read it once it has stopped moving.
-const settled = async (from) => {
-  // First let it leave `from` (the animation may not have started yet), then wait for it to stop.
-  for (let i = 0; from && i < 20 && (await vb()).every((v, k) => Math.abs(v - from[k]) < 0.01); i++) await sleep(100);
-  let last = await vb();
-  for (let i = 0; i < 40; i++) {
-    await sleep(120);
-    const now = await vb();
-    if (now.every((v, k) => Math.abs(v - last[k]) < 0.01)) return now;
-    last = now;
-  }
-  return last;
-};
-const hands = await settled();
+const bandBox = await vb();
+await f.locator('.stage-svg g[data-obj="cello"] .p:not([data-k])').first().click({ force: true });
+await f.waitForFunction(() => document.querySelector(".stage")?.classList.contains("close"), null, { polling: 100, timeout: 5000 }).catch(() => {});
+check(await f.evaluate(() => document.querySelector(".stage")?.classList.contains("close")), "pressing an instrument looks closer");
+// The framing eases over 380 ms, one viewBox per animation frame. Judge the
+// end by frames, not wall-clock time: once the viewBox has left `from`, two
+// frames in a row with the same viewBox mean the ease is over, however long
+// the browser waits between frames (WebKit on a loaded runner can stall for
+// longer than the whole ease, #61).
+const settled = (from) => f.evaluate((from) => new Promise((resolve) => {
+  const svg = document.querySelector(".stage-svg");
+  const read = () => svg.getAttribute("viewBox").split(" ").map(Number);
+  const same = (a, b) => a.every((v, k) => Math.abs(v - b[k]) < 0.01);
+  let left = !from, last = null, done = false;
+  const finish = (v) => { done = true; resolve(v); };
+  // The cap only guards a framing that never moves (the check then fails).
+  setTimeout(() => finish(read()), 10000);
+  const tick = () => {
+    if (done) return;
+    const now = read();
+    if (!left) left = !same(now, from);
+    else if (last && same(now, last)) return finish(now);
+    last = left ? now : null;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}), from ?? null);
+const hands = await settled(bandBox);
 await f.click('.stage-btn[data-act="mode"]');
 const whole = await settled(hands);
 check(whole[3] > hands[3] * 1.3, "whole frames the entire instrument", `${hands[3].toFixed(0)} → ${whole[3].toFixed(0)} tall`);
