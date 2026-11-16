@@ -105,7 +105,7 @@
     "vite": "^8.3.1",
     "vite-plugin-singlefile": "^2.3.3",
     "vitest": "5.1.0",
-    "wrangler": "4.158.0"
+    "wrangler": "4.161.0"
   },
   "types": "dist/server.d.ts",
   "exports": {
