@@ -659,6 +659,31 @@ describe("create-share-link explicitly stores compositions", () => {
   });
 });
 
+describe("discovery routes", () => {
+  it.each(["/.well-known/mcp/server-card.json", "/mcp/server-card"])("serves SEP-2127 server card on GET and HEAD %s", async (p) => {
+    const res = await get(p);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/mcp-server-card+json");
+    const card = await res.json();
+    expect(card.name).toBe("io.github.linxule/mcp-music-studio");
+    expect(card.version).toBe(VERSION);
+    expect(card.tools).toHaveLength(10);
+    expect(card.prompts).toEqual(["compose-beat", "harmonize-melody", "arrange-tune"]);
+    const head = await get(p, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
+  });
+
+  it("serves /llms.txt and /robots.txt", async () => {
+    const llms = await get("/llms.txt");
+    expect(llms.status).toBe(200);
+    expect(await llms.text()).toContain("play-live-pattern");
+    const robots = await get("/robots.txt");
+    expect(robots.status).toBe(200);
+    expect(await robots.text()).toContain("Disallow: /p/");
+  });
+});
+
 describe("unknown routes", () => {
   it.each(["/nope", "/mcp2", "/health/extra"])("%s 404s", async (p) => {
     const res = await get(p);

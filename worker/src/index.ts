@@ -1860,6 +1860,113 @@ export default {
       });
     }
 
+    if (url.pathname === "/.well-known/mcp/server-card.json" || url.pathname === "/mcp/server-card") {
+      const headers = {
+        "content-type": "application/mcp-server-card+json; charset=utf-8",
+        "cache-control": "public, max-age=3600",
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, HEAD, OPTIONS",
+      };
+      if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response("Method not allowed", { status: 405, headers: { ...headers, Allow: "GET, HEAD, OPTIONS" } });
+      }
+      const card = {
+        $schema: "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+        name: "io.github.linxule/mcp-music-studio",
+        title: "MCP Music Studio",
+        description: "Two-mode creative music studio for AI: scored composition (ABC notation) and live performance (Strudel live coding), with interactive widgets, harmony analysis, and explicit 30-day share links.",
+        version: VERSION,
+        websiteUrl: url.origin,
+        icons: WORKER_SERVER_ICONS,
+        remotes: [
+          {
+            type: "streamable-http",
+            url: `${url.origin}/mcp`,
+            supportedProtocolVersions: ["2025-11-25", "2025-06-18", "2025-03-26"],
+          },
+        ],
+        authentication: { required: false },
+        capabilities: {
+          tools: {},
+          prompts: {},
+          resources: {},
+          extensions: { "io.modelcontextprotocol/ui": {} },
+        },
+        serverInfo: {
+          name: "Music Studio",
+          title: "MCP Music Studio",
+          version: VERSION,
+          websiteUrl: url.origin,
+          icons: WORKER_SERVER_ICONS,
+        },
+        tools: [
+          "play-sheet-music",
+          "play-live-pattern",
+          "get-session",
+          "update-session",
+          "create-share-link",
+          "get-music-guide",
+          "get-strudel-guide",
+          "search-music-docs",
+          "analyze-harmony",
+          "convert-abc-to-strudel",
+        ],
+        prompts: ["compose-beat", "harmonize-melody", "arrange-tune"],
+      };
+      return new Response(request.method === "HEAD" ? null : JSON.stringify(card, null, 2) + "\n", {
+        status: 200,
+        headers,
+      });
+    }
+
+    if (url.pathname === "/llms.txt") {
+      const headers = {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "public, max-age=3600",
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, HEAD, OPTIONS",
+      };
+      if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response("Method not allowed", { status: 405, headers: { ...headers, Allow: "GET, HEAD, OPTIONS" } });
+      }
+      const llmsBody = `# MCP Music Studio
+
+> Open-source MCP music studio (AGPL-3.0-or-later): ABC sheet-music composition and Strudel live coding in interactive ext-apps widgets, with harmony analysis, live jam sessions, and explicit 30-day share links.
+
+- Endpoint (Streamable HTTP, no sign-in): ${url.origin}/mcp
+- Server Card (SEP-2127): ${url.origin}/.well-known/mcp/server-card.json
+- Privacy policy: ${url.origin}/privacy
+- Source & licenses: ${SOURCE_URL}
+
+## Tools (10)
+- \`play-sheet-music\`, \`play-live-pattern\`, \`get-session\`, \`update-session\`, \`create-share-link\`, \`get-music-guide\`, \`get-strudel-guide\`, \`search-music-docs\`, \`analyze-harmony\`, \`convert-abc-to-strudel\`
+
+## Prompts (3)
+- \`compose-beat\`, \`harmonize-melody\`, \`arrange-tune\`
+`;
+      return new Response(request.method === "HEAD" ? null : llmsBody, { status: 200, headers });
+    }
+
+    if (url.pathname === "/robots.txt") {
+      const headers = {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "public, max-age=3600",
+      };
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return new Response("Method not allowed", { status: 405, headers: { ...headers, Allow: "GET, HEAD" } });
+      }
+      const robotsBody = `# MCP Music Studio
+User-agent: *
+Allow: /
+Disallow: /p/
+Disallow: /session/
+Content-Signal: search=yes, ai-input=yes, ai-train=yes
+`;
+      return new Response(request.method === "HEAD" ? null : robotsBody, { status: 200, headers });
+    }
+
     // Landing page (HTML so Google's favicon crawler finds the <link rel="icon">)
     if (url.pathname === "/" || url.pathname === "") {
       return new Response(
@@ -1880,7 +1987,12 @@ export default {
 <p><a href="${SOURCE_URL}">Source &amp; licenses</a></p>
 <p><a href="/privacy">Privacy policy</a></p>
 </body></html>`,
-        { headers: { "content-type": "text/html" } },
+        {
+          headers: {
+            "content-type": "text/html",
+            Link: '</llms.txt>; rel="llms-txt", </.well-known/mcp/server-card.json>; rel="service-desc"',
+          },
+        },
       );
     }
 
